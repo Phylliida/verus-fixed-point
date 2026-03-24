@@ -2150,26 +2150,115 @@ impl RuntimeFixedPointInterval {
     /// Returns -1 if a < b, 0 if a == b, 1 if a > b (by magnitude + sign).
     pub fn cmp_signed_rfp(a: &RuntimeFixedPoint, b: &RuntimeFixedPoint) -> (result: i8)
         requires a.wf_spec(), b.wf_spec(), a@.same_format(b@),
-        ensures -1i8 <= result <= 1i8,
+        ensures
+            -1i8 <= result <= 1i8,
+            result < 0 ==> a@.view().lt_spec(b@.view()),
+            result == 0 ==> a@.view().eqv_spec(b@.view()),
+            result > 0 ==> b@.view().lt_spec(a@.view()),
     {
-        // Compare by sign first, then by magnitude
+        let ghost d = pow2(a@.frac) as int;
+        proof {
+            lemma_pow2_positive(a@.frac);
+            assert(d > 0);
+            assert(a.limbs@ == a@.limbs);
+            assert(b.limbs@ == b@.limbs);
+            a@.lemma_view_eq_from_frac();
+            b@.lemma_view_eq_from_frac();
+            // a@.view() == from_frac_spec(a@.signed_value(), d)
+            // b@.view() == from_frac_spec(b@.signed_value(), d)
+        }
+
         if a.sign && !b.sign {
-            // a negative, b non-negative: a < b (unless both zero)
             let a_zero = is_all_zero(&a.limbs);
             let b_zero = is_all_zero(&b.limbs);
-            if a_zero && b_zero { 0i8 } else { -1i8 }
+            if a_zero && b_zero {
+                proof {
+                    // Both are zero: a.sv == 0 == b.sv
+                    // a.sign && wf => ltn != 0, but a_zero => ltn == 0. Contradiction!
+                    // Actually: a.sign && a_zero => wf canonical zero violated.
+                    // Wait: wf says sign ==> ltn != 0. a.sign is true, ltn == 0 => !wf.
+                    // But we have a.wf_spec() as precondition. So this branch is unreachable!
+                    // Actually a_zero means limbs_to_nat(a.limbs@) == 0.
+                    // wf: a.sign ==> limbs_to_nat(a@.limbs) != 0.
+                    // a.sign == a@.sign (from wf). And a@.sign ==> ltn(a@.limbs) != 0.
+                    // But ltn(a.limbs@) == ltn(a@.limbs) == 0. Contradiction with a@.sign.
+                    assert(false); // unreachable by wf
+                }
+                0i8
+            } else {
+                proof {
+                    // a is negative (sv < 0), b is non-negative (sv >= 0), and not both zero
+                    // So a.sv < 0 <= b.sv, meaning a < b
+                    let a_sv = a@.signed_value();
+                    let b_sv = b@.signed_value();
+                    assert(a_sv < 0);
+                    assert(b_sv >= 0);
+                    super::fixed_point::view_lemmas::lemma_from_frac_lt_same_denom(a_sv, b_sv, d);
+                }
+                -1i8
+            }
         } else if !a.sign && b.sign {
             let a_zero = is_all_zero(&a.limbs);
             let b_zero = is_all_zero(&b.limbs);
-            if a_zero && b_zero { 0i8 } else { 1i8 }
+            if a_zero && b_zero {
+                proof { assert(false); } // unreachable: b.sign && ltn==0 violates wf
+                0i8
+            } else {
+                proof {
+                    let a_sv = a@.signed_value();
+                    let b_sv = b@.signed_value();
+                    assert(a_sv >= 0);
+                    assert(b_sv < 0);
+                    super::fixed_point::view_lemmas::lemma_from_frac_lt_same_denom(b_sv, a_sv, d);
+                }
+                1i8
+            }
         } else if !a.sign && !b.sign {
-            // Both non-negative: compare magnitudes directly
             let n = a.limbs.len();
-            cmp_limbs(&a.limbs, &b.limbs, n)
+            let r = cmp_limbs(&a.limbs, &b.limbs, n);
+            proof {
+                let a_sv = a@.signed_value();
+                let b_sv = b@.signed_value();
+                // Both positive: sv == ltn(limbs)
+                assert(a_sv == limbs_to_nat(a@.limbs) as int);
+                assert(b_sv == limbs_to_nat(b@.limbs) as int);
+                if r < 0 {
+                    // ltn(a) < ltn(b) => a_sv < b_sv
+                    super::fixed_point::view_lemmas::lemma_from_frac_lt_same_denom(a_sv, b_sv, d);
+                } else if r == 0 {
+                    super::fixed_point::view_lemmas::lemma_from_frac_eqv_same_denom(a_sv, b_sv, d);
+                } else {
+                    super::fixed_point::view_lemmas::lemma_from_frac_lt_same_denom(b_sv, a_sv, d);
+                }
+            }
+            r
         } else {
-            // Both negative: larger magnitude means smaller value
             let n = a.limbs.len();
             let mag_cmp = cmp_limbs(&a.limbs, &b.limbs, n);
+            proof {
+                let a_sv = a@.signed_value();
+                let b_sv = b@.signed_value();
+                // Both negative: sv == -ltn(limbs)
+                assert(a_sv == -(limbs_to_nat(a@.limbs) as int));
+                assert(b_sv == -(limbs_to_nat(b@.limbs) as int));
+                // Larger magnitude => more negative => smaller
+                if mag_cmp > 0 {
+                    // ltn(a) > ltn(b) => -ltn(a) < -ltn(b) => a_sv < b_sv
+                    assert(a_sv < b_sv) by (nonlinear_arith)
+                        requires a_sv == -(limbs_to_nat(a@.limbs) as int),
+                                 b_sv == -(limbs_to_nat(b@.limbs) as int),
+                                 limbs_to_nat(a@.limbs) > limbs_to_nat(b@.limbs);
+                    super::fixed_point::view_lemmas::lemma_from_frac_lt_same_denom(a_sv, b_sv, d);
+                } else if mag_cmp < 0 {
+                    assert(b_sv < a_sv) by (nonlinear_arith)
+                        requires a_sv == -(limbs_to_nat(a@.limbs) as int),
+                                 b_sv == -(limbs_to_nat(b@.limbs) as int),
+                                 limbs_to_nat(b@.limbs) > limbs_to_nat(a@.limbs);
+                    super::fixed_point::view_lemmas::lemma_from_frac_lt_same_denom(b_sv, a_sv, d);
+                } else {
+                    super::fixed_point::view_lemmas::lemma_from_frac_eqv_same_denom(a_sv, b_sv, d);
+                }
+            }
             if mag_cmp > 0 { -1i8 } else if mag_cmp < 0 { 1i8 } else { 0i8 }
         }
     }

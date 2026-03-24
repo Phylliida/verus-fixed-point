@@ -114,4 +114,41 @@ pub proof fn lemma_from_frac_sub_same_denom(a: int, b: int, d: int)
     assert(Rational::from_frac_spec(b, d).neg_spec() == Rational::from_frac_spec(-b, d));
 }
 
+/// Same-denominator less-than: from_frac_spec(a, d).lt_spec(from_frac_spec(b, d)) iff a < b.
+pub proof fn lemma_from_frac_lt_same_denom(a: int, b: int, d: int)
+    requires d > 0, a < b,
+    ensures Rational::from_frac_spec(a, d).lt_spec(Rational::from_frac_spec(b, d)),
+{
+    // lt_spec: lhs.num * rhs.denom() < rhs.num * lhs.denom()
+    // Both have denom() == d (since d > 0, from_frac_spec takes the d > 0 branch)
+    // So: a * d < b * d, which holds iff a < b when d > 0
+    let lhs = Rational::from_frac_spec(a, d);
+    let rhs = Rational::from_frac_spec(b, d);
+    assert(lhs.num == a);
+    assert(rhs.num == b);
+    assert(lhs.denom() == d);
+    assert(rhs.denom() == d);
+    assert(a * d < b * d) by (nonlinear_arith)
+        requires a < b, d > 0;
+}
+
+/// Same-denominator less-than-or-equal.
+pub proof fn lemma_from_frac_le_same_denom(a: int, b: int, d: int)
+    requires d > 0, a <= b,
+    ensures Rational::from_frac_spec(a, d).le_spec(Rational::from_frac_spec(b, d)),
+{
+    let lhs = Rational::from_frac_spec(a, d);
+    let rhs = Rational::from_frac_spec(b, d);
+    assert(a * d <= b * d) by (nonlinear_arith)
+        requires a <= b, d > 0;
+}
+
+/// Same-denominator equivalence.
+pub proof fn lemma_from_frac_eqv_same_denom(a: int, b: int, d: int)
+    requires d > 0, a == b,
+    ensures Rational::from_frac_spec(a, d).eqv_spec(Rational::from_frac_spec(b, d)),
+{
+    Rational::lemma_eqv_reflexive(Rational::from_frac_spec(a, d));
+}
+
 } // verus!
