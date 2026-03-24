@@ -2269,20 +2269,64 @@ impl RuntimeFixedPointInterval {
         ensures
             result.wf_spec(),
             result@.same_format(a@),
+            result@.view().le_spec(a@.view()),
+            result@.view().le_spec(b@.view()),
     {
         let cmp = Self::cmp_signed_rfp(&a, &b);
-        if cmp <= 0 { a } else { b }
+        if cmp <= 0 {
+            proof {
+                // cmp <= 0 means a <= b (lt or eqv)
+                Rational::lemma_le_iff_lt_or_eqv(a@.view(), a@.view());
+                Rational::lemma_eqv_reflexive(a@.view());
+                // a.view() <= a.view() (reflexive)
+                // a.view() <= b.view() (from cmp)
+                if cmp < 0 {
+                    Rational::lemma_lt_implies_le(a@.view(), b@.view());
+                } else {
+                    Rational::lemma_eqv_implies_le(a@.view(), b@.view());
+                }
+            }
+            a
+        } else {
+            proof {
+                // cmp > 0 means b < a
+                Rational::lemma_le_iff_lt_or_eqv(b@.view(), b@.view());
+                Rational::lemma_eqv_reflexive(b@.view());
+                Rational::lemma_lt_implies_le(b@.view(), a@.view());
+            }
+            b
+        }
     }
 
-    /// Return the larger of two RuntimeFixedPoints (by signed comparison).
     pub fn max_rfp(a: RuntimeFixedPoint, b: RuntimeFixedPoint) -> (result: RuntimeFixedPoint)
         requires a.wf_spec(), b.wf_spec(), a@.same_format(b@),
         ensures
             result.wf_spec(),
             result@.same_format(a@),
+            a@.view().le_spec(result@.view()),
+            b@.view().le_spec(result@.view()),
     {
         let cmp = Self::cmp_signed_rfp(&a, &b);
-        if cmp >= 0 { a } else { b }
+        if cmp >= 0 {
+            proof {
+                Rational::lemma_le_iff_lt_or_eqv(a@.view(), a@.view());
+                Rational::lemma_eqv_reflexive(a@.view());
+                if cmp > 0 {
+                    Rational::lemma_lt_implies_le(b@.view(), a@.view());
+                } else {
+                    Rational::lemma_eqv_implies_le(b@.view(), a@.view());
+                    Rational::lemma_eqv_symmetric(a@.view(), b@.view());
+                }
+            }
+            a
+        } else {
+            proof {
+                Rational::lemma_le_iff_lt_or_eqv(b@.view(), b@.view());
+                Rational::lemma_eqv_reflexive(b@.view());
+                Rational::lemma_lt_implies_le(a@.view(), b@.view());
+            }
+            b
+        }
     }
 
     // General interval mul (all sign combinations) requires the exec comparison-
