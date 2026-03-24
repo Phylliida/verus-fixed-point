@@ -2854,6 +2854,8 @@ impl RuntimeFixedPointInterval {
         ensures
             result.lo.wf_spec(),
             result.hi.wf_spec(),
+            result.lo@.n == self.lo@.n,
+            result.lo@.frac == self.lo@.frac,
             result.exact@ == self.exact@.reciprocal_spec(),
     {
         let n = self.lo.limbs.len();
@@ -2907,6 +2909,11 @@ impl RuntimeFixedPointInterval {
         // For tight bounds, use mul_rfp on the lo endpoints
         let n = self.lo.limbs.len();
         let frac = self.frac_exec;
+        proof {
+            // recip.lo has same format as rhs.lo (from recip_newton ensures)
+            // self.lo has same format as rhs.lo (from precondition)
+            // So self.lo and recip.lo have the same format
+        }
         let product = Self::mul_rfp(&self.lo, &recip.lo);
         let product_reduced = Self::reduce_rfp_floor(&product, n, frac);
         let hi_copy = Self::neg_rfp(&Self::neg_rfp(&product_reduced));
