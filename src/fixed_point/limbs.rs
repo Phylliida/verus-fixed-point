@@ -787,11 +787,10 @@ pub proof fn lemma_limbs_to_nat_lowest(limbs: Seq<u32>)
     let tail = limbs.subrange(1, limbs.len() as int);
     assert(limbs_to_nat(limbs) == limbs[0] as nat + limb_base() * limbs_to_nat(tail));
     // limbs[0] < limb_base (since it's a u32 and limb_base = 2^32)
-    assert(limbs[0] as nat < limb_base());
-    // (a + B*c) % B == a % B == a when a < B
-    assert((limbs[0] as nat + limb_base() * limbs_to_nat(tail)) % limb_base()
-        == limbs[0] as nat) by (nonlinear_arith)
-        requires limbs[0] as nat < limb_base(), limb_base() > 0;
+    let lo = limbs[0] as nat;
+    assert(lo < limb_base());
+    assert((lo + limb_base() * limbs_to_nat(tail)) % limb_base() == lo) by (nonlinear_arith)
+        requires lo < limb_base(), limb_base() > 0;
 }
 
 /// The value without the lowest limb is value / limb_base.
@@ -802,12 +801,12 @@ pub proof fn lemma_limbs_to_nat_shift(limbs: Seq<u32>)
             == limbs_to_nat(limbs) / limb_base(),
 {
     let tail = limbs.subrange(1, limbs.len() as int);
-    assert(limbs_to_nat(limbs) == limbs[0] as nat + limb_base() * limbs_to_nat(tail));
-    assert(limbs[0] as nat < limb_base());
-    // (a + B*c) / B == c when 0 <= a < B
-    assert((limbs[0] as nat + limb_base() * limbs_to_nat(tail)) / limb_base()
+    let lo = limbs[0] as nat;
+    assert(limbs_to_nat(limbs) == lo + limb_base() * limbs_to_nat(tail));
+    assert(lo < limb_base());
+    assert((lo + limb_base() * limbs_to_nat(tail)) / limb_base()
         == limbs_to_nat(tail)) by (nonlinear_arith)
-        requires limbs[0] as nat < limb_base(), limb_base() > 0;
+        requires lo < limb_base(), limb_base() > 0;
 }
 
 /// Base-2^32 representation uniqueness:
