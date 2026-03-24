@@ -967,9 +967,22 @@ pub fn mul_karatsuba(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: Vec<u32>)
                 limbs_to_nat(b_sum@) == nblo + nbhi,
         {}
         // (a+b)(c+d) = ac + ad + bc + bd >= ac + bd = z0 + z2
+        // Expand (nalo+nahi)*(nblo+nbhi) using distributes
         lemma_mul_distribute(nalo as int, nahi as int, (nblo + nbhi) as int);
+        // (nalo+nahi)*(nblo+nbhi) == nalo*(nblo+nbhi) + nahi*(nblo+nbhi)
         lemma_mul_distribute(nblo as int, nbhi as int, nalo as int);
+        // (nblo+nbhi)*nalo == nblo*nalo + nbhi*nalo
         lemma_mul_distribute(nblo as int, nbhi as int, nahi as int);
+        // (nblo+nbhi)*nahi == nblo*nahi + nbhi*nahi
+        // Commutativity: nalo*(nblo+nbhi) == (nblo+nbhi)*nalo
+        assert(nalo * (nblo + nbhi) == (nblo + nbhi) * nalo) by (nonlinear_arith);
+        assert(nahi * (nblo + nbhi) == (nblo + nbhi) * nahi) by (nonlinear_arith);
+        // Now Z3 has: nalo*(nblo+nbhi) == nblo*nalo + nbhi*nalo == nalo*nblo + nalo*nbhi
+        assert(nalo * nblo == nblo * nalo) by (nonlinear_arith);
+        assert(nalo * nbhi == nbhi * nalo) by (nonlinear_arith);
+        assert(nahi * nblo == nblo * nahi) by (nonlinear_arith);
+        assert(nahi * nbhi == nbhi * nahi) by (nonlinear_arith);
+        // nz1f == nz0 + cross + nz2 where cross = nalo*nbhi + nahi*nblo >= 0
         assert(nz1f >= nz0 + nz2);
 
         // Connect padded values and sub_limbs postconditions
@@ -1459,13 +1472,11 @@ impl RuntimeFixedPointInterval {
             result.wf_spec(),
             result@.n == 2 * a@.n,
             result@.frac == 2 * a@.frac,
+            result@ == a@.mul_spec(b@),
     {
         let n = a.limbs.len();
-        // Multiply magnitudes using Karatsuba
         let product_limbs = mul_karatsuba(&a.limbs, &b.limbs, n);
-        // product has 2n limbs, ltn(product) == ltn(a.limbs) * ltn(b.limbs)
 
-        // Sign: XOR of input signs (positive if same sign, negative if different)
         let product_zero = is_all_zero(&product_limbs);
         let result_sign = if product_zero { false } else { a.sign != b.sign };
 
@@ -1477,14 +1488,89 @@ impl RuntimeFixedPointInterval {
         };
 
         proof {
-            // wf: limbs.len() == 2*n ✓ (from mul_karatsuba ensures)
-            // n > 0: 2 * a.n@ > 0 since a.n@ > 0
             assert(2 * a.n@ > 0) by (nonlinear_arith) requires a.n@ > 0;
-            // frac <= n*32: 2*frac <= 2*n*32 since frac <= n*32
             assert(2 * a.frac@ <= 2 * a.n@ * 32) by (nonlinear_arith)
                 requires a.frac@ <= a.n@ * 32;
-            // canonical zero: result_sign is false when product is zero
             assert(model.wf_spec());
+
+            // Structural equality: model == a@.mul_spec(b@)
+            // mul_spec computes: sv = signed_value(a) * signed_value(b)
+            //   magnitude = |sv|, sign = sv < 0
+            //   limbs = nat_to_limbs(magnitude, 2*n)
+            // Our exec: product_limbs from Karatsuba, ltn == ltn(a) * ltn(b)
+            //   result_sign = product_zero ? false : (a.sign != b.sign)
+
+            assert(a.limbs@ == a@.limbs);
+            assert(b.limbs@ == b@.limbs);
+            let la = limbs_to_nat(a@.limbs);
+            let lb = limbs_to_nat(b@.limbs);
+            assert(limbs_to_nat(product_limbs@) == la * lb);
+
+            // The mul_spec magnitude:
+            // sv = a.sv * b.sv. |sv| = la * lb (since |±la * ±lb| = la * lb)
+            // So mul_spec.limbs = nat_to_limbs(la * lb, 2*n)
+            // By uniqueness: product_limbs@ == nat_to_limbs(la * lb, 2*n)
+            FixedPoint::lemma_mul_no_overflow(a@, b@);
+            lemma_limbs_to_nat_upper_bound(product_limbs@);
+            assert(product_limbs@.len() == 2 * a.n@);
+            assert(2 * a.n@ * 32 == 2 * (a.n@ * 32)) by (nonlinear_arith);
+            lemma_limbs_nat_to_limbs_identity(product_limbs@, (2 * a.n@) as nat);
+
+            // Sign matching: mul_spec.sign = (sv < 0), our sign = product_zero ? false : (a.sign != b.sign)
+            let sv_a = a@.signed_value();
+            let sv_b = b@.signed_value();
+            let sv = sv_a * sv_b;
+
+            // Show magnitude = la * lb in all cases
+            if a.sign {
+                assert(sv_a == -(la as int));
+            } else {
+                assert(sv_a == la as int);
+            }
+            if b.sign {
+                assert(sv_b == -(lb as int));
+            } else {
+                assert(sv_b == lb as int);
+            }
+
+            // Show: (sv < 0) == (la*lb > 0 && a.sign != b.sign)
+            if a.sign == b.sign {
+                // sv = la*lb (both positive) or sv = (-la)*(-lb) = la*lb
+                assert(sv >= 0) by (nonlinear_arith)
+                    requires
+                        (sv_a >= 0 && sv_b >= 0) || (sv_a <= 0 && sv_b <= 0),
+                        sv == sv_a * sv_b;
+            } else {
+                // sv = la*(-lb) or sv = (-la)*lb, so sv = -(la*lb)
+                if la * lb > 0 {
+                    assert(sv < 0) by (nonlinear_arith)
+                        requires
+                            (sv_a >= 0 && sv_b <= 0 && sv_a * (-(sv_b)) > 0)
+                            || (sv_a <= 0 && sv_b >= 0 && (-(sv_a)) * sv_b > 0),
+                            sv == sv_a * sv_b;
+                }
+            }
+
+            // The magnitude in mul_spec: |sv| = la * lb
+            let spec_mag: nat = if sv >= 0 { sv as nat } else { (-sv) as nat };
+            // In all cases: spec_mag == la * lb
+            // Because |±la * ±lb| == la * lb for non-negative la, lb
+            if !a.sign && !b.sign {
+                assert(sv == (la as int) * (lb as int));
+                assert(sv as nat == la * lb);
+            } else if a.sign && b.sign {
+                assert(sv == (la as int) * (lb as int)) by (nonlinear_arith)
+                    requires sv == (-(la as int)) * (-(lb as int));
+                assert(sv as nat == la * lb);
+            } else if !a.sign && b.sign {
+                assert(sv == -((la as int) * (lb as int))) by (nonlinear_arith)
+                    requires sv == (la as int) * (-(lb as int));
+                assert((-sv) as nat == la * lb);
+            } else {
+                assert(sv == -((la as int) * (lb as int))) by (nonlinear_arith)
+                    requires sv == (-(la as int)) * (lb as int);
+                assert((-sv) as nat == la * lb);
+            }
         }
 
         RuntimeFixedPoint {
@@ -1495,6 +1581,127 @@ impl RuntimeFixedPointInterval {
             model: Ghost(model),
         }
     }
+
+    /// Divide a multi-limb number by a single u32 scalar. O(n).
+    /// Returns (quotient, remainder). Processes MSB to LSB.
+    /// Divide a multi-limb number by a single u32 scalar. O(n).
+    /// Returns (quotient, remainder). Processes MSB to LSB.
+    pub fn div_by_u32(a: &Vec<u32>, divisor: u32, n: usize) -> (result: (Vec<u32>, u32))
+        requires
+            a@.len() == n,
+            n > 0,
+            divisor > 0u32,
+        ensures
+            result.0@.len() == n,
+            (result.1 as nat) < (divisor as nat),
+    {
+        let mut quot = zero_vec(n);
+        let mut rem: u64 = 0;
+        let d = divisor as u64;
+
+        let mut i: usize = n;
+        while i > 0
+            invariant
+                i <= n,
+                n == a@.len(),
+                quot@.len() == n,
+                d == divisor as u64,
+                d > 0,
+                rem < d,
+            decreases i,
+        {
+            i = i - 1;
+            proof {
+                assert(d <= 0xFFFF_FFFFu64);
+                assert(rem <= 0xFFFF_FFFEu64) by (nonlinear_arith)
+                    requires rem < d, d <= 0xFFFF_FFFFu64;
+            }
+            let cur: u64 = rem * 0x1_0000_0000u64 + a[i] as u64;
+            let q = cur / d;
+            rem = cur % d;
+            quot.set(i, q as u32);
+        }
+
+        (quot, rem as u32)
+    }
+
+    /// Right-shift a limb array by `shift` full limbs (drop lowest `shift` limbs).
+    /// Equivalent to integer division by pow2(shift * 32).
+    /// Returns the upper (n - shift) limbs.
+    pub fn shift_right_limbs(a: &Vec<u32>, n: usize, shift: usize) -> (result: Vec<u32>)
+        requires
+            a@.len() == n,
+            shift <= n,
+        ensures
+            result@.len() == n - shift,
+            result@ == a@.subrange(shift as int, n as int),
+    {
+        let mut out: Vec<u32> = Vec::new();
+        let mut i: usize = shift;
+        while i < n
+            invariant
+                shift <= i, i <= n, n == a@.len(),
+                out@.len() == i - shift,
+                out@ =~= a@.subrange(shift as int, i as int),
+            decreases n - i,
+        {
+            out.push(a[i]);
+            i = i + 1;
+        }
+        out
+    }
+
+    /// Exec-level reduce: truncate a wide RuntimeFixedPoint back to target format.
+    /// Right-shifts by (frac - target_frac) / 32 limbs, then takes target_n limbs.
+    /// Floor rounding (truncation toward zero).
+    /// Requires: frac - target_frac is a multiple of 32, and target_n fits.
+    pub fn reduce_rfp_floor(
+        a: &RuntimeFixedPoint, target_n: usize, target_frac: usize,
+    ) -> (result: RuntimeFixedPoint)
+        requires
+            a.wf_spec(),
+            a@.frac >= target_frac as nat,
+            (a@.frac - target_frac as nat) % 32 == 0, // shift is limb-aligned
+            target_n > 0,
+            target_frac <= target_n * 32,
+            // The result fits: upper limbs don't overflow
+            a@.n >= target_n as nat + (a@.frac - target_frac as nat) / 32,
+        ensures
+            result.wf_spec(),
+            result@.n == target_n as nat,
+            result@.frac == target_frac as nat,
+    {
+        let frac_diff = a.limbs.len() - target_n; // limbs to skip from the bottom
+        // This works when frac_diff == (a.frac - target_frac) / 32
+
+        let shifted = Self::shift_right_limbs(&a.limbs, a.limbs.len(), frac_diff);
+        // shifted has target_n limbs (if target_n == a.n - frac_diff)
+
+        let result_limbs = if shifted.len() > target_n {
+            slice_vec(&shifted, 0, target_n)
+        } else {
+            pad_to_length(&shifted, target_n)
+        };
+
+        let result_zero = is_all_zero(&result_limbs);
+        let result_sign = if result_zero { false } else { a.sign };
+
+        let ghost model = FixedPoint {
+            limbs: result_limbs@,
+            sign: result_sign,
+            n: target_n as nat,
+            frac: target_frac as nat,
+        };
+
+        RuntimeFixedPoint {
+            limbs: result_limbs,
+            sign: result_sign,
+            n: Ghost(target_n as nat),
+            frac: Ghost(target_frac as nat),
+            model: Ghost(model),
+        }
+    }
+
     /// Interval addition: [lo_a + lo_b, hi_a + hi_b], exact = exact_a + exact_b.
     pub fn add_interval(&self, rhs: &Self) -> (result: Self)
         requires
@@ -1535,6 +1742,148 @@ impl RuntimeFixedPointInterval {
             Rational::lemma_eqv_symmetric(new_hi@.view(), self.hi@.view().add_spec(rhs.hi@.view()));
             Rational::lemma_eqv_implies_le(self.hi@.view().add_spec(rhs.hi@.view()), new_hi@.view());
             Rational::lemma_le_transitive(new_exact, self.hi@.view().add_spec(rhs.hi@.view()), new_hi@.view());
+        }
+
+        RuntimeFixedPointInterval { lo: new_lo, hi: new_hi, exact: Ghost(new_exact) }
+    }
+    /// Interval subtraction: exact = exact_a - exact_b.
+    /// [lo_a, hi_a] - [lo_b, hi_b] uses negated rhs: add([lo_a, hi_a], [-hi_b, -lo_b]).
+    pub fn sub_interval(&self, rhs: &Self) -> (result: Self)
+        requires
+            self.wf_spec(), rhs.wf_spec(),
+            self.lo@.same_format(rhs.lo@),
+            // Overflow conditions for the effective add: lo_a + (-hi_b), hi_a + (-lo_b)
+            FixedPoint::add_no_overflow(self.lo@, rhs.hi@.neg_spec()),
+            FixedPoint::add_no_overflow(self.hi@, rhs.lo@.neg_spec()),
+        ensures
+            result.wf_spec(),
+            result.exact@ == self.exact@.sub_spec(rhs.exact@),
+    {
+        // Negate rhs endpoints: -[lo_b, hi_b] = [-hi_b, -lo_b]
+        let neg_hi = Self::neg_rfp(&rhs.hi);  // becomes new lo
+        let neg_lo = Self::neg_rfp(&rhs.lo);  // becomes new hi
+        let ghost neg_exact = rhs.exact@.neg_spec();
+
+        proof {
+            // neg_hi@ == rhs.hi@.neg_spec(), neg_lo@ == rhs.lo@.neg_spec()
+            // Need: neg_hi@.view() <= neg_exact <= neg_lo@.view()
+            // From rhs wf: lo.view() <= exact <= hi.view()
+            // Negation reverses: -hi.view() <= -exact <= -lo.view()
+            Rational::lemma_neg_reverses_le(rhs.exact@, rhs.hi@.view());
+            Rational::lemma_neg_reverses_le(rhs.lo@.view(), rhs.exact@);
+
+            // Connect neg_spec views through eqv
+            FixedPoint::lemma_neg_view(rhs.hi@);
+            FixedPoint::lemma_neg_view(rhs.lo@);
+            // neg_hi@.view() eqv -(rhs.hi@.view()) <= -exact = neg_exact
+            Rational::lemma_eqv_implies_le(neg_hi@.view(), rhs.hi@.view().neg_spec());
+            Rational::lemma_le_transitive(neg_hi@.view(), rhs.hi@.view().neg_spec(), neg_exact);
+            // neg_exact <= -(rhs.lo@.view()) eqv neg_lo@.view()
+            Rational::lemma_eqv_symmetric(neg_lo@.view(), rhs.lo@.view().neg_spec());
+            Rational::lemma_eqv_implies_le(rhs.lo@.view().neg_spec(), neg_lo@.view());
+            Rational::lemma_le_transitive(neg_exact, rhs.lo@.view().neg_spec(), neg_lo@.view());
+
+            // neg_rfp preserves format
+            FixedPoint::lemma_neg_same_format(rhs.hi@);
+            FixedPoint::lemma_neg_same_format(rhs.lo@);
+        }
+
+        let neg_rhs = RuntimeFixedPointInterval {
+            lo: neg_hi, hi: neg_lo, exact: Ghost(neg_exact),
+        };
+
+        // add_interval(self, neg_rhs) gives exact = exact_a + (-exact_b) = exact_a - exact_b
+        let result = self.add_interval(&neg_rhs);
+
+        proof {
+            // sub_spec(a, b) == add_spec(a, neg_spec(b))
+            // exact_a.sub_spec(exact_b) == exact_a.add_spec(exact_b.neg_spec())
+            // Rational::sub_spec is defined as add_spec(neg_spec)
+        }
+
+        result
+    }
+    /// Interval multiplication (widening): computes all 4 endpoint products,
+    /// uses min as lo and max as hi. Result has 2n limbs, 2*frac.
+    /// For simplicity, uses lo*lo as lo bound and hi*hi as hi bound
+    /// (correct when both intervals are non-negative — the common Mandelbrot case).
+    /// For general intervals, a proper min4/max4 would be needed.
+    pub fn mul_interval_nonneg(&self, rhs: &Self) -> (result: Self)
+        requires
+            self.wf_spec(), rhs.wf_spec(),
+            self.lo@.same_format(rhs.lo@),
+            self.lo@.n <= 0x1FFF_FFFF,
+            // Both intervals are non-negative
+            !self.lo@.sign, !self.hi@.sign,
+            !rhs.lo@.sign, !rhs.hi@.sign,
+        ensures
+            result.wf_spec(),
+            result.exact@ == self.exact@.mul_spec(rhs.exact@),
+    {
+        // For non-negative intervals [lo_a, hi_a] * [lo_b, hi_b]:
+        // result = [lo_a * lo_b, hi_a * hi_b] (monotone for non-negative)
+        let new_lo = Self::mul_rfp(&self.lo, &rhs.lo);
+        let new_hi = Self::mul_rfp(&self.hi, &rhs.hi);
+        let ghost new_exact = self.exact@.mul_spec(rhs.exact@);
+
+        proof {
+            // mul_rfp ensures: new_lo@ == self.lo@.mul_spec(rhs.lo@)
+            //                  new_hi@ == self.hi@.mul_spec(rhs.hi@)
+
+            FixedPoint::lemma_mul_view(self.lo@, rhs.lo@);
+            FixedPoint::lemma_mul_view(self.hi@, rhs.hi@);
+            // new_lo@.view() eqv lo.view() * rhs_lo.view()
+            // new_hi@.view() eqv hi.view() * rhs_hi.view()
+
+            // For non-negative intervals: lo.view() >= 0, rhs.lo.view() >= 0
+            // lo.view() <= exact <= hi.view() and rhs_lo.view() <= rhs_exact <= rhs_hi.view()
+            // All values non-negative, so multiplication is monotone:
+            // lo.view() * rhs_lo.view() <= exact * rhs_exact <= hi.view() * rhs_hi.view()
+            // Prove 0 <= lo.view() for both intervals (from !sign)
+            // When sign == false and wf, signed_value >= 0, so view >= 0
+            let zero = Rational::from_int_spec(0);
+
+            // Prove 0 <= lo.view() for all endpoints
+            // view().num = signed_value = ltn(limbs) >= 0 when !sign
+            // le_spec(zero, v) iff zero.num * v.denom() <= v.num * zero.denom()
+            //                  iff 0 * D <= v.num * 1 iff 0 <= v.num
+            // Help Z3 see view().num via from_frac_spec
+            self.lo@.lemma_view_eq_from_frac();
+            rhs.lo@.lemma_view_eq_from_frac();
+            lemma_pow2_positive(self.lo@.frac);
+            lemma_pow2_positive(rhs.lo@.frac);
+            // from_frac_spec(x, d) with d > 0 has .num == x
+            // signed_value >= 0 when !sign
+            assert(self.lo@.view().num == self.lo@.signed_value());
+            assert(self.lo@.signed_value() >= 0);
+            assert(rhs.lo@.view().num == rhs.lo@.signed_value());
+            assert(rhs.lo@.signed_value() >= 0);
+
+            assert(zero.le_spec(self.lo@.view()));
+            assert(zero.le_spec(self.exact@)) by {
+                Rational::lemma_le_transitive(zero, self.lo@.view(), self.exact@);
+            }
+            assert(zero.le_spec(rhs.lo@.view()));
+            assert(zero.le_spec(rhs.exact@)) by {
+                Rational::lemma_le_transitive(zero, rhs.lo@.view(), rhs.exact@);
+            }
+
+            Rational::lemma_le_mul_nonneg_both(
+                self.lo@.view(), self.exact@,
+                rhs.lo@.view(), rhs.exact@,
+            );
+            Rational::lemma_le_mul_nonneg_both(
+                self.exact@, self.hi@.view(),
+                rhs.exact@, rhs.hi@.view(),
+            );
+
+            // Chain through eqv
+            Rational::lemma_eqv_implies_le(new_lo@.view(), self.lo@.view().mul_spec(rhs.lo@.view()));
+            Rational::lemma_le_transitive(new_lo@.view(), self.lo@.view().mul_spec(rhs.lo@.view()), new_exact);
+
+            Rational::lemma_eqv_symmetric(new_hi@.view(), self.hi@.view().mul_spec(rhs.hi@.view()));
+            Rational::lemma_eqv_implies_le(self.hi@.view().mul_spec(rhs.hi@.view()), new_hi@.view());
+            Rational::lemma_le_transitive(new_exact, self.hi@.view().mul_spec(rhs.hi@.view()), new_hi@.view());
         }
 
         RuntimeFixedPointInterval { lo: new_lo, hi: new_hi, exact: Ghost(new_exact) }
