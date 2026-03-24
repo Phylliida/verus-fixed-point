@@ -1856,6 +1856,35 @@ impl RuntimeFixedPointInterval {
         }
     }
 
+    /// Multiply then reduce: a * b at N-limb precision.
+    /// Chains mul_rfp (widens to 2N) → reduce_rfp_floor (truncates back to N).
+    /// The standard operation for fixed-point iteration loops.
+    pub fn mul_reduce_rfp(a: &RuntimeFixedPoint, b: &RuntimeFixedPoint, frac: usize) -> (result: RuntimeFixedPoint)
+        requires
+            a.wf_spec(), b.wf_spec(),
+            a@.same_format(b@),
+            a@.n <= 0x0FFF_FFFF,
+            a@.frac == frac as nat,
+            frac as nat % 32 == 0,
+            frac < a@.n * 32,
+        ensures
+            result.wf_spec(),
+            result@.n == a@.n,
+            result@.frac == frac as nat,
+    {
+        let n = a.limbs.len();
+        let wide = Self::mul_rfp(a, b);
+        proof {
+            assert(wide@.n == 2 * a@.n);
+            assert(wide@.frac == 2 * frac as nat);
+            assert((wide@.frac - frac as nat) == frac as nat);
+            assert((frac as nat) % 32 == 0);
+            assert(wide@.n >= n as nat + frac as nat / 32) by (nonlinear_arith)
+                requires wide@.n == 2 * a@.n, frac < a@.n * 32, n == a@.n;
+        }
+        Self::reduce_rfp_floor(&wide, n, frac)
+    }
+
     /// Signed subtraction: a - b = a + (-b).
     pub fn sub_rfp(a: &RuntimeFixedPoint, b: &RuntimeFixedPoint) -> (result: RuntimeFixedPoint)
         requires
