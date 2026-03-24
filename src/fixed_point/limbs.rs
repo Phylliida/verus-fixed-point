@@ -643,10 +643,6 @@ pub proof fn lemma_karatsuba_no_overflow(
     P_sub: nat,
 )
     requires
-        ltn_a < bound, ltn_b < bound, bound > 0,
-        z0 == ltn_a * ltn_b,  // This should be z0 from a_lo*b_lo — caller provides correct values
-        // Actually, let me make this more abstract:
-        // z1_full >= z0 + z2  (cross terms are non-negative)
         z1_full >= z0 + z2,
         // sub_limbs #1: ltn_z1_tmp + z0 == z1_full + bw1 * P_sub
         ltn_z1_tmp + z0 == z1_full + bw1 * P_sub,
