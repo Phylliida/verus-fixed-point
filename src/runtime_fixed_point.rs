@@ -1253,6 +1253,7 @@ impl RuntimeFixedPointInterval {
             result.wf_spec(),
             result@.n == a@.n,
             result@.frac == a@.frac,
+            result@ == a@.add_spec(b@),
     {
         let n = a.limbs.len();
 
@@ -1299,9 +1300,19 @@ impl RuntimeFixedPointInterval {
                         limbs_to_nat(sum_limbs@) < p,
                         carry <= 1,
                 {}
-                // Canonical zero: result_sign = a.sign only when not all zero
-                // So if result_sign, then !is_all_zero, so ltn != 0
                 assert(model.wf_spec());
+
+                // Uniqueness: model == a@.add_spec(b@)
+                // add_spec result has limbs = nat_to_limbs(magnitude, n)
+                // For same sign: magnitude = la + lb = ltn(sum_limbs@)
+                // By uniqueness: sum_limbs@ == nat_to_limbs(la + lb, n)
+                // Connect exec limbs to spec model limbs (from wf_spec)
+                assert(a.limbs@ == a@.limbs);
+                assert(b.limbs@ == b@.limbs);
+                assert((carry as nat) * p == 0nat) by (nonlinear_arith) requires carry == 0u32;
+                assert(limbs_to_nat(sum_limbs@) == la + lb);
+                lemma_limbs_nat_to_limbs_identity(sum_limbs@, a.n@);
+                assert(sum_limbs@ =~= nat_to_limbs(la + lb, a.n@));
             }
 
             RuntimeFixedPoint {
@@ -1313,29 +1324,78 @@ impl RuntimeFixedPointInterval {
             // Different sign: compare magnitudes, subtract smaller from larger
             let ord = cmp_limbs(&a.limbs, &b.limbs, n);
             if ord == 0i8 {
+                // |a| == |b| with opposite signs: result is zero
                 let z = zero_vec(n);
                 let ghost model = FixedPoint { limbs: z@, sign: false, n: a.n@, frac: a.frac@ };
-                proof { assert(model.wf_spec()); }
+                proof {
+                    assert(model.wf_spec());
+                    // Uniqueness: add_spec magnitude = |sv_a + sv_b| = |±la ∓ la| = 0
+                    assert(a.limbs@ == a@.limbs);
+                    assert(b.limbs@ == b@.limbs);
+                    let la = limbs_to_nat(a@.limbs);
+                    let lb = limbs_to_nat(b@.limbs);
+                    assert(la == lb);
+                    // nat_to_limbs(0, n) == z@ (all zeros)
+                    lemma_nat_to_limbs_zero(a.n@);
+                    lemma_limbs_to_nat_all_zeros(a.n@);
+                }
                 RuntimeFixedPoint {
                     limbs: z, sign: false,
                     n: Ghost(a.n@), frac: Ghost(a.frac@),
                     model: Ghost(model),
                 }
             } else if ord > 0i8 {
+                // |a| > |b|: magnitude = |a| - |b|
                 let (diff, borrow) = sub_limbs(&a.limbs, &b.limbs, n);
                 let result_sign = if is_all_zero(&diff) { false } else { a.sign };
                 let ghost model = FixedPoint { limbs: diff@, sign: result_sign, n: a.n@, frac: a.frac@ };
-                proof { assert(model.wf_spec()); }
+                proof {
+                    assert(model.wf_spec());
+                    assert(a.limbs@ == a@.limbs);
+                    assert(b.limbs@ == b@.limbs);
+                    let la = limbs_to_nat(a@.limbs);
+                    let lb = limbs_to_nat(b@.limbs);
+                    // borrow == 0 since |a| > |b|
+                    lemma_limbs_to_nat_upper_bound(diff@);
+                    assert(borrow == 0) by (nonlinear_arith)
+                        requires
+                            limbs_to_nat(diff@) + lb == la + (borrow as nat) * pow2((n * 32) as nat),
+                            la > lb,
+                            limbs_to_nat(diff@) < pow2((n * 32) as nat),
+                            borrow <= 1,
+                    {}
+                    assert((borrow as nat) * pow2((a.n@ * 32) as nat) == 0nat) by (nonlinear_arith) requires borrow == 0u32;
+                    assert(limbs_to_nat(diff@) == la - lb);
+                    lemma_limbs_nat_to_limbs_identity(diff@, a.n@);
+                }
                 RuntimeFixedPoint {
                     limbs: diff, sign: result_sign,
                     n: Ghost(a.n@), frac: Ghost(a.frac@),
                     model: Ghost(model),
                 }
             } else {
+                // |a| < |b|: magnitude = |b| - |a|
                 let (diff, borrow) = sub_limbs(&b.limbs, &a.limbs, n);
                 let result_sign = if is_all_zero(&diff) { false } else { b.sign };
                 let ghost model = FixedPoint { limbs: diff@, sign: result_sign, n: a.n@, frac: a.frac@ };
-                proof { assert(model.wf_spec()); }
+                proof {
+                    assert(model.wf_spec());
+                    assert(a.limbs@ == a@.limbs);
+                    assert(b.limbs@ == b@.limbs);
+                    let la = limbs_to_nat(a@.limbs);
+                    let lb = limbs_to_nat(b@.limbs);
+                    lemma_limbs_to_nat_upper_bound(diff@);
+                    assert(borrow == 0) by (nonlinear_arith)
+                        requires
+                            limbs_to_nat(diff@) + la == lb + (borrow as nat) * pow2((n * 32) as nat),
+                            lb > la,
+                            limbs_to_nat(diff@) < pow2((n * 32) as nat),
+                            borrow <= 1,
+                    {}
+                    assert((borrow as nat) * pow2((a.n@ * 32) as nat) == 0nat) by (nonlinear_arith) requires borrow == 0u32;
+                    assert(limbs_to_nat(diff@) == lb - la);
+                    lemma_limbs_nat_to_limbs_identity(diff@, a.n@);
+                }
                 RuntimeFixedPoint {
                     limbs: diff, sign: result_sign,
                     n: Ghost(a.n@), frac: Ghost(a.frac@),
