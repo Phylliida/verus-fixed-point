@@ -114,4 +114,12 @@ pub proof fn lemma_pow2_32()
     assert(pow2(32) == 65536nat * 65536nat);
 }
 
+/// pow2(2 * n) == pow2(n) * pow2(n).
+pub proof fn lemma_pow2_double(n: nat)
+    ensures pow2((2 * n) as nat) == pow2(n) * pow2(n),
+{
+    lemma_pow2_add(n, n);
+    assert(n + n == 2 * n);
+}
+
 } // verus!

@@ -5,6 +5,9 @@ pub mod pow2;
 pub mod limbs;
 pub mod constructors;
 pub mod comparison;
+pub mod view_lemmas;
+pub mod arithmetic;
+pub mod promotion;
 
 verus! {
 
@@ -47,6 +50,23 @@ impl FixedPoint {
     /// Two FixedPoints have the same format (same number of limbs and fractional bits).
     pub open spec fn same_format(self, other: FixedPoint) -> bool {
         self.n == other.n && self.frac == other.frac
+    }
+
+    /// The signed integer magnitude: (-1)^sign * limbs_to_nat(limbs).
+    /// This is the numerator of the rational before dividing by 2^frac.
+    pub open spec fn signed_value(self) -> int {
+        if self.sign { -(limbs::limbs_to_nat(self.limbs) as int) } else { limbs::limbs_to_nat(self.limbs) as int }
+    }
+
+    /// view() == from_frac_spec(signed_value(), pow2(frac)).
+    pub proof fn lemma_view_eq_from_frac(self)
+        requires self.wf_spec(),
+        ensures self.view() == Rational::from_frac_spec(self.signed_value(), pow2::pow2(self.frac) as int),
+    {
+        // Both sides unfold to the same expression.
+        let magnitude = limbs::limbs_to_nat(self.limbs);
+        let sign_factor: int = if self.sign { -1 } else { 1 };
+        assert(sign_factor * (magnitude as int) == self.signed_value());
     }
 }
 
