@@ -1817,7 +1817,27 @@ impl RuntimeFixedPointInterval {
                 assert(q_sub[0] == q as u32);
                 assert(q_sub.subrange(1, q_sub.len() as int) =~= pre_set_tail);
 
-                // Set ghosts to the actual subrange values
+                // Unfold ltn for a_sub and q_sub to connect to algebraic proof
+                // ltn(a_sub) = a[i] + BASE * ltn(a[i+1..n]) = a[i] + BASE * old_acc_a
+                let old_acc_a = acc_a;
+                let old_acc_q = acc_q;
+                assert(limbs_to_nat(a_sub) == a@[i as int] as nat + limb_base() * old_acc_a);
+                // Help Z3 unfold limbs_to_nat for q_sub
+                assert(limbs_to_nat(q_sub)
+                    == q_sub[0] as nat + limb_base() * limbs_to_nat(q_sub.subrange(1, q_sub.len() as int)));
+                // q < BASE: since cur = rem*BASE + a[i] < d*BASE, q = cur/d < BASE
+                let ai64 = a@[i as int] as u64;
+                assert(ai64 <= 0xFFFF_FFFFu64) by { assert(a@[i as int] <= 0xFFFF_FFFFu32); }
+                assert(cur < d * 0x1_0000_0000u64) by (nonlinear_arith)
+                    requires cur == rem * 0x1_0000_0000u64 + ai64, rem < d, ai64 <= 0xFFFF_FFFFu64;
+                assert(q < 0x1_0000_0000u64) by (nonlinear_arith)
+                    requires cur < d * 0x1_0000_0000u64, q == cur / d, d > 0;
+                assert(q_sub[0] as nat == q as nat);
+                assert(limbs_to_nat(q_sub.subrange(1, q_sub.len() as int)) == limbs_to_nat(pre_set_tail));
+                assert(limbs_to_nat(pre_set_tail) == old_acc_q);
+                assert(limbs_to_nat(q_sub) == q as nat + limb_base() * old_acc_q);
+
+                // Set ghosts
                 acc_a = limbs_to_nat(a_sub);
                 acc_q = limbs_to_nat(q_sub);
             }
