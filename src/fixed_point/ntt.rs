@@ -495,10 +495,12 @@ pub fn carry_propagate(coeffs: &Vec<RuntimeModularInt>, n: usize) -> (result: Ve
             i <= n,
             out@.len() == i,
             coeffs@.len() == n,
+            carry <= 0xFFFF_FFFFu64,
         decreases n - i,
     {
-        // coeffs[i].val < p <= 0xFFFFFFFF, carry bounded
-        let val: u64 = coeffs[i].val as u64 + carry;
+        let c_val = coeffs[i].val as u64;
+        // c_val <= 0xFFFF_FFFF, carry <= 0xFFFF_FFFF, sum fits in u64
+        let val: u64 = c_val + carry;
         let digit = (val % 0x1_0000_0000u64) as u32;
         carry = val / 0x1_0000_0000u64;
         out.push(digit);
