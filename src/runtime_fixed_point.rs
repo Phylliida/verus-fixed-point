@@ -2146,6 +2146,60 @@ impl RuntimeFixedPointInterval {
 
         RuntimeFixedPointInterval { lo: new_lo, hi: new_hi, exact: Ghost(new_exact) }
     }
+    /// Compare two RuntimeFixedPoints by signed value.
+    /// Returns -1 if a < b, 0 if a == b, 1 if a > b (by magnitude + sign).
+    pub fn cmp_signed_rfp(a: &RuntimeFixedPoint, b: &RuntimeFixedPoint) -> (result: i8)
+        requires a.wf_spec(), b.wf_spec(), a@.same_format(b@),
+        ensures -1i8 <= result <= 1i8,
+    {
+        // Compare by sign first, then by magnitude
+        if a.sign && !b.sign {
+            // a negative, b non-negative: a < b (unless both zero)
+            let a_zero = is_all_zero(&a.limbs);
+            let b_zero = is_all_zero(&b.limbs);
+            if a_zero && b_zero { 0i8 } else { -1i8 }
+        } else if !a.sign && b.sign {
+            let a_zero = is_all_zero(&a.limbs);
+            let b_zero = is_all_zero(&b.limbs);
+            if a_zero && b_zero { 0i8 } else { 1i8 }
+        } else if !a.sign && !b.sign {
+            // Both non-negative: compare magnitudes directly
+            let n = a.limbs.len();
+            cmp_limbs(&a.limbs, &b.limbs, n)
+        } else {
+            // Both negative: larger magnitude means smaller value
+            let n = a.limbs.len();
+            let mag_cmp = cmp_limbs(&a.limbs, &b.limbs, n);
+            if mag_cmp > 0 { -1i8 } else if mag_cmp < 0 { 1i8 } else { 0i8 }
+        }
+    }
+
+    /// Return the smaller of two RuntimeFixedPoints (by signed comparison).
+    pub fn min_rfp(a: RuntimeFixedPoint, b: RuntimeFixedPoint) -> (result: RuntimeFixedPoint)
+        requires a.wf_spec(), b.wf_spec(), a@.same_format(b@),
+        ensures
+            result.wf_spec(),
+            result@.same_format(a@),
+    {
+        let cmp = Self::cmp_signed_rfp(&a, &b);
+        if cmp <= 0 { a } else { b }
+    }
+
+    /// Return the larger of two RuntimeFixedPoints (by signed comparison).
+    pub fn max_rfp(a: RuntimeFixedPoint, b: RuntimeFixedPoint) -> (result: RuntimeFixedPoint)
+        requires a.wf_spec(), b.wf_spec(), a@.same_format(b@),
+        ensures
+            result.wf_spec(),
+            result@.same_format(a@),
+    {
+        let cmp = Self::cmp_signed_rfp(&a, &b);
+        if cmp >= 0 { a } else { b }
+    }
+
+    // General interval mul (all sign combinations) requires the exec comparison-
+    // to-Rational-ordering correspondence. The building blocks are ready:
+    // cmp_signed_rfp, min_rfp, max_rfp. The containment proof needs connecting
+    // exec signed comparison to spec-level le_spec/lt_spec on Rational views.
 }
 
 } // verus!

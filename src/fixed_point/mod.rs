@@ -12,6 +12,7 @@ pub mod reduce;
 pub mod interval;
 pub mod modular;
 pub mod ntt;
+pub mod newton_convergence;
 
 verus! {
 
