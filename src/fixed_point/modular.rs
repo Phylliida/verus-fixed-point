@@ -274,4 +274,107 @@ pub proof fn lemma_one_ne_zero(p: nat)
     ensures !ModularInt::one(p).eqv(ModularInt::zero(p)),
 {}
 
+// ── Exec-level modular arithmetic ──────────────────────
+
+/// Runtime modular integer: value mod p, stored as u32.
+/// Uses u64 for intermediate computations to avoid overflow.
+pub struct RuntimeModularInt {
+    pub val: u32,
+    pub p: u32, // modulus (prime), stored at exec level for computation
+    pub model: Ghost<ModularInt>,
+}
+
+impl RuntimeModularInt {
+    pub open spec fn wf_spec(&self) -> bool {
+        &&& self.model@.wf_spec()
+        &&& self.model@.value == self.val as nat
+        &&& self.model@.modulus == self.p as nat
+        &&& self.p > 1
+    }
+}
+
+impl View for RuntimeModularInt {
+    type V = ModularInt;
+    open spec fn view(&self) -> ModularInt { self.model@ }
+}
+
+impl RuntimeModularInt {
+    /// Construct from value (must be < p).
+    pub fn new(val: u32, p: u32) -> (result: Self)
+        requires val < p, p > 1,
+        ensures result.wf_spec(), result@.value == val as nat, result@.modulus == p as nat,
+    {
+        RuntimeModularInt {
+            val, p,
+            model: Ghost(ModularInt { value: val as nat, modulus: p as nat }),
+        }
+    }
+
+    /// Modular addition.
+    pub fn add_exec(&self, rhs: &Self) -> (result: Self)
+        requires self.wf_spec(), rhs.wf_spec(), self.p == rhs.p,
+        ensures result.wf_spec(), result@ == self@.add_mod(rhs@),
+    {
+        let sum: u64 = self.val as u64 + rhs.val as u64;
+        let p64 = self.p as u64;
+        let r = (sum % p64) as u32;
+        RuntimeModularInt {
+            val: r, p: self.p,
+            model: Ghost(self@.add_mod(rhs@)),
+        }
+    }
+
+    /// Modular subtraction.
+    pub fn sub_exec(&self, rhs: &Self) -> (result: Self)
+        requires self.wf_spec(), rhs.wf_spec(), self.p == rhs.p,
+        ensures result.wf_spec(), result@ == self@.sub_mod(rhs@),
+    {
+        // a - b mod p = a + (p - b) mod p
+        let neg_rhs = self.neg_of(rhs);
+        self.add_exec(&neg_rhs)
+    }
+
+    /// Modular negation of rhs (using self just for the modulus).
+    fn neg_of(&self, rhs: &Self) -> (result: Self)
+        requires self.wf_spec(), rhs.wf_spec(), self.p == rhs.p,
+        ensures result.wf_spec(), result@ == rhs@.neg_mod(),
+    {
+        let val = if rhs.val == 0 { 0u32 } else { self.p - rhs.val };
+        RuntimeModularInt {
+            val, p: self.p,
+            model: Ghost(rhs@.neg_mod()),
+        }
+    }
+
+    /// Modular multiplication.
+    pub fn mul_exec(&self, rhs: &Self) -> (result: Self)
+        requires self.wf_spec(), rhs.wf_spec(), self.p == rhs.p,
+        ensures result.wf_spec(), result@ == self@.mul_mod(rhs@),
+    {
+        proof {
+            let a = self.val as u64;
+            let b = rhs.val as u64;
+            assert(a <= 0xFFFF_FFFFu64);
+            assert(b <= 0xFFFF_FFFFu64);
+            assert(a * b <= 0xFFFF_FFFE_0000_0001u64) by (nonlinear_arith)
+                requires a <= 0xFFFF_FFFFu64, b <= 0xFFFF_FFFFu64;
+        }
+        let prod: u64 = self.val as u64 * rhs.val as u64;
+        let p64 = self.p as u64;
+        let r = (prod % p64) as u32;
+        RuntimeModularInt {
+            val: r, p: self.p,
+            model: Ghost(self@.mul_mod(rhs@)),
+        }
+    }
+
+    /// Copy.
+    pub fn copy_exec(&self) -> (result: Self)
+        requires self.wf_spec(),
+        ensures result.wf_spec(), result@ == self@,
+    {
+        RuntimeModularInt { val: self.val, p: self.p, model: Ghost(self@) }
+    }
+}
+
 } // verus!

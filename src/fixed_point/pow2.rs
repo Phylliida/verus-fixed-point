@@ -122,4 +122,19 @@ pub proof fn lemma_pow2_double(n: nat)
     assert(n + n == 2 * n);
 }
 
+/// Integer exponentiation: base^exp.
+pub open spec fn pow_int(base: int, exp: nat) -> int
+    decreases exp,
+{
+    if exp == 0 { 1 }
+    else { base * pow_int(base, (exp - 1) as nat) }
+}
+
+/// pow_int(base, 1) == base.
+pub proof fn lemma_pow_int_one(base: int)
+    ensures pow_int(base, 1) == base,
+{
+    assert(pow_int(base, 1) == base * pow_int(base, 0));
+}
+
 } // verus!
