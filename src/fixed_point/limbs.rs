@@ -249,4 +249,132 @@ pub proof fn lemma_limbs_to_nat_single_nonzero(n: nat, k: nat, v: u32)
     }
 }
 
+// ── nat_to_limbs: inverse of limbs_to_nat ──────────────────────
+
+/// Construct n little-endian u32 limbs from a natural number.
+/// Standard base-2^32 decomposition.
+pub open spec fn nat_to_limbs(val: nat, n: nat) -> Seq<u32>
+    decreases n,
+{
+    if n == 0 {
+        Seq::empty()
+    } else {
+        seq![(val % limb_base()) as u32].add(
+            nat_to_limbs(val / limb_base(), (n - 1) as nat))
+    }
+}
+
+/// nat_to_limbs produces a sequence of exactly n elements.
+pub proof fn lemma_nat_to_limbs_len(val: nat, n: nat)
+    ensures nat_to_limbs(val, n).len() == n,
+    decreases n,
+{
+    if n > 0 {
+        lemma_nat_to_limbs_len(val / limb_base(), (n - 1) as nat);
+    }
+}
+
+/// nat_to_limbs(0, n) produces all zeros.
+pub proof fn lemma_nat_to_limbs_zero(n: nat)
+    ensures nat_to_limbs(0nat, n) =~= Seq::new(n, |_i: int| 0u32),
+    decreases n,
+{
+    if n > 0 {
+        lemma_nat_to_limbs_zero((n - 1) as nat);
+        // 0 % B == 0, 0 / B == 0
+        assert(0nat % limb_base() == 0nat);
+        assert(0nat / limb_base() == 0nat);
+        // nat_to_limbs(0, n) == seq![0u32].add(nat_to_limbs(0, n-1))
+        // IH: nat_to_limbs(0, n-1) =~= Seq::new(n-1, |_| 0u32)
+        // seq![0u32].add(Seq::new(n-1, |_| 0u32)) =~= Seq::new(n, |_| 0u32)
+        let result = seq![0u32].add(nat_to_limbs(0nat, (n - 1) as nat));
+        let expected = Seq::new(n, |_i: int| 0u32);
+        assert(result.len() == n) by {
+            lemma_nat_to_limbs_len(0nat, (n - 1) as nat);
+        }
+        assert forall|i: int| 0 <= i < n as int implies result[i] == expected[i] by {
+            if i == 0 {
+                assert(result[0] == 0u32);
+            } else {
+                assert(result[i] == nat_to_limbs(0nat, (n - 1) as nat)[i - 1]);
+            }
+        }
+    }
+}
+
+/// Roundtrip: limbs_to_nat(nat_to_limbs(v, n)) == v, when v fits in n limbs.
+pub proof fn lemma_nat_to_limbs_roundtrip(val: nat, n: nat)
+    requires val < pow2((n * 32) as nat),
+    ensures limbs_to_nat(nat_to_limbs(val, n)) == val,
+    decreases n,
+{
+    if n == 0 {
+        // val < pow2(0) = 1, so val == 0
+        lemma_pow2_zero();
+    } else {
+        let lo = (val % limb_base()) as u32;
+        let hi = val / limb_base();
+        let result = nat_to_limbs(val, n);
+        let tail = nat_to_limbs(hi, (n - 1) as nat);
+
+        // result == seq![lo].add(tail), so result[0] == lo
+        // result.subrange(1, result.len()) =~= tail
+        lemma_nat_to_limbs_len(val, n);
+        lemma_nat_to_limbs_len(hi, (n - 1) as nat);
+        assert(result.subrange(1, result.len() as int) =~= tail);
+
+        // Need: hi < pow2((n-1) * 32)
+        // val < pow2(n * 32) = limb_base() * pow2((n-1) * 32)  [by pow2_add(32, (n-1)*32)]
+        // hi = val / limb_base() < pow2((n-1) * 32)
+        lemma_limb_base_is_pow2_32();
+        lemma_pow2_add(32, ((n - 1) * 32) as nat);
+        assert(32 + (n - 1) * 32 == n * 32);
+        assert(pow2((n * 32) as nat) == limb_base() * pow2(((n - 1) * 32) as nat));
+
+        // IH: limbs_to_nat(tail) == hi
+        lemma_nat_to_limbs_roundtrip(hi, (n - 1) as nat);
+
+        // limbs_to_nat(result) = lo + limb_base() * limbs_to_nat(tail)
+        //                      = lo + limb_base() * hi
+        //                      = (val % B) + B * (val / B) = val
+        assert(limbs_to_nat(result) == lo as nat + limb_base() * hi);
+        assert(lo as nat + limb_base() * hi == val) by (nonlinear_arith)
+            requires
+                lo as nat == val % limb_base(),
+                hi == val / limb_base(),
+                limb_base() > 0,
+        {
+        }
+    }
+}
+
+/// Appending extra zero limbs to a sequence preserves its value.
+pub proof fn lemma_limbs_to_nat_append_zeros(limbs: Seq<u32>, extra: nat)
+    ensures limbs_to_nat(limbs.add(Seq::new(extra, |_i: int| 0u32))) == limbs_to_nat(limbs),
+    decreases extra,
+{
+    if extra == 0 {
+        assert(Seq::new(0nat, |_i: int| 0u32) =~= Seq::<u32>::empty());
+        assert(limbs.add(Seq::<u32>::empty()) =~= limbs);
+    } else {
+        // limbs ++ zeros(extra) == (limbs ++ zeros(extra-1)).push(0)
+        let zeros_prev = Seq::new((extra - 1) as nat, |_i: int| 0u32);
+        let zeros_full = Seq::new(extra, |_i: int| 0u32);
+
+        // zeros_full == zeros_prev.push(0u32)
+        assert(zeros_full =~= zeros_prev.push(0u32));
+
+        // limbs.add(zeros_full) == limbs.add(zeros_prev).push(0u32)
+        // This is sequence associativity + push == add(seq![x])
+        let mid = limbs.add(zeros_prev);
+        assert(limbs.add(zeros_full) =~= mid.push(0u32));
+
+        // By IH: limbs_to_nat(mid) == limbs_to_nat(limbs)
+        lemma_limbs_to_nat_append_zeros(limbs, (extra - 1) as nat);
+
+        // By push_zero: limbs_to_nat(mid.push(0)) == limbs_to_nat(mid)
+        lemma_limbs_to_nat_push_zero(mid);
+    }
+}
+
 } // verus!
