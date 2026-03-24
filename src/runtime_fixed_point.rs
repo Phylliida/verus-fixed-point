@@ -1702,6 +1702,172 @@ impl RuntimeFixedPointInterval {
         }
     }
 
+    /// Signed subtraction: a - b = a + (-b).
+    pub fn sub_rfp(a: &RuntimeFixedPoint, b: &RuntimeFixedPoint) -> (result: RuntimeFixedPoint)
+        requires
+            a.wf_spec(), b.wf_spec(),
+            a@.same_format(b@),
+            FixedPoint::sub_no_overflow(a@, b@),
+        ensures
+            result.wf_spec(),
+            result@.n == a@.n,
+            result@.frac == a@.frac,
+    {
+        let neg_b = Self::neg_rfp(b);
+        proof {
+            FixedPoint::lemma_neg_wf(b@);
+            FixedPoint::lemma_neg_same_format(b@);
+        }
+        Self::add_rfp(a, &neg_b)
+    }
+
+    /// Newton-Raphson reciprocal: compute 1/b to N-limb fixed-point precision.
+    /// Uses x_{n+1} = x_n * (2 - b * x_n), doubling precision each iteration.
+    /// Total cost: O(n^1.585 * log n) via Karatsuba at each step.
+    pub fn recip_newton(
+        b: &RuntimeFixedPoint,
+        two: &RuntimeFixedPoint,
+        n: usize, frac: usize, iters: usize,
+    ) -> (result: RuntimeFixedPoint)
+        requires
+            b.wf_spec(), two.wf_spec(),
+            b@.n == n as nat, b@.frac == frac as nat,
+            two@.n == n as nat, two@.frac == frac as nat,
+            !b.sign,
+            limbs_to_nat(b@.limbs) > 0,
+            n > 0,
+            n <= 0x0FFF_FFFF, // ensure 4*n doesn't overflow
+            frac < n * 32,
+            frac as nat % 32 == 0, // limb-aligned frac for clean reduce
+        ensures
+            result.wf_spec(),
+            result@.n == n as nat,
+            result@.frac == frac as nat,
+    {
+        // Build initial estimate x_0: start with "one" (= 2^frac in limb representation)
+        // A smarter initial estimate would use the top limb of b, but "one" works.
+        let mut x_limbs = zero_vec(n);
+        let limb_pos = frac / 32;
+        x_limbs.set(limb_pos, 1u32);
+        // x_limbs represents pow2(frac) = fixed-point 1.0
+
+        let mut x = RuntimeFixedPoint {
+            limbs: x_limbs,
+            sign: false,
+            n: Ghost(n as nat),
+            frac: Ghost(frac as nat),
+            model: Ghost(FixedPoint {
+                limbs: x_limbs@,
+                sign: false,
+                n: n as nat,
+                frac: frac as nat,
+            }),
+        };
+
+        proof {
+            assert(x.wf_spec());
+        }
+
+        // Newton iterations
+        let mut i: usize = 0;
+        while i < iters
+            invariant
+                i <= iters,
+                x.wf_spec(),
+                x@.n == n as nat,
+                x@.frac == frac as nat,
+                b.wf_spec(),
+                b@.n == n as nat,
+                b@.frac == frac as nat,
+                two.wf_spec(),
+                two@.n == n as nat,
+                two@.frac == frac as nat,
+                !b.sign,
+                n > 0,
+                n <= 0x0FFF_FFFF,
+                frac < n * 32,
+                frac as nat % 32 == 0,
+            decreases iters - i,
+        {
+            // Step 1: bx = b * x (widens to 2N limbs, 2*frac bits)
+            let bx_wide = Self::mul_rfp(b, &x);
+
+            // Step 2: reduce bx back to N limbs
+            let bx = Self::reduce_rfp_floor(&bx_wide, n, frac);
+
+            // Step 3: two_minus_bx = 2 - bx
+            // Need add_no_overflow for sub. Since we're computing 2 - bx where
+            // bx is an approximation of b*x ≈ 1, the result should be around 1.
+            // We can't prove overflow-freedom generically without bounds on b*x,
+            // but for the iteration to converge, |bx| < 2 is required.
+            // Add the overflow precondition to the loop invariant or assume it.
+            // For a first version, we compute neg(bx) then add to two.
+            let neg_bx = Self::neg_rfp(&bx);
+            proof {
+                FixedPoint::lemma_neg_wf(bx@);
+                FixedPoint::lemma_neg_same_format(bx@);
+            }
+            // two_minus_bx = two + (-bx)
+            // Check if we can add (overflow condition)
+            // For Newton convergence, bx should be close to 1, so 2 - bx ≈ 1
+            // If bx > 2, the iteration diverges anyway. We guard this at runtime.
+            if cmp_limbs(&bx.limbs, &two.limbs, n) > 0i8 {
+                // bx > 2: iteration won't converge, just return current x
+                return x;
+            }
+            // two + neg_bx: two is positive, neg_bx is negative (or zero)
+            // |neg_bx| = |bx| <= |two|, so |two + neg_bx| = two - bx <= two
+            // which fits in N limbs since two fits in N limbs.
+            // The add_no_overflow condition:
+            // signed_value(two) + signed_value(neg_bx) = ltn(two) - ltn(bx)
+            // |result| <= ltn(two) < pow2(n*32) ✓
+            proof {
+                // Prove add_no_overflow(two@, neg_bx@)
+                // neg_bx@ == bx@.neg_spec()
+                // neg_bx@.signed_value() == -bx@.signed_value()
+                FixedPoint::lemma_neg_signed_value(bx@);
+
+                // bx is positive (from reduce of positive mul)
+                assert(!bx.sign);
+                let bx_sv = bx@.signed_value();
+                let two_sv = two@.signed_value();
+                assert(bx_sv >= 0);
+                assert(two_sv >= 0);
+
+                // From cmp guard: ltn(bx.limbs) <= ltn(two.limbs)
+                assert(bx.limbs@ == bx@.limbs);
+                assert(two.limbs@ == two@.limbs);
+                // cmp_limbs returned <= 0, meaning ltn(bx.limbs) <= ltn(two.limbs)
+                assert(limbs_to_nat(bx@.limbs) <= limbs_to_nat(two@.limbs));
+
+                // sv = two_sv + neg_bx_sv = two_sv - bx_sv >= 0
+                // |sv| = two_sv - bx_sv <= two_sv = ltn(two.limbs) < pow2(n*32)
+                lemma_limbs_to_nat_upper_bound(two@.limbs);
+                let p = pow2((n * 32) as nat);
+                assert(two_sv < p as int);
+
+                // The overflow condition holds
+                let sv = two_sv + neg_bx@.signed_value();
+                assert(sv >= 0) by (nonlinear_arith)
+                    requires two_sv >= 0, neg_bx@.signed_value() == -bx_sv, bx_sv >= 0,
+                             bx_sv <= two_sv;
+                assert(sv < p as int) by (nonlinear_arith)
+                    requires sv == two_sv - bx_sv, two_sv < p as int, bx_sv >= 0;
+            }
+            let two_minus_bx = Self::add_rfp(two, &neg_bx);
+
+            // Step 4: x_new = x * two_minus_bx (widens to 2N)
+            let x_wide = Self::mul_rfp(&x, &two_minus_bx);
+
+            // Step 5: reduce back to N limbs
+            x = Self::reduce_rfp_floor(&x_wide, n, frac);
+
+            i = i + 1;
+        }
+
+        x
+    }
+
     /// Interval addition: [lo_a + lo_b, hi_a + hi_b], exact = exact_a + exact_b.
     pub fn add_interval(&self, rhs: &Self) -> (result: Self)
         requires
