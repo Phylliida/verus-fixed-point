@@ -46,63 +46,39 @@ impl View for RuntimeFixedPoint {
 // ── RuntimeFixedPoint constructors ─────────────────────
 
 impl RuntimeFixedPoint {
-    /// Construct a RuntimeFixedPoint from a u64 value.
-    /// Places the integer value at the correct position based on frac.
-    /// Requires: value * 2^frac fits in n limbs.
-    pub fn from_u64(value: u64, sign: bool, n: usize, frac: usize) -> (result: Self)
+    /// Construct a non-negative RuntimeFixedPoint from a u32 integer value.
+    /// The value is placed at the integer position (above the fractional bits).
+    /// For example, from_u32(2, 4, 96) creates the fixed-point value 2.0
+    /// with 4 limbs and 96 fractional bits.
+    pub fn from_u32(value: u32, n: usize, frac: usize) -> (result: Self)
         requires
             n > 0,
             frac <= n * 32,
-            frac as nat % 32 == 0, // limb-aligned for simplicity
-            n <= 0x7FFF_FFFF,
-            // The value fits: value < pow2((n*32 - frac) as nat)
+            frac as nat % 32 == 0,
+            frac / 32 < n, // at least one integer limb
         ensures
             result.wf_spec(),
             result@.n == n as nat,
             result@.frac == frac as nat,
-            result.sign == sign || value == 0,
+            !result.sign,
     {
         let mut limbs = zero_vec(n);
         let frac_limbs = frac / 32;
+        limbs.set(frac_limbs, value);
 
-        // Place value in the limbs starting at position frac_limbs
-        if frac_limbs < n {
-            let lo = (value % 0x1_0000_0000u64) as u32;
-            limbs.set(frac_limbs, lo);
-            if frac_limbs + 1 < n {
-                let hi = (value / 0x1_0000_0000u64) as u32;
-                limbs.set(frac_limbs + 1, hi);
-            }
+        proof {
+            lemma_limbs_to_nat_all_zeros(n as nat);
         }
-
-        let is_zero = value == 0;
-        let result_sign = if is_zero { false } else { sign };
 
         let ghost model = FixedPoint {
             limbs: limbs@,
-            sign: result_sign,
+            sign: false,
             n: n as nat,
             frac: frac as nat,
         };
 
-        proof {
-            // wf: canonical zero — if sign is set, value != 0, so some limb is nonzero
-            if result_sign {
-                assert(value > 0);
-                // We placed lo = value % BASE at position frac_limbs
-                // If value > 0, lo > 0 or hi > 0, so limbs_to_nat != 0
-                if frac_limbs < n {
-                    let lo = (value % 0x1_0000_0000u64) as u32;
-                    if lo > 0 {
-                        lemma_limbs_to_nat_prefix_le_full(limbs@, (frac_limbs + 1) as nat);
-                        lemma_limbs_to_nat_subrange_extend(limbs@, frac_limbs as nat);
-                    }
-                }
-            }
-        }
-
         RuntimeFixedPoint {
-            limbs, sign: result_sign,
+            limbs, sign: false,
             n: Ghost(n as nat), frac: Ghost(frac as nat),
             model: Ghost(model),
         }
