@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 vstd = { path = "../verus/source/vstd" }
 verus-rational = { path = "../verus-rational" }
+verus-interval-arithmetic = { path = "../verus-interval-arithmetic" }
 
 [package.metadata.verus]
 verify = true
