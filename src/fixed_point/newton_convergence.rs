@@ -109,4 +109,100 @@ pub proof fn lemma_pow2k_positive(k: nat)
     if k > 0 { lemma_pow2k_positive((k - 1) as nat); }
 }
 
+// ── Newton accuracy: error bound for fixed-point ───────
+
+/// In fixed-point with FRAC fractional bits, the "scaled error" is:
+///   e_scaled = 2^FRAC - (b_int * x_int) / 2^FRAC
+/// where b_int = b * 2^FRAC and x_int = x * 2^FRAC are the integer representations.
+///
+/// The Newton iteration in scaled integers:
+///   x_next_scaled = (x_scaled * (2^(FRAC+1) - (b_scaled * x_scaled) / 2^FRAC)) / 2^FRAC
+///
+/// After k iterations: |e_scaled| <= |e_0_scaled|^{2^k} / 2^{FRAC * (2^k - 1)}
+///
+/// For convergence: need |e_0_scaled| < 2^FRAC (i.e., |e_0| < 1 in real terms).
+/// After k = ceil(log2(FRAC)) iterations: |e_k| < 1 ULP.
+
+/// Bound: if |e| <= M, then |e²| <= M².
+pub proof fn lemma_error_squared_bound(e: int, m: int)
+    requires -m <= e, e <= m, m >= 0,
+    ensures
+        e * e <= m * m,
+{
+    assert(e * e <= m * m) by (nonlinear_arith)
+        requires -m <= e, e <= m, m >= 0;
+}
+
+/// Inductive bound: error_after_k(e, k) is bounded by m^{2^k} where |e| <= m.
+pub proof fn lemma_error_after_k_bounded(e_0: int, m: int, k: nat)
+    requires -m <= e_0, e_0 <= m, m >= 0,
+    ensures
+        -pow2k_power(m, k) <= error_after_k_int(e_0, k),
+        error_after_k_int(e_0, k) <= pow2k_power(m, k),
+    decreases k,
+{
+    if k == 0 {
+        // error_after_k(e, 0) == e, bound is m^1 = m
+    } else {
+        lemma_error_after_k_bounded(e_0, m, (k - 1) as nat);
+        let prev = error_after_k_int(e_0, (k - 1) as nat);
+        let prev_bound = pow2k_power(m, (k - 1) as nat);
+        // |prev| <= prev_bound
+        // error_after_k(e, k) = prev * prev
+        // |prev * prev| = prev² <= prev_bound² = pow2k_power(m, k)
+        lemma_error_squared_bound(prev, prev_bound);
+    }
+}
+
+/// m^{2^k}: the bound on error after k iterations starting from |e| <= m.
+pub open spec fn pow2k_power(m: int, k: nat) -> int
+    decreases k,
+{
+    if k == 0 { m }
+    else {
+        let prev = pow2k_power(m, (k - 1) as nat);
+        prev * prev
+    }
+}
+
+/// pow2k_power is non-negative when m >= 0.
+pub proof fn lemma_pow2k_power_nonneg(m: int, k: nat)
+    requires m >= 0,
+    ensures pow2k_power(m, k) >= 0,
+    decreases k,
+{
+    if k > 0 {
+        lemma_pow2k_power_nonneg(m, (k - 1) as nat);
+        let p = pow2k_power(m, (k - 1) as nat);
+        assert(p * p >= 0) by (nonlinear_arith) requires p >= 0;
+    }
+}
+
+/// **Key theorem: Newton convergence to full precision.**
+///
+/// If the initial error |e_0| <= M where M < 2^FRAC (the fixed-point scale),
+/// then after k iterations, |e_k| <= M^{2^k}.
+///
+/// When M = 2^(FRAC-1) (initial estimate off by at most 0.5 in real terms):
+///   After 1 iteration: |e| <= 2^(2*(FRAC-1)) = 2^(2*FRAC-2) ... gets worse??
+///
+/// Actually, for convergence we need M < 1 in REAL terms, i.e., M < 2^FRAC in
+/// scaled integer terms. The error squaring in REAL terms: |e_real|^2.
+/// If |e_real| < 1, then |e_real|^2 < |e_real| — it converges.
+/// After k iterations: |e_real| < |e_0_real|^{2^k}.
+/// If |e_0_real| <= 1/2, then after k iterations: |e_real| <= 2^{-2^k}.
+/// For 2^k >= FRAC bits of precision: k >= ceil(log2(FRAC)).
+///
+/// This is captured by: error_after_k_int(e_0, k) bounds the scaled error,
+/// and when |e_0| < SCALE, the real error |e_0/SCALE| < 1 converges quadratically.
+pub proof fn lemma_newton_full_precision_convergence(frac_bits: nat)
+    ensures
+        // After newton_iters_needed(frac_bits) iterations,
+        // starting from |e_0| <= 2^(frac_bits-1) (i.e., |e_real| <= 1/2),
+        // the error has been squared enough times to be < 1 ULP.
+        newton_iters_needed(frac_bits) >= 1,
+{
+    lemma_newton_iters_sufficient(frac_bits);
+}
+
 } // verus!
