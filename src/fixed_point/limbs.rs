@@ -773,4 +773,100 @@ pub proof fn lemma_karatsuba_combine(
     assert(ltn_s2 == product);
 }
 
+// ── Base-2^32 representation uniqueness ────────────────
+
+/// The lowest limb of a sequence is value % limb_base.
+pub proof fn lemma_limbs_to_nat_lowest(limbs: Seq<u32>)
+    requires limbs.len() > 0,
+    ensures limbs[0] as nat == limbs_to_nat(limbs) % limb_base(),
+{
+    // ltn(limbs) = limbs[0] + BASE * ltn(tail)
+    // ltn(limbs) % BASE = (limbs[0] + BASE * ltn(tail)) % BASE
+    //                   = limbs[0] % BASE (since BASE * ltn(tail) is divisible by BASE)
+    //                   = limbs[0] (since limbs[0] < BASE as it's a u32)
+    let tail = limbs.subrange(1, limbs.len() as int);
+    assert(limbs_to_nat(limbs) == limbs[0] as nat + limb_base() * limbs_to_nat(tail));
+    // limbs[0] < limb_base (since it's a u32 and limb_base = 2^32)
+    assert(limbs[0] as nat < limb_base());
+    // (a + B*c) % B == a % B == a when a < B
+    assert((limbs[0] as nat + limb_base() * limbs_to_nat(tail)) % limb_base()
+        == limbs[0] as nat) by (nonlinear_arith)
+        requires limbs[0] as nat < limb_base(), limb_base() > 0;
+}
+
+/// The value without the lowest limb is value / limb_base.
+pub proof fn lemma_limbs_to_nat_shift(limbs: Seq<u32>)
+    requires limbs.len() > 0,
+    ensures
+        limbs_to_nat(limbs.subrange(1, limbs.len() as int))
+            == limbs_to_nat(limbs) / limb_base(),
+{
+    let tail = limbs.subrange(1, limbs.len() as int);
+    assert(limbs_to_nat(limbs) == limbs[0] as nat + limb_base() * limbs_to_nat(tail));
+    assert(limbs[0] as nat < limb_base());
+    // (a + B*c) / B == c when 0 <= a < B
+    assert((limbs[0] as nat + limb_base() * limbs_to_nat(tail)) / limb_base()
+        == limbs_to_nat(tail)) by (nonlinear_arith)
+        requires limbs[0] as nat < limb_base(), limb_base() > 0;
+}
+
+/// Base-2^32 representation uniqueness:
+/// If two sequences of the same length have the same limbs_to_nat value,
+/// they are element-wise equal.
+pub proof fn lemma_limbs_to_nat_unique(a: Seq<u32>, b: Seq<u32>)
+    requires
+        a.len() == b.len(),
+        limbs_to_nat(a) == limbs_to_nat(b),
+    ensures
+        a =~= b,
+    decreases a.len(),
+{
+    if a.len() == 0 {
+        // Both empty, trivially equal
+    } else {
+        // Lowest limb: a[0] == ltn(a) % BASE == ltn(b) % BASE == b[0]
+        lemma_limbs_to_nat_lowest(a);
+        lemma_limbs_to_nat_lowest(b);
+        assert(a[0] == b[0]);
+
+        // Tail: ltn(a_tail) == ltn(a) / BASE == ltn(b) / BASE == ltn(b_tail)
+        let a_tail = a.subrange(1, a.len() as int);
+        let b_tail = b.subrange(1, b.len() as int);
+        lemma_limbs_to_nat_shift(a);
+        lemma_limbs_to_nat_shift(b);
+        assert(limbs_to_nat(a_tail) == limbs_to_nat(b_tail));
+
+        // By induction: a_tail =~= b_tail
+        lemma_limbs_to_nat_unique(a_tail, b_tail);
+
+        // Combine: a[0] == b[0] and a[1..] =~= b[1..] => a =~= b
+        assert forall|i: int| 0 <= i < a.len() implies a[i] == b[i] by {
+            if i == 0 {
+                assert(a[0] == b[0]);
+            } else {
+                assert(a[i] == a_tail[i - 1]);
+                assert(b[i] == b_tail[i - 1]);
+            }
+        }
+    }
+}
+
+/// Corollary: nat_to_limbs and limbs_to_nat are inverses (the other direction).
+/// If limbs_to_nat(a) == val and a.len() == n and val < pow2(n*32),
+/// then a == nat_to_limbs(val, n).
+pub proof fn lemma_limbs_nat_to_limbs_identity(a: Seq<u32>, n: nat)
+    requires
+        a.len() == n,
+        limbs_to_nat(a) < pow2((n * 32) as nat),
+    ensures
+        a =~= nat_to_limbs(limbs_to_nat(a), n),
+{
+    let val = limbs_to_nat(a);
+    lemma_nat_to_limbs_roundtrip(val, n);
+    // limbs_to_nat(nat_to_limbs(val, n)) == val == limbs_to_nat(a)
+    lemma_nat_to_limbs_len(val, n);
+    // nat_to_limbs(val, n).len() == n == a.len()
+    lemma_limbs_to_nat_unique(a, nat_to_limbs(val, n));
+}
+
 } // verus!
