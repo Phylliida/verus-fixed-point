@@ -643,4 +643,161 @@ pub fn shift_left(a: &Vec<u32>, offset: usize) -> (result: Vec<u32>)
     out
 }
 
+/// Schoolbook multiplication: a * b -> 2n-limb result. O(n^2).
+/// Used as the base case for Karatsuba.
+pub fn mul_schoolbook(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: Vec<u32>)
+    requires
+        a@.len() == n,
+        b@.len() == n,
+        n <= 0x7FFF_FFFF, // ensure 2*n doesn't overflow usize
+    ensures
+        result@.len() == 2 * n,
+        limbs_to_nat(result@) == limbs_to_nat(a@) * limbs_to_nat(b@),
+{
+    // Strategy: accumulate partial products.
+    // result = sum over i: a * b[i] * BASE^i
+    //        = a * (b[0] + b[1]*BASE + ... + b[n-1]*BASE^(n-1))
+    //        = a * b
+
+    let nn: usize = 2 * n; // precompute, overflow checked by precondition
+    let mut acc = zero_vec(nn);
+    let mut i: usize = 0;
+
+    proof {
+        lemma_limbs_to_nat_subrange_zero(b@);
+        // At entry: ltn(acc) == 0 == ltn(a) * 0 == ltn(a) * ltn(b[..0])
+        assert(limbs_to_nat(b@.subrange(0, 0int)) == 0nat);
+        assert(limbs_to_nat(a@) * 0nat == 0nat) by (nonlinear_arith);
+    }
+
+    while i < n
+        invariant
+            i <= n,
+            a@.len() == n,
+            b@.len() == n,
+            nn == 2 * n,
+            acc@.len() == nn,
+            limbs_to_nat(acc@) == limbs_to_nat(a@) * limbs_to_nat(b@.subrange(0, i as int)),
+        decreases n - i,
+    {
+        // Compute partial product: a * b[i]
+        let partial = mul_by_u32(a, b[i], n);
+        // partial has n+1 limbs, ltn(partial) == ltn(a) * b[i]
+
+        // Shift left by i positions: a * b[i] * BASE^i
+        let shifted = shift_left(&partial, i);
+        // shifted has n+1+i limbs, ltn(shifted) == ltn(a) * b[i] * pow2(i*32)
+
+        // Add to accumulator
+        // Need: shifted.len() <= acc.len()
+        // shifted.len() == n + 1 + i <= n + 1 + (n-1) = 2n. Since i < n.
+        proof {
+            assert(shifted@.len() == n + 1 + i);
+            assert(n + 1 + i <= nn) by (nonlinear_arith)
+                requires i < n, nn == 2 * n;
+        }
+        let padded_shifted = pad_to_length(&shifted, nn);
+        let (new_acc, carry) = add_limbs(&acc, &padded_shifted, nn);
+
+        proof {
+            // Update invariant:
+            // ltn(new_acc) + carry * pow2(2n*32) == ltn(acc) + ltn(padded_shifted)
+            //   == ltn(a) * ltn(b[..i]) + ltn(a) * b[i] * pow2(i*32)
+            //   == ltn(a) * (ltn(b[..i]) + b[i] * pow2(i*32))
+            //   == ltn(a) * ltn(b[..i+1])
+
+            lemma_limbs_to_nat_subrange_extend(b@, i as nat);
+            // ltn(b[..i+1]) == ltn(b[..i]) + b[i] * pow2(i*32)
+
+            // ltn(padded_shifted) == ltn(shifted) == ltn(partial) * pow2(i*32)
+            //   == ltn(a) * b[i] * pow2(i*32)
+
+            assert(limbs_to_nat(padded_shifted@) == limbs_to_nat(a@) * (b@[i as int] as nat) * pow2((i * 32) as nat)) by (nonlinear_arith)
+                requires
+                    limbs_to_nat(padded_shifted@) == limbs_to_nat(shifted@),
+                    limbs_to_nat(shifted@) == limbs_to_nat(partial@) * pow2((i * 32) as nat),
+                    limbs_to_nat(partial@) == limbs_to_nat(a@) * (b@[i as int] as nat),
+            {}
+
+            // new_acc_value == ltn(a) * ltn(b[..i]) + ltn(a) * b[i] * pow2(i*32)
+            //               == ltn(a) * (ltn(b[..i]) + b[i] * pow2(i*32))
+            //               == ltn(a) * ltn(b[..i+1])
+
+            assert(limbs_to_nat(a@) * limbs_to_nat(b@.subrange(0, i as int))
+                + limbs_to_nat(a@) * (b@[i as int] as nat) * pow2((i * 32) as nat)
+                == limbs_to_nat(a@) * limbs_to_nat(b@.subrange(0, (i + 1) as int))) by (nonlinear_arith)
+                requires
+                    limbs_to_nat(b@.subrange(0, (i + 1) as int))
+                        == limbs_to_nat(b@.subrange(0, i as int)) + b@[i as int] as nat * pow2((i * 32) as nat),
+            {}
+
+            // carry must be 0: the sum fits in 2n limbs
+            // ltn(a) < pow2(n*32), ltn(b[..i+1]) <= ltn(b) < pow2(n*32)
+            // product < pow2(n*32) * pow2(n*32) = pow2(2n*32)
+            // So new_acc == product < pow2(2n*32), meaning carry == 0
+            lemma_limbs_to_nat_upper_bound(a@);
+            lemma_limbs_to_nat_upper_bound(b@);
+            lemma_limbs_to_nat_prefix_le_full(b@, (i + 1) as nat);
+            lemma_pow2_double((n * 32) as nat);
+            let bound = pow2((n * 32) as nat);
+            assert(limbs_to_nat(a@) * limbs_to_nat(b@.subrange(0, (i + 1) as int))
+                < bound * bound) by (nonlinear_arith)
+                requires
+                    limbs_to_nat(a@) < bound,
+                    limbs_to_nat(b@.subrange(0, (i + 1) as int)) <= limbs_to_nat(b@),
+                    limbs_to_nat(b@) < bound,
+                    bound > 0,
+            {}
+            lemma_pow2_double((n * 32) as nat);
+            assert(2 * (n * 32) == nn * 32) by (nonlinear_arith)
+                requires nn == 2 * n;
+            assert(bound * bound == pow2((nn * 32) as nat));
+
+            // Chain: add_limbs postcondition + invariant + partial product
+            assert(limbs_to_nat(new_acc@) + (carry as nat) * pow2((nn * 32) as nat)
+                == limbs_to_nat(acc@) + limbs_to_nat(padded_shifted@));
+
+            assert(limbs_to_nat(acc@) + limbs_to_nat(padded_shifted@)
+                == limbs_to_nat(a@) * limbs_to_nat(b@.subrange(0, (i + 1) as int)));
+
+            // So the value < pow2(nn*32), carry must be 0
+            assert(limbs_to_nat(new_acc@) + (carry as nat) * pow2((nn * 32) as nat)
+                == limbs_to_nat(a@) * limbs_to_nat(b@.subrange(0, (i + 1) as int)));
+            assert(limbs_to_nat(a@) * limbs_to_nat(b@.subrange(0, (i + 1) as int))
+                < pow2((nn * 32) as nat));
+            lemma_limbs_to_nat_upper_bound(new_acc@);
+            assert(carry == 0) by (nonlinear_arith)
+                requires
+                    limbs_to_nat(new_acc@) + (carry as nat) * pow2((nn * 32) as nat)
+                        < pow2((nn * 32) as nat),
+                    limbs_to_nat(new_acc@) < pow2((nn * 32) as nat),
+                    carry <= 1,
+            {}
+
+            // Now chain: carry==0, so ltn(new_acc) == ltn(acc) + ltn(padded_shifted)
+            assert(limbs_to_nat(new_acc@) == limbs_to_nat(acc@) + limbs_to_nat(padded_shifted@)) by (nonlinear_arith)
+                requires
+                    limbs_to_nat(new_acc@) + (carry as nat) * pow2((nn * 32) as nat)
+                        == limbs_to_nat(acc@) + limbs_to_nat(padded_shifted@),
+                    carry == 0u32,
+            {}
+
+            // And ltn(acc) + ltn(padded) == ltn(a) * ltn(b[..i+1])
+            assert(limbs_to_nat(acc@) + limbs_to_nat(padded_shifted@)
+                == limbs_to_nat(a@) * limbs_to_nat(b@.subrange(0, (i + 1) as int)));
+
+            assert(limbs_to_nat(new_acc@) == limbs_to_nat(a@) * limbs_to_nat(b@.subrange(0, (i + 1) as int)));
+        }
+
+        acc = new_acc;
+        i = i + 1;
+    }
+
+    proof {
+        lemma_limbs_to_nat_subrange_full(b@);
+    }
+
+    acc
+}
+
 } // verus!
