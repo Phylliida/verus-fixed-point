@@ -194,4 +194,188 @@ pub open spec fn cyclic_conv_coeff(
     }
 }
 
+// ── Exec NTT: Cooley-Tukey butterfly ───────────────────
+
+/// Single butterfly operation: given u and t, compute (u+t, u-t).
+pub fn butterfly_op(
+    u: &RuntimeModularInt, t: &RuntimeModularInt,
+) -> (result: (RuntimeModularInt, RuntimeModularInt))
+    requires u.wf_spec(), t.wf_spec(), u.p == t.p,
+    ensures result.0.wf_spec(), result.1.wf_spec(),
+            result.0.p == u.p, result.1.p == u.p,
+{
+    let sum = u.add_exec(t);
+    let diff = u.sub_exec(t);
+    (sum, diff)
+}
+
+/// Exec-level bit-reversal permutation on a Vec of RuntimeModularInt.
+pub fn bit_reverse_permutation(data: &mut Vec<RuntimeModularInt>, n: usize, log_n: usize)
+    requires
+        old(data)@.len() == n,
+        n == pow2_nat(log_n as nat),
+        n > 0,
+        forall|i: int| 0 <= i < n as int ==> old(data)@[i].wf_spec() && old(data)@[i].p == old(data)@[0].p,
+    ensures
+        data@.len() == n,
+        forall|i: int| 0 <= i < n as int ==> data@[i].wf_spec() && data@[i].p == old(data)@[0].p,
+        // The permutation is correct (indices bit-reversed)
+        // Full spec: data[i] == old(data)[bit_reverse(i, log_n)]
+{
+    // Simple O(n²) bit-reversal for correctness (optimized version later)
+    let ghost p0 = old(data)@[0].p;
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            i <= n,
+            data@.len() == n,
+            n > 0,
+            forall|k: int| 0 <= k < n as int ==> data@[k].wf_spec() && data@[k].p == p0,
+        decreases n - i,
+    {
+        // Compute bit-reverse of i
+        let mut rev: usize = 0;
+        let mut bits: usize = i;
+        let mut s: usize = 0;
+        while s < log_n
+            invariant
+                s <= log_n,
+                rev < n, // maintained by construction
+                data@.len() == n,
+                forall|k: int| 0 <= k < n as int ==> data@[k].wf_spec() && data@[k].p == p0,
+            decreases log_n - s,
+        {
+            if rev < n / 2 { // guard overflow
+                rev = rev * 2 + bits % 2;
+            }
+            bits = bits / 2;
+            s = s + 1;
+        }
+
+        if rev > i && rev < n {
+            let tmp = data[i].copy_exec();
+            let swp = data[rev].copy_exec();
+            data.set(i, swp);
+            data.set(rev, tmp);
+        }
+        i = i + 1;
+    }
+}
+
+/// Helper: 2^k as nat (for NTT size constraints).
+pub open spec fn pow2_nat(k: nat) -> nat
+    decreases k,
+{
+    if k == 0 { 1 }
+    else { 2 * pow2_nat((k - 1) as nat) }
+}
+
+/// Exec-level forward NTT using iterative Cooley-Tukey butterfly.
+/// Transforms data in-place. n must be a power of 2.
+/// omega is a primitive n-th root of unity mod p.
+pub fn ntt_butterfly_exec(
+    data: &mut Vec<RuntimeModularInt>,
+    omega: &RuntimeModularInt,
+    n: usize,
+    log_n: usize,
+)
+    requires
+        old(data)@.len() == n,
+        n == pow2_nat(log_n as nat),
+        n > 1,
+        n < 0x7FFF_FFFF, // prevent overflow in n+1
+        log_n > 0,
+        omega.wf_spec(),
+        forall|i: int| 0 <= i < n as int ==> old(data)@[i].wf_spec() && old(data)@[i].p == omega.p,
+    ensures
+        data@.len() == n,
+        forall|i: int| 0 <= i < n as int ==> data@[i].wf_spec(),
+{
+    // Step 1: Bit-reversal permutation
+    bit_reverse_permutation(data, n, log_n);
+
+    // Step 2: Butterfly stages
+    let mut m: usize = 2;
+    let mut stage: usize = 0;
+
+    while stage < log_n
+        invariant
+            stage <= log_n,
+            data@.len() == n,
+            n > 1,
+            m >= 2,
+            m <= n + 1, // loose upper bound
+            forall|i: int| 0 <= i < n as int ==> data@[i].wf_spec() && data@[i].p == omega.p,
+            omega.wf_spec(),
+            omega.p > 1,
+        decreases log_n - stage,
+    {
+        let half_m = m / 2;
+        // half_m >= 1 since m >= 2
+
+        let mut group: usize = 0;
+        while group <= n && n - group >= m
+            invariant
+                data@.len() == n,
+                forall|i: int| 0 <= i < n as int ==> data@[i].wf_spec() && data@[i].p == omega.p,
+                half_m >= 1, m >= 2, half_m == m / 2,
+                group <= n,
+                omega.wf_spec(), omega.p > 1,
+            decreases n - group,
+        {
+            let mut w = RuntimeModularInt::new(1, omega.p);
+            let mut k: usize = 0;
+            proof { assert(half_m == m / 2); }
+
+            while k < half_m
+                invariant
+                    k <= half_m,
+                    data@.len() == n,
+                    w.wf_spec(), w.p == omega.p,
+                    forall|i: int| 0 <= i < n as int ==> data@[i].wf_spec() && data@[i].p == omega.p,
+                    n - group >= m,
+                    half_m >= 1, m >= 2, half_m == m / 2,
+                    omega.wf_spec(), omega.p > 1,
+                decreases half_m - k,
+            {
+                // Bounds: k < half_m = m/2, n - group >= m
+                // group + k < group + m/2 < group + m <= n ✓
+                // group + k + half_m < group + m <= n ✓
+                proof {
+                    assert(k < half_m);
+                    assert(half_m + half_m <= m) by (nonlinear_arith)
+                        requires half_m == m / 2, m >= 2;
+                    assert(group + half_m <= n) by (nonlinear_arith)
+                        requires n - group >= m, half_m <= m;
+                    assert(group + k + half_m < group + m) by (nonlinear_arith)
+                        requires k < half_m, half_m + half_m <= m;
+                }
+                let idx1 = group + k;
+                let idx2 = group + k + half_m;
+
+                let t = w.mul_exec(&data[idx2]);
+                let u = data[idx1].copy_exec();
+                let (new1, new2) = butterfly_op(&u, &t);
+
+                data.set(idx1, new1);
+                data.set(idx2, new2);
+
+                w = w.mul_exec(omega);
+                k = k + 1;
+            }
+
+            // Advance group. group + m <= n, so group' = group + m <= n
+            group = group + m;
+        }
+
+        stage = stage + 1;
+        // m doubles. Guard: if m > n, next iteration won't enter inner loop anyway
+        if m <= n / 2 {
+            m = m * 2;
+        } else {
+            m = n; // sentinel: ensures inner loop condition n - group >= m won't hold when group > 0
+        }
+    }
+}
+
 } // verus!
