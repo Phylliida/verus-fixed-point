@@ -9,6 +9,7 @@ pub mod view_lemmas;
 pub mod arithmetic;
 pub mod promotion;
 pub mod reduce;
+pub mod interval;
 
 verus! {
 

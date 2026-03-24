@@ -89,6 +89,17 @@ dependencies = [
 name = "verus-fixed-point"
 version = "0.1.0"
 dependencies = [
+ "verus-interval-arithmetic",
+ "verus-rational",
+ "vstd",
+]
+
+[[package]]
+name = "verus-interval-arithmetic"
+version = "0.1.0"
+dependencies = [
+ "verus-algebra",
+ "verus-bigint",
  "verus-rational",
  "vstd",
 ]
