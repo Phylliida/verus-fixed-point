@@ -63,10 +63,14 @@ impl FixedPoint {
         requires self.wf_spec(),
         ensures self.view() == Rational::from_frac_spec(self.signed_value(), pow2::pow2(self.frac) as int),
     {
-        // Both sides unfold to the same expression.
         let magnitude = limbs::limbs_to_nat(self.limbs);
-        let sign_factor: int = if self.sign { -1 } else { 1 };
-        assert(sign_factor * (magnitude as int) == self.signed_value());
+        if self.sign {
+            assert(self.signed_value() == -(magnitude as int));
+            assert(self.view() == Rational::from_frac_spec(-1int * (magnitude as int), pow2::pow2(self.frac) as int));
+        } else {
+            assert(self.signed_value() == magnitude as int);
+            assert(self.view() == Rational::from_frac_spec(1int * (magnitude as int), pow2::pow2(self.frac) as int));
+        }
     }
 }
 
