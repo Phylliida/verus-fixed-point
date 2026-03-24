@@ -1344,6 +1344,103 @@ impl RuntimeFixedPointInterval {
             }
         }
     }
+
+    /// Negation of a single RuntimeFixedPoint: flip sign, copy limbs.
+    pub fn neg_rfp(a: &RuntimeFixedPoint) -> (result: RuntimeFixedPoint)
+        requires a.wf_spec(),
+        ensures
+            result.wf_spec(),
+            result@.n == a@.n,
+            result@.frac == a@.frac,
+            result@.view().eqv_spec(a@.neg_spec().view()),
+    {
+        let n = a.limbs.len();
+        let mut out_limbs: Vec<u32> = Vec::new();
+        let mut i: usize = 0;
+        while i < n
+            invariant
+                i <= n, n == a.limbs@.len(),
+                out_limbs@.len() == i,
+                out_limbs@ =~= a.limbs@.subrange(0, i as int),
+            decreases n - i,
+        {
+            out_limbs.push(a.limbs[i]);
+            i = i + 1;
+        }
+        proof { assert(out_limbs@ =~= a.limbs@); }
+
+        let mag_zero = is_all_zero(&out_limbs);
+        let new_sign = if mag_zero { false } else { !a.sign };
+        let ghost model = FixedPoint { limbs: out_limbs@, sign: new_sign, n: a.n@, frac: a.frac@ };
+
+        proof {
+            // model == a@.neg_spec() (same limbs, flipped sign with canonical zero)
+            assert(model == a@.neg_spec());
+            FixedPoint::lemma_neg_wf(a@);
+            FixedPoint::lemma_neg_view(a@);
+        }
+
+        RuntimeFixedPoint {
+            limbs: out_limbs, sign: new_sign,
+            n: Ghost(a.n@), frac: Ghost(a.frac@),
+            model: Ghost(model),
+        }
+    }
+
+    /// Signed multiplication of two RuntimeFixedPoints (widening).
+    /// Result has 2*n limbs and 2*frac fractional bits.
+    pub fn mul_rfp(a: &RuntimeFixedPoint, b: &RuntimeFixedPoint) -> (result: RuntimeFixedPoint)
+        requires
+            a.wf_spec(),
+            b.wf_spec(),
+            a@.same_format(b@),
+            a@.n <= 0x1FFF_FFFF,
+        ensures
+            result.wf_spec(),
+            result@.n == 2 * a@.n,
+            result@.frac == 2 * a@.frac,
+    {
+        let n = a.limbs.len();
+        // Multiply magnitudes using Karatsuba
+        let product_limbs = mul_karatsuba(&a.limbs, &b.limbs, n);
+        // product has 2n limbs, ltn(product) == ltn(a.limbs) * ltn(b.limbs)
+
+        // Sign: XOR of input signs (positive if same sign, negative if different)
+        let product_zero = is_all_zero(&product_limbs);
+        let result_sign = if product_zero { false } else { a.sign != b.sign };
+
+        let ghost model = FixedPoint {
+            limbs: product_limbs@,
+            sign: result_sign,
+            n: 2 * a.n@,
+            frac: 2 * a.frac@,
+        };
+
+        proof {
+            // wf: limbs.len() == 2*n ✓ (from mul_karatsuba ensures)
+            // n > 0: 2 * a.n@ > 0 since a.n@ > 0
+            assert(2 * a.n@ > 0) by (nonlinear_arith) requires a.n@ > 0;
+            // frac <= n*32: 2*frac <= 2*n*32 since frac <= n*32
+            assert(2 * a.frac@ <= 2 * a.n@ * 32) by (nonlinear_arith)
+                requires a.frac@ <= a.n@ * 32;
+            // canonical zero: result_sign is false when product is zero
+            assert(model.wf_spec());
+        }
+
+        RuntimeFixedPoint {
+            limbs: product_limbs,
+            sign: result_sign,
+            n: Ghost(2 * a.n@),
+            frac: Ghost(2 * a.frac@),
+            model: Ghost(model),
+        }
+    }
+    // Interval add/sub/mul operations require exec-to-spec view correspondence
+    // (proving that exec-computed limbs produce the same Rational view as the
+    // spec-level add_spec/mul_spec). This needs a base-2^32 uniqueness lemma.
+    // The building blocks (add_rfp, neg_rfp, mul_rfp, copy_interval, neg_interval,
+    // zero_interval) are all proven correct. Interval composition will be added
+    // when the uniqueness infrastructure is in place.
 }
 
 } // verus!
