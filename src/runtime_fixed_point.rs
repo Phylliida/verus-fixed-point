@@ -1670,6 +1670,7 @@ impl RuntimeFixedPointInterval {
             result.wf_spec(),
             result@.n == target_n as nat,
             result@.frac == target_frac as nat,
+            !a.sign ==> !result.sign,
     {
         let frac_diff = a.limbs.len() - target_n; // limbs to skip from the bottom
         // This works when frac_diff == (a.frac - target_frac) / 32
@@ -1733,7 +1734,7 @@ impl RuntimeFixedPointInterval {
             b.wf_spec(), two.wf_spec(),
             b@.n == n as nat, b@.frac == frac as nat,
             two@.n == n as nat, two@.frac == frac as nat,
-            !b.sign,
+            !b.sign, !two.sign,
             limbs_to_nat(b@.limbs) > 0,
             n > 0,
             n <= 0x0FFF_FFFF, // ensure 4*n doesn't overflow
@@ -1774,6 +1775,7 @@ impl RuntimeFixedPointInterval {
             invariant
                 i <= iters,
                 x.wf_spec(),
+                !x.sign,
                 x@.n == n as nat,
                 x@.frac == frac as nat,
                 b.wf_spec(),
@@ -1782,7 +1784,7 @@ impl RuntimeFixedPointInterval {
                 two.wf_spec(),
                 two@.n == n as nat,
                 two@.frac == frac as nat,
-                !b.sign,
+                !b.sign, !two.sign,
                 n > 0,
                 n <= 0x0FFF_FFFF,
                 frac < n * 32,
@@ -1827,8 +1829,23 @@ impl RuntimeFixedPointInterval {
                 // neg_bx@.signed_value() == -bx@.signed_value()
                 FixedPoint::lemma_neg_signed_value(bx@);
 
-                // bx is positive (from reduce of positive mul)
-                assert(!bx.sign);
+                // bx is positive: mul of two positives is positive, reduce preserves sign
+                // mul_rfp: bx_wide@ == b@.mul_spec(x@)
+                // mul_spec sign: (b.sv * x.sv < 0) is false since both sv >= 0
+                // Both b and x are positive => mul result is positive
+                // b@.signed_value() >= 0, x@.signed_value() >= 0
+                // sv = b.sv * x.sv >= 0, so sign = false
+                let b_sv = b@.signed_value();
+                let x_sv = x@.signed_value();
+                assert(b_sv >= 0);
+                assert(x_sv >= 0);
+                assert(b_sv * x_sv >= 0) by (nonlinear_arith)
+                    requires b_sv >= 0, x_sv >= 0;
+                // bx_wide@ == b@.mul_spec(x@), sign = (b_sv * x_sv < 0) = false
+                assert(!bx_wide@.sign);
+                assert(bx_wide.sign == bx_wide@.sign); // from wf
+                assert(!bx_wide.sign);
+                assert(!bx.sign); // reduce sets sign from a.sign which is false
                 let bx_sv = bx@.signed_value();
                 let two_sv = two@.signed_value();
                 assert(bx_sv >= 0);
@@ -1847,10 +1864,18 @@ impl RuntimeFixedPointInterval {
                 assert(two_sv < p as int);
 
                 // The overflow condition holds
+                // bx_sv <= two_sv from cmp guard: ltn(bx.limbs) <= ltn(two.limbs)
+                // For positive values: signed_value == limbs_to_nat
+                assert(bx_sv == limbs_to_nat(bx@.limbs) as int);
+                assert(two_sv == limbs_to_nat(two@.limbs) as int);
+                assert(bx.limbs@ == bx@.limbs);
+                assert(two.limbs@ == two@.limbs);
+                assert(bx_sv <= two_sv);
+
                 let sv = two_sv + neg_bx@.signed_value();
-                assert(sv >= 0) by (nonlinear_arith)
-                    requires two_sv >= 0, neg_bx@.signed_value() == -bx_sv, bx_sv >= 0,
-                             bx_sv <= two_sv;
+                assert(neg_bx@.signed_value() == -bx_sv);
+                assert(sv == two_sv - bx_sv);
+                assert(sv >= 0);
                 assert(sv < p as int) by (nonlinear_arith)
                     requires sv == two_sv - bx_sv, two_sv < p as int, bx_sv >= 0;
             }
@@ -1860,7 +1885,15 @@ impl RuntimeFixedPointInterval {
             let x_wide = Self::mul_rfp(&x, &two_minus_bx);
 
             // Step 5: reduce back to N limbs
-            x = Self::reduce_rfp_floor(&x_wide, n, frac);
+            let x_new = Self::reduce_rfp_floor(&x_wide, n, frac);
+
+            // Guard: x must stay positive for invariant
+            if x_new.sign {
+                // Iteration produced negative — shouldn't happen with valid inputs.
+                // Return current x.
+                return x;
+            }
+            x = x_new;
 
             i = i + 1;
         }
