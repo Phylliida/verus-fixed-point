@@ -1757,7 +1757,8 @@ impl RuntimeFixedPointInterval {
                 assert(rem <= 0xFFFF_FFFEu64) by (nonlinear_arith)
                     requires rem < d, d <= 0xFFFF_FFFFu64;
             }
-            let cur: u64 = rem * 0x1_0000_0000u64 + a[i] as u64;
+            let ai = a[i];
+            let cur: u64 = rem * 0x1_0000_0000u64 + ai as u64;
             let q = cur / d;
             let new_rem = cur % d;
 
@@ -1797,6 +1798,7 @@ impl RuntimeFixedPointInterval {
                 // ltn(a[i..n]) = a[i] + BASE * ltn(a[i+1..n]) = a[i] + BASE * old_acc_a = new_acc_a
             }
 
+            let ghost old_rem = rem;
             let ghost pre_set_quot = quot@;
             let ghost pre_set_tail = quot@.subrange((i + 1) as int, n as int);
             quot.set(i, q as u32);
@@ -1826,10 +1828,20 @@ impl RuntimeFixedPointInterval {
                 assert(limbs_to_nat(q_sub)
                     == q_sub[0] as nat + limb_base() * limbs_to_nat(q_sub.subrange(1, q_sub.len() as int)));
                 // q < BASE: since cur = rem*BASE + a[i] < d*BASE, q = cur/d < BASE
-                let ai64 = a@[i as int] as u64;
-                assert(ai64 <= 0xFFFF_FFFFu64) by { assert(a@[i as int] <= 0xFFFF_FFFFu32); }
+                // cur = rem * BASE + a[i], rem < d, a[i] < BASE
+                // So cur < d * BASE
+                // Prove q < BASE via: cur < d * BASE, so q = cur / d < BASE
+                // cur = rem * BASE + a[i]. a[i] is u32 so a[i] <= BASE-1.
+                // rem < d, so rem <= d-1, so rem*BASE <= (d-1)*BASE.
+                // cur <= (d-1)*BASE + BASE - 1 = d*BASE - 1 < d*BASE.
+                // q < BASE: cur = rem*BASE + ai, rem < d, ai: u32 < BASE
+                // So cur < d*BASE, hence q = cur/d < BASE
+                // Use old_rem (before update) to reason about cur
+                let ghost ai_u64 = ai as u64;
+                assert(cur == old_rem * 0x1_0000_0000u64 + ai_u64);
+                assert(old_rem < d);
                 assert(cur < d * 0x1_0000_0000u64) by (nonlinear_arith)
-                    requires cur == rem * 0x1_0000_0000u64 + ai64, rem < d, ai64 <= 0xFFFF_FFFFu64;
+                    requires old_rem < d, ai_u64 <= 0xFFFF_FFFFu64, cur == old_rem * 0x1_0000_0000u64 + ai_u64, d > 0;
                 assert(q < 0x1_0000_0000u64) by (nonlinear_arith)
                     requires cur < d * 0x1_0000_0000u64, q == cur / d, d > 0;
                 assert(q_sub[0] as nat == q as nat);
