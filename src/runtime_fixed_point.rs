@@ -1675,9 +1675,10 @@ impl RuntimeFixedPointInterval {
                 d == divisor as u64,
                 d > 0,
                 rem < d,
-                // Ghost accumulators match the actual subrange values
+                // Subrange invariants
                 acc_a == limbs_to_nat(a@.subrange(i as int, n as int)),
                 acc_q == limbs_to_nat(quot@.subrange(i as int, n as int)),
+                // Algebraic: acc_q * d + rem == acc_a
                 // Core invariant: rem * BASE^i_position + acc_q * d == acc_a
                 // But BASE^i is hard to track. Use a simpler formulation:
                 // acc_q * d + rem == acc_a ... NO this isn't right either
@@ -1796,20 +1797,29 @@ impl RuntimeFixedPointInterval {
                 // ltn(a[i..n]) = a[i] + BASE * ltn(a[i+1..n]) = a[i] + BASE * old_acc_a = new_acc_a
             }
 
+            let ghost pre_set_quot = quot@;
+            let ghost pre_set_tail = quot@.subrange((i + 1) as int, n as int);
             quot.set(i, q as u32);
             rem = new_rem;
 
             proof {
-                acc_a = a@[i as int] as nat + acc_a * limb_base();
-                acc_q = q as nat + acc_q * limb_base();
+                // Tail unchanged after set
+                assert(quot@.subrange((i + 1) as int, n as int) =~= pre_set_tail);
 
-                // Connect acc_q to ltn(quot[i..n])
-                // After set: quot[i] == q as u32
-                // quot[i..n] = [q] ++ quot[i+1..n] (old)
-                // ltn([q] ++ old_tail) = q + BASE * ltn(old_tail)
-                // This equals acc_q by construction.
-                // TODO: formally connect acc_q == ltn(quot[i..n])
-                // For now, the algebraic invariant is maintained.
+                // For a: unfold ltn on subrange a[i..n]
+                let a_sub = a@.subrange(i as int, n as int);
+                assert(a_sub[0] == a@[i as int]);
+                assert(a_sub.subrange(1, a_sub.len() as int)
+                    =~= a@.subrange((i + 1) as int, n as int));
+
+                // For quot: unfold ltn on subrange quot[i..n]
+                let q_sub = quot@.subrange(i as int, n as int);
+                assert(q_sub[0] == q as u32);
+                assert(q_sub.subrange(1, q_sub.len() as int) =~= pre_set_tail);
+
+                // Set ghosts to the actual subrange values
+                acc_a = limbs_to_nat(a_sub);
+                acc_q = limbs_to_nat(q_sub);
             }
         }
 

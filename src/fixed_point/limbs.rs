@@ -868,4 +868,11 @@ pub proof fn lemma_limbs_nat_to_limbs_identity(a: Seq<u32>, n: nat)
     lemma_limbs_to_nat_unique(a, nat_to_limbs(val, n));
 }
 
+/// After setting one element at index k, the subrange above k is unchanged.
+pub proof fn lemma_set_preserves_upper_subrange(v: Seq<u32>, k: nat, val: u32, n: nat)
+    requires k < n, v.len() == n,
+    ensures v.update(k as int, val).subrange((k + 1) as int, n as int)
+        =~= v.subrange((k + 1) as int, n as int),
+{}
+
 } // verus!
