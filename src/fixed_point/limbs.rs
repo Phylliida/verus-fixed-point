@@ -406,4 +406,28 @@ pub proof fn lemma_limbs_to_nat_subrange_full(limbs: Seq<u32>)
     assert(limbs.subrange(0, limbs.len() as int) =~= limbs);
 }
 
+/// A prefix of a limb sequence has a value <= the full sequence.
+pub proof fn lemma_limbs_to_nat_prefix_le_full(limbs: Seq<u32>, prefix_len: nat)
+    requires prefix_len <= limbs.len(),
+    ensures limbs_to_nat(limbs.subrange(0, prefix_len as int)) <= limbs_to_nat(limbs),
+    decreases limbs.len() - prefix_len,
+{
+    if prefix_len == limbs.len() {
+        lemma_limbs_to_nat_subrange_full(limbs);
+    } else {
+        // Extend by one: ltn(limbs[..prefix_len+1]) = ltn(limbs[..prefix_len]) + limbs[prefix_len] * pow2(...)
+        lemma_limbs_to_nat_subrange_extend(limbs, prefix_len);
+        // ltn(limbs[..prefix_len]) <= ltn(limbs[..prefix_len+1])
+        lemma_pow2_positive((prefix_len * 32) as nat);
+        // By IH: ltn(limbs[..prefix_len+1]) <= ltn(limbs)
+        lemma_limbs_to_nat_prefix_le_full(limbs, prefix_len + 1);
+    }
+}
+
+/// If two same-length sequences are equal element-wise, their limbs_to_nat values are equal.
+pub proof fn lemma_limbs_to_nat_eq(a: Seq<u32>, b: Seq<u32>)
+    requires a =~= b,
+    ensures limbs_to_nat(a) == limbs_to_nat(b),
+{}
+
 } // verus!
