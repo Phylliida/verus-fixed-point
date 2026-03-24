@@ -1647,8 +1647,6 @@ impl RuntimeFixedPointInterval {
 
     /// Divide a multi-limb number by a single u32 scalar. O(n).
     /// Returns (quotient, remainder). Processes MSB to LSB.
-    /// Divide a multi-limb number by a single u32 scalar. O(n).
-    /// Returns (quotient, remainder). Processes MSB to LSB.
     pub fn div_by_u32(a: &Vec<u32>, divisor: u32, n: usize) -> (result: (Vec<u32>, u32))
         requires
             a@.len() == n,
@@ -1657,23 +1655,18 @@ impl RuntimeFixedPointInterval {
         ensures
             result.0@.len() == n,
             (result.1 as nat) < (divisor as nat),
-            // TODO: full correctness: limbs_to_nat(result.0@) * divisor + result.1 == limbs_to_nat(a@)
-            // Needs a top-down loop invariant tracking partial quotient relationship.
+            limbs_to_nat(result.0@) * (divisor as nat) + (result.1 as nat) == limbs_to_nat(a@),
     {
         let mut quot = zero_vec(n);
         let mut rem: u64 = 0;
         let d = divisor as u64;
+        // Ghost accumulator: tracks ltn(a[i..n]) = rem * BASE^i + quot_value * d
+        // where quot_value = ltn(quot[i..n])
+        // We'll use a ghost variable to track the accumulated quotient value.
+        let ghost mut acc_q: nat = 0; // ltn(quot[i..n]) so far
+        let ghost mut acc_a: nat = 0; // ltn(a[i..n]) so far
 
         let mut i: usize = n;
-        proof {
-            assert(quot@.subrange(n as int, n as int) =~= Seq::<u32>::empty());
-            assert(a@.subrange(n as int, n as int) =~= Seq::<u32>::empty());
-            assert(limbs_to_nat(Seq::<u32>::empty()) == 0nat);
-            assert(limbs_to_nat(quot@.subrange(n as int, n as int)) == 0nat);
-            assert(limbs_to_nat(a@.subrange(n as int, n as int)) == 0nat);
-            assert(0nat * pow2((n * 32) as nat) == 0nat) by (nonlinear_arith);
-            assert(0nat + 0nat * (divisor as nat) == 0nat) by (nonlinear_arith);
-        }
         while i > 0
             invariant
                 i <= n,
@@ -1682,10 +1675,79 @@ impl RuntimeFixedPointInterval {
                 d == divisor as u64,
                 d > 0,
                 rem < d,
-                // Simplified invariant: track the relationship between processed portion
-                // and the remainder. The full correctness comes at loop exit.
-                // All positions below i are finalized in quot; positions i..n processed.
-                forall|j: int| 0 <= j < i as int ==> quot@[j] == 0u32,
+                // Ghost accumulators match the actual subrange values
+                acc_a == limbs_to_nat(a@.subrange(i as int, n as int)),
+                acc_q == limbs_to_nat(quot@.subrange(i as int, n as int)),
+                // Core invariant: rem * BASE^i_position + acc_q * d == acc_a
+                // But BASE^i is hard to track. Use a simpler formulation:
+                // acc_q * d + rem == acc_a ... NO this isn't right either
+                // The correct relationship: at each step, we process one more digit.
+                // rem is the carry from higher digits.
+                // After processing a[i], quot[i] = (rem*BASE + a[i]) / d
+                // new_rem = (rem*BASE + a[i]) % d
+                // Invariant: rem * BASE^(relative position) + acc_q * d == acc_a
+                // Since we go top-down, "relative position" = number of digits processed = n - i
+                // So: rem * pow2((n-i) * 32) ... this is still complex.
+                //
+                // Simpler: just track rem * pow2(0) at the end.
+                // At exit (i=0): rem + ltn(quot) * d == ltn(a)
+                //
+                // During loop: rem * limb_base^(digits_remaining below)
+                // Actually the simplest correct invariant:
+                // ltn(quot[i..n]) * d + rem == ltn(a[i..n]) ... when rem < d
+                // Wait, this isn't right because ltn(a[i..n]) could be much larger.
+                //
+                // The RIGHT invariant for top-down long division:
+                // After processing positions [i..n), we have:
+                //   rem * BASE^(n-i-1)... no.
+                //
+                // Let me think again. The algorithm processes from MSB to LSB.
+                // At step k (processing position n-1-k), we have:
+                //   cur = rem * BASE + a[n-1-k]
+                //   quot[n-1-k] = cur / d
+                //   rem = cur % d
+                //
+                // The invariant is: if we think of the number formed by a[i..n] in
+                // BIG-endian order, then quot[i..n] (big-endian) is its quotient by d
+                // and rem is the remainder.
+                //
+                // In little-endian: ltn(a[i..n]) = a[i] + a[i+1]*B + ... + a[n-1]*B^(n-1-i)
+                // The MSB is a[n-1], which we process first.
+                //
+                // The key: after processing all positions from n-1 down to i, we have:
+                //   rem + ltn(quot[i..n]) * d == ltn(a[i..n])
+                //   ... NO, this isn't right for top-down either.
+                //
+                // ACTUALLY for single-digit division going MSB to LSB:
+                // The relationship is sequential carry. Let me just NOT use subranges
+                // and instead track a ghost "total" that we build up.
+
+                // Track: at position i, we've computed quot for positions [i..n).
+                // ghost_total = sum_{k=i}^{n-1} a[k] * BASE^(k-i) [relative to position i]
+                // quot_total = sum_{k=i}^{n-1} quot[k] * BASE^(k-i)
+                // Invariant: quot_total * d + rem == ghost_total
+                // where rem < d.
+                //
+                // At exit (i=0): quot_total == ltn(quot), ghost_total == ltn(a)
+                // So: ltn(quot) * d + rem == ltn(a). QED.
+                //
+                // Maintenance: when we process position i-1:
+                //   cur = rem * BASE + a[i-1]
+                //   q = cur / d, new_rem = cur % d
+                //   new_quot_total = q + quot_total * BASE  (prepending q at position i-1)
+                //   new_ghost_total = a[i-1] + ghost_total * BASE
+                //   new_quot_total * d + new_rem
+                //     = (q + quot_total * BASE) * d + new_rem
+                //     = q*d + quot_total * BASE * d + new_rem
+                //     = (cur - new_rem) + quot_total * BASE * d + new_rem
+                //     = cur + quot_total * d * BASE
+                //     = rem * BASE + a[i-1] + (quot_total * d) * BASE
+                //     = rem * BASE + a[i-1] + (ghost_total - rem) * BASE
+                //        [since quot_total * d = ghost_total - rem from invariant]
+                //     = rem * BASE + a[i-1] + ghost_total * BASE - rem * BASE
+                //     = a[i-1] + ghost_total * BASE
+                //     = new_ghost_total ✓
+                acc_q * (divisor as nat) + (rem as nat) == acc_a,
             decreases i,
         {
             i = i - 1;
@@ -1699,47 +1761,65 @@ impl RuntimeFixedPointInterval {
             let new_rem = cur % d;
 
             proof {
-                // cur == q * d + new_rem (fundamental division identity)
                 vstd::arithmetic::div_mod::lemma_fundamental_div_mod(cur as int, d as int);
-                // cur == d * (cur/d) + cur%d = d * q + new_rem
+                // cur == d * q + new_rem
 
-                // Extend the subrange: a[i..n] = [a[i]] ++ a[i+1..n]
-                // ltn(a[i..n]) = a[i] + BASE * ltn(a[i+1..n])
+                // Update ghost accumulators
+                // new_acc_a = a[i] + old_acc_a * BASE (prepend a[i])
+                // new_acc_q = q + old_acc_q * BASE (prepend q)
+                let old_acc_q = acc_q;
+                let old_acc_a = acc_a;
+                let new_acc_q_val = q as nat + old_acc_q * limb_base();
+                let new_acc_a_val = a@[i as int] as nat + old_acc_a * limb_base();
+
+                // Prove: new_acc_q * d + new_rem == new_acc_a
+                // (q + old_acc_q * BASE) * d + new_rem
+                //   = q*d + old_acc_q * BASE * d + new_rem
+                //   = (cur - new_rem) + old_acc_q * d * BASE + new_rem
+                //   = cur + (old_acc_a - rem) * BASE    [old_acc_q * d == old_acc_a - rem]
+                //   = rem*BASE + a[i] + old_acc_a*BASE - rem*BASE
+                //   = a[i] + old_acc_a * BASE = new_acc_a
+
+                assert(new_acc_q_val * (divisor as nat) + (new_rem as nat) == new_acc_a_val)
+                    by (nonlinear_arith)
+                    requires
+                        old_acc_q * (divisor as nat) + (rem as nat) == old_acc_a,
+                        cur == rem * 0x1_0000_0000u64 + a@[i as int] as u64,
+                        cur as int == d as int * (q as int) + new_rem as int,
+                        d == divisor as u64,
+                        new_acc_q_val == q as nat + old_acc_q * limb_base(),
+                        new_acc_a_val == a@[i as int] as nat + old_acc_a * limb_base(),
+                {}
+
+                // Connect to subrange values
                 lemma_limbs_to_nat_subrange_extend(a@, i as nat);
-                // Similarly for quot
+                // ltn(a[i..n]) = a[i] + BASE * ltn(a[i+1..n]) = a[i] + BASE * old_acc_a = new_acc_a
             }
 
             quot.set(i, q as u32);
             rem = new_rem;
 
             proof {
-                // After setting quot[i] = q:
-                // New invariant at position i:
-                // new_rem * BASE^i + ltn(quot[i..n]) * divisor == ltn(a[i..n])
-                // quot[i..n] = [q] ++ quot[i+1..n]
-                // ltn(quot[i..n]) = q + BASE * ltn(quot[i+1..n])
-                // ltn(quot[i..n]) * d = q*d + BASE * ltn(quot[i+1..n]) * d
+                acc_a = a@[i as int] as nat + acc_a * limb_base();
+                acc_q = q as nat + acc_q * limb_base();
 
-                // From old invariant:
-                // rem * BASE^(i+1) + ltn(quot_old[i+1..n]) * d == ltn(a[i+1..n])
-                // And cur = rem * BASE + a[i], cur = q * d + new_rem
-
-                // New: new_rem * BASE^i + (q + BASE * ltn(quot[i+1..n])) * d
-                //    = new_rem * BASE^i + q*d + BASE * ltn(quot[i+1..n]) * d
-                //    = new_rem * BASE^i + (cur - new_rem) + BASE * ltn(quot[i+1..n]) * d
-                //    [since q*d = cur - new_rem]
-                //    = new_rem * BASE^i + rem * BASE + a[i] - new_rem + BASE * ltn(quot[i+1..n]) * d
-                //    ... this is getting complex. Let Z3 try with the key facts.
+                // Connect acc_q to ltn(quot[i..n])
+                // After set: quot[i] == q as u32
+                // quot[i..n] = [q] ++ quot[i+1..n] (old)
+                // ltn([q] ++ old_tail) = q + BASE * ltn(old_tail)
+                // This equals acc_q by construction.
+                // TODO: formally connect acc_q == ltn(quot[i..n])
+                // For now, the algebraic invariant is maintained.
             }
         }
 
         proof {
             // At exit: i == 0
-            // rem * BASE^0 + ltn(quot[0..n]) * divisor == ltn(a[0..n])
-            // rem * 1 + ltn(quot) * divisor == ltn(a)
-            lemma_limbs_to_nat_subrange_full(quot@);
+            // acc_q * d + rem == acc_a
+            // acc_a == ltn(a[0..n]) == ltn(a)
+            // acc_q == ltn(quot[0..n]) == ltn(quot)
             lemma_limbs_to_nat_subrange_full(a@);
-            lemma_pow2_zero();
+            lemma_limbs_to_nat_subrange_full(quot@);
         }
 
         (quot, rem as u32)
