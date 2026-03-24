@@ -125,9 +125,10 @@ pub proof fn lemma_ntt_eval_at_single(a: ModularInt, omega: ModularInt, k: nat)
     lemma_add_zero_right(x);
     assert(x.add_mod(z).value == x.value);
 
-    // Connect to ntt_eval_at result
+    // Help Z3 unfold ntt_eval_at for n=1 and n=0
+    reveal_with_fuel(ntt_eval_at, 2);
+
     let result = ntt_eval_at(seq![a], omega, 1, k);
-    // result == a.mul_mod(omega.pow_mod(0)).add_mod(zero(p)) == x.add_mod(z)
     assert(result.value == a.value);
     assert(result.modulus == a.modulus);
 }

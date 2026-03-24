@@ -1,6 +1,8 @@
 use vstd::prelude::*;
 
 #[cfg(verus_keep_ghost)]
+use verus_rational::Rational;
+#[cfg(verus_keep_ghost)]
 use crate::fixed_point::FixedPoint;
 #[cfg(verus_keep_ghost)]
 use crate::fixed_point::limbs::*;
@@ -313,14 +315,17 @@ pub fn is_all_zero(limbs: &Vec<u32>) -> (result: bool)
 
 /// Compare two n-limb unsigned arrays using subtraction.
 /// Returns ordering of limbs_to_nat(a) vs limbs_to_nat(b).
-pub fn cmp_limbs(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: std::cmp::Ordering)
+/// Compare two n-limb unsigned arrays using subtraction.
+/// Returns -1 if a < b, 0 if a == b, 1 if a > b.
+pub fn cmp_limbs(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: i8)
     requires
         a@.len() == n,
         b@.len() == n,
     ensures
-        result == std::cmp::Ordering::Less ==> limbs_to_nat(a@) < limbs_to_nat(b@),
-        result == std::cmp::Ordering::Equal ==> limbs_to_nat(a@) == limbs_to_nat(b@),
-        result == std::cmp::Ordering::Greater ==> limbs_to_nat(a@) > limbs_to_nat(b@),
+        result < 0i8 ==> limbs_to_nat(a@) < limbs_to_nat(b@),
+        result == 0i8 ==> limbs_to_nat(a@) == limbs_to_nat(b@),
+        result > 0i8 ==> limbs_to_nat(a@) > limbs_to_nat(b@),
+        -1i8 <= result <= 1i8,
 {
     let result = sub_limbs(a, b, n);
     let diff = &result.0;
@@ -342,7 +347,7 @@ pub fn cmp_limbs(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: std::cmp::Ord
                          borrow >= 1,
                          ltn_d < p;
         }
-        std::cmp::Ordering::Less
+        -1i8
     } else {
         proof {
             let ltn_d = limbs_to_nat(result.0@);
@@ -354,9 +359,9 @@ pub fn cmp_limbs(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: std::cmp::Ord
         }
         let is_zero = is_all_zero(diff);
         if is_zero {
-            std::cmp::Ordering::Equal
+            0i8
         } else {
-            std::cmp::Ordering::Greater
+            1i8
         }
     }
 }
@@ -365,6 +370,7 @@ pub fn cmp_limbs(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: std::cmp::Ord
 pub fn zero_vec(n: usize) -> (result: Vec<u32>)
     ensures
         result@.len() == n,
+        result@ =~= Seq::new(n as nat, |_i: int| 0u32),
         limbs_to_nat(result@) == 0,
 {
     let mut out: Vec<u32> = Vec::new();
@@ -1022,6 +1028,322 @@ pub fn mul_karatsuba(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: Vec<u32>)
     }
 
     s2
+}
+
+// ── RuntimeFixedPointInterval ──────────────────────────
+
+/// Exec-level interval backed by RuntimeFixedPoint endpoints + ghost exact Rational.
+/// The ghost exact tracks the true mathematical value. lo and hi are exec-level bounds.
+pub struct RuntimeFixedPointInterval {
+    pub lo: RuntimeFixedPoint,
+    pub hi: RuntimeFixedPoint,
+    pub exact: Ghost<Rational>,
+}
+
+impl RuntimeFixedPointInterval {
+    pub open spec fn wf_spec(&self) -> bool {
+        &&& self.lo.wf_spec()
+        &&& self.hi.wf_spec()
+        &&& self.lo@.same_format(self.hi@)
+        &&& self.lo@.view().le_spec(self.exact@)
+        &&& self.exact@.le_spec(self.hi@.view())
+    }
+
+    /// The ghost exact Rational value.
+    pub open spec fn exact_view(&self) -> Rational {
+        self.exact@
+    }
+
+    /// Format accessors.
+    pub open spec fn n_spec(&self) -> nat { self.lo@.n }
+    pub open spec fn frac_spec(&self) -> nat { self.lo@.frac }
+
+    /// Construct a point interval at zero.
+    pub fn zero_interval(n: usize, frac: usize) -> (result: Self)
+        requires n > 0, frac <= n * 32,
+        ensures result.wf_spec(),
+    {
+        let ghost fp_model = FixedPoint {
+            limbs: Seq::new(n as nat, |_i: int| 0u32),
+            sign: false,
+            n: n as nat,
+            frac: frac as nat,
+        };
+
+        let lo_limbs = zero_vec(n);
+        let lo = RuntimeFixedPoint {
+            limbs: lo_limbs, sign: false,
+            n: Ghost(n as nat), frac: Ghost(frac as nat),
+            model: Ghost(fp_model),
+        };
+
+        let hi_limbs = zero_vec(n);
+        let hi = RuntimeFixedPoint {
+            limbs: hi_limbs, sign: false,
+            n: Ghost(n as nat), frac: Ghost(frac as nat),
+            model: Ghost(fp_model),
+        };
+
+        let ghost exact = fp_model.view();
+
+        proof {
+            lemma_limbs_to_nat_all_zeros(n as nat);
+            assert(fp_model.wf_spec());
+            lemma_pow2_positive(frac as nat);
+            Rational::lemma_eqv_reflexive(fp_model.view());
+            Rational::lemma_le_iff_lt_or_eqv(fp_model.view(), fp_model.view());
+        }
+
+        RuntimeFixedPointInterval { lo, hi, exact: Ghost(exact) }
+    }
+
+    /// Deep copy.
+    pub fn copy_interval(&self) -> (result: Self)
+        requires self.wf_spec(),
+        ensures result.wf_spec(), result.exact@ == self.exact@,
+    {
+        // Copy lo limbs
+        let mut lo_limbs: Vec<u32> = Vec::new();
+        let lo_n = self.lo.limbs.len();
+        let mut i: usize = 0;
+        while i < lo_n
+            invariant
+                i <= lo_n, lo_n == self.lo.limbs@.len(),
+                lo_limbs@.len() == i,
+                lo_limbs@ =~= self.lo.limbs@.subrange(0, i as int),
+            decreases lo_n - i,
+        {
+            lo_limbs.push(self.lo.limbs[i]);
+            i = i + 1;
+        }
+
+        proof { assert(lo_limbs@ =~= self.lo.limbs@); }
+
+        let lo = RuntimeFixedPoint {
+            limbs: lo_limbs, sign: self.lo.sign,
+            n: Ghost(self.lo.n@), frac: Ghost(self.lo.frac@),
+            model: Ghost(self.lo@),
+        };
+
+        let mut hi_limbs: Vec<u32> = Vec::new();
+        let hi_n = self.hi.limbs.len();
+        let mut j: usize = 0;
+        while j < hi_n
+            invariant
+                j <= hi_n, hi_n == self.hi.limbs@.len(),
+                hi_limbs@.len() == j,
+                hi_limbs@ =~= self.hi.limbs@.subrange(0, j as int),
+            decreases hi_n - j,
+        {
+            hi_limbs.push(self.hi.limbs[j]);
+            j = j + 1;
+        }
+
+        proof { assert(hi_limbs@ =~= self.hi.limbs@); }
+
+        let hi = RuntimeFixedPoint {
+            limbs: hi_limbs, sign: self.hi.sign,
+            n: Ghost(self.hi.n@), frac: Ghost(self.hi.frac@),
+            model: Ghost(self.hi@),
+        };
+
+        RuntimeFixedPointInterval { lo, hi, exact: Ghost(self.exact@) }
+    }
+
+    /// Negation: swap lo/hi, negate both, exact = -exact.
+    pub fn neg_interval(&self) -> (result: Self)
+        requires self.wf_spec(),
+        ensures
+            result.wf_spec(),
+            result.exact@ == self.exact@.neg_spec(),
+    {
+        // -[lo, hi] = [-hi, -lo]
+        // Negate hi (becomes new lo) and lo (becomes new hi)
+        let n = self.lo.limbs.len();
+
+        // Copy hi's limbs for new lo (negated)
+        let mut new_lo_limbs: Vec<u32> = Vec::new();
+        let mut i: usize = 0;
+        while i < n
+            invariant
+                i <= n, n == self.hi.limbs@.len(),
+                new_lo_limbs@.len() == i,
+                new_lo_limbs@ =~= self.hi.limbs@.subrange(0, i as int),
+            decreases n - i,
+        {
+            new_lo_limbs.push(self.hi.limbs[i]);
+            i = i + 1;
+        }
+
+        proof { assert(new_lo_limbs@ =~= self.hi.limbs@); }
+        let hi_mag_zero = is_all_zero(&new_lo_limbs);
+        let new_lo = RuntimeFixedPoint {
+            limbs: new_lo_limbs,
+            sign: if hi_mag_zero { false } else { !self.hi.sign },
+            n: Ghost(self.hi.n@),
+            frac: Ghost(self.hi.frac@),
+            model: Ghost(self.hi@.neg_spec()),
+        };
+
+        // Copy lo's limbs for new hi (negated)
+        let mut new_hi_limbs: Vec<u32> = Vec::new();
+        let mut j: usize = 0;
+        while j < n
+            invariant
+                j <= n, n == self.lo.limbs@.len(),
+                new_hi_limbs@.len() == j,
+                new_hi_limbs@ =~= self.lo.limbs@.subrange(0, j as int),
+            decreases n - j,
+        {
+            new_hi_limbs.push(self.lo.limbs[j]);
+            j = j + 1;
+        }
+
+        proof { assert(new_hi_limbs@ =~= self.lo.limbs@); }
+        let lo_mag_zero = is_all_zero(&new_hi_limbs);
+        let new_hi = RuntimeFixedPoint {
+            limbs: new_hi_limbs,
+            sign: if lo_mag_zero { false } else { !self.lo.sign },
+            n: Ghost(self.lo.n@),
+            frac: Ghost(self.lo.frac@),
+            model: Ghost(self.lo@.neg_spec()),
+        };
+
+        let ghost new_exact = self.exact@.neg_spec();
+
+        proof {
+            FixedPoint::lemma_neg_wf(self.hi@);
+            FixedPoint::lemma_neg_wf(self.lo@);
+            FixedPoint::lemma_neg_view(self.hi@);
+            FixedPoint::lemma_neg_view(self.lo@);
+
+            // Need: -hi.view() <= -exact <= -lo.view()
+            Rational::lemma_neg_reverses_le(self.exact@, self.hi@.view());
+            Rational::lemma_neg_reverses_le(self.lo@.view(), self.exact@);
+
+            // Connect through eqv
+            Rational::lemma_eqv_implies_le(self.hi@.neg_spec().view(), self.hi@.view().neg_spec());
+            Rational::lemma_le_transitive(
+                self.hi@.neg_spec().view(),
+                self.hi@.view().neg_spec(),
+                new_exact,
+            );
+            Rational::lemma_eqv_implies_le(self.lo@.neg_spec().view(), self.lo@.view().neg_spec());
+            Rational::lemma_eqv_symmetric(self.lo@.neg_spec().view(), self.lo@.view().neg_spec());
+            Rational::lemma_eqv_implies_le(self.lo@.view().neg_spec(), self.lo@.neg_spec().view());
+            Rational::lemma_le_transitive(
+                new_exact,
+                self.lo@.view().neg_spec(),
+                self.lo@.neg_spec().view(),
+            );
+        }
+
+        RuntimeFixedPointInterval { lo: new_lo, hi: new_hi, exact: Ghost(new_exact) }
+    }
+
+    /// Signed addition of two RuntimeFixedPoints with same format.
+    /// Implements: same sign → add magnitudes, different sign → compare then subtract.
+    pub fn add_rfp(a: &RuntimeFixedPoint, b: &RuntimeFixedPoint) -> (result: RuntimeFixedPoint)
+        requires
+            a.wf_spec(),
+            b.wf_spec(),
+            a@.same_format(b@),
+            FixedPoint::add_no_overflow(a@, b@),
+        ensures
+            result.wf_spec(),
+            result@.n == a@.n,
+            result@.frac == a@.frac,
+    {
+        let n = a.limbs.len();
+
+        // Helper: build a RuntimeFixedPoint from exec limbs + sign, constructing
+        // the model from the exec data (avoids limb uniqueness issues).
+        // Then prove the view matches the spec-level add result.
+
+        if a.sign == b.sign {
+            // Same sign: add magnitudes, keep sign
+            let (sum_limbs, carry) = add_limbs(&a.limbs, &b.limbs, n);
+            let result_sign = if carry == 0 && is_all_zero(&sum_limbs) { false } else { a.sign };
+
+            let ghost model = FixedPoint { limbs: sum_limbs@, sign: result_sign, n: a.n@, frac: a.frac@ };
+            proof {
+                // Prove carry == 0 from add_no_overflow:
+                // Same sign: magnitude = ltn(a) + ltn(b) < pow2(n*32) (from overflow cond)
+                // add_limbs: ltn(sum) + carry * pow2(n*32) == ltn(a) + ltn(b)
+                // Since ltn(a) + ltn(b) < pow2(n*32) and ltn(sum) >= 0: carry == 0
+                // Derive: ltn(a) + ltn(b) < pow2(n*32) from add_no_overflow
+                // When same sign, signed sum magnitude == ltn(a) + ltn(b)
+                let la = limbs_to_nat(a@.limbs);
+                let lb = limbs_to_nat(b@.limbs);
+                let p = pow2((a.n@ * 32) as nat);
+                assert(la + lb < p) by {
+                    // From add_no_overflow: the magnitude of signed sum < pow2(n*32)
+                    // For same sign: magnitude = ltn(a) + ltn(b)
+                    let sv_a = a@.signed_value();
+                    let sv_b = b@.signed_value();
+                    if a.sign {
+                        assert(sv_a == -(la as int));
+                        assert(sv_b == -(lb as int));
+                        assert(sv_a + sv_b == -((la + lb) as int));
+                    } else {
+                        assert(sv_a == la as int);
+                        assert(sv_b == lb as int);
+                    }
+                }
+
+                lemma_limbs_to_nat_upper_bound(sum_limbs@);
+                assert(carry == 0) by (nonlinear_arith)
+                    requires
+                        limbs_to_nat(sum_limbs@) + (carry as nat) * p == la + lb,
+                        la + lb < p,
+                        limbs_to_nat(sum_limbs@) < p,
+                        carry <= 1,
+                {}
+                // Canonical zero: result_sign = a.sign only when not all zero
+                // So if result_sign, then !is_all_zero, so ltn != 0
+                assert(model.wf_spec());
+            }
+
+            RuntimeFixedPoint {
+                limbs: sum_limbs, sign: result_sign,
+                n: Ghost(a.n@), frac: Ghost(a.frac@),
+                model: Ghost(model),
+            }
+        } else {
+            // Different sign: compare magnitudes, subtract smaller from larger
+            let ord = cmp_limbs(&a.limbs, &b.limbs, n);
+            if ord == 0i8 {
+                let z = zero_vec(n);
+                let ghost model = FixedPoint { limbs: z@, sign: false, n: a.n@, frac: a.frac@ };
+                proof { assert(model.wf_spec()); }
+                RuntimeFixedPoint {
+                    limbs: z, sign: false,
+                    n: Ghost(a.n@), frac: Ghost(a.frac@),
+                    model: Ghost(model),
+                }
+            } else if ord > 0i8 {
+                let (diff, borrow) = sub_limbs(&a.limbs, &b.limbs, n);
+                let result_sign = if is_all_zero(&diff) { false } else { a.sign };
+                let ghost model = FixedPoint { limbs: diff@, sign: result_sign, n: a.n@, frac: a.frac@ };
+                proof { assert(model.wf_spec()); }
+                RuntimeFixedPoint {
+                    limbs: diff, sign: result_sign,
+                    n: Ghost(a.n@), frac: Ghost(a.frac@),
+                    model: Ghost(model),
+                }
+            } else {
+                let (diff, borrow) = sub_limbs(&b.limbs, &a.limbs, n);
+                let result_sign = if is_all_zero(&diff) { false } else { b.sign };
+                let ghost model = FixedPoint { limbs: diff@, sign: result_sign, n: a.n@, frac: a.frac@ };
+                proof { assert(model.wf_spec()); }
+                RuntimeFixedPoint {
+                    limbs: diff, sign: result_sign,
+                    n: Ghost(a.n@), frac: Ghost(a.frac@),
+                    model: Ghost(model),
+                }
+            }
+        }
+    }
 }
 
 } // verus!
