@@ -123,13 +123,32 @@ pub proof fn lemma_mul_mod_wf(a: ModularInt, b: ModularInt)
 
 // ── Modular arithmetic helpers ─────────────────────────
 
+/// Helper: a == (a/p)*p + a%p for nat division.
+proof fn lemma_div_mod_identity(a: nat, p: nat)
+    requires p > 0,
+    ensures a == (a / p) * p + a % p, a % p < p,
+{
+    assert(a == (a / p) * p + a % p) by (nonlinear_arith) requires p > 0;
+    assert(a % p < p) by (nonlinear_arith) requires p > 0;
+}
+
 /// (a % p + b) % p == (a + b) % p
 pub proof fn lemma_mod_add_left(a: nat, b: nat, p: nat)
     requires p > 0,
     ensures (a % p + b) % p == (a + b) % p,
 {
+    lemma_div_mod_identity(a, p);
+    lemma_div_mod_identity(a + b, p);
+    lemma_div_mod_identity(a % p + b, p);
+    // a = q*p + r, so a%p + b = r + b, and a + b = q*p + r + b
+    // (r + b) % p == (q*p + r + b) % p
+    // This holds because adding q*p doesn't change the remainder
     assert((a % p + b) % p == (a + b) % p) by (nonlinear_arith)
-        requires p > 0;
+        requires
+            p > 0,
+            a == (a / p) * p + a % p,
+            a % p < p,
+    {}
 }
 
 /// (a + b % p) % p == (a + b) % p
@@ -137,8 +156,9 @@ pub proof fn lemma_mod_add_right(a: nat, b: nat, p: nat)
     requires p > 0,
     ensures (a + b % p) % p == (a + b) % p,
 {
+    lemma_div_mod_identity(b, p);
     assert((a + b % p) % p == (a + b) % p) by (nonlinear_arith)
-        requires p > 0;
+        requires p > 0, b == (b / p) * p + b % p, b % p < p;
 }
 
 /// (a % p * b) % p == (a * b) % p
@@ -146,17 +166,19 @@ pub proof fn lemma_mod_mul_left(a: nat, b: nat, p: nat)
     requires p > 0,
     ensures (a % p * b) % p == (a * b) % p,
 {
+    lemma_div_mod_identity(a, p);
     assert((a % p * b) % p == (a * b) % p) by (nonlinear_arith)
-        requires p > 0;
+        requires p > 0, a == (a / p) * p + a % p, a % p < p;
 }
 
-/// (a * b % p) % p == (a * b) % p
+/// (a * (b % p)) % p == (a * b) % p
 pub proof fn lemma_mod_mul_right(a: nat, b: nat, p: nat)
     requires p > 0,
     ensures (a * (b % p)) % p == (a * b) % p,
 {
+    lemma_div_mod_identity(b, p);
     assert((a * (b % p)) % p == (a * b) % p) by (nonlinear_arith)
-        requires p > 0;
+        requires p > 0, b == (b / p) * p + b % p, b % p < p;
 }
 
 // ── Ring axioms ────────────────────────────────────────
@@ -254,9 +276,6 @@ pub proof fn lemma_mul_distributes_left(a: ModularInt, b: ModularInt, c: Modular
     let p = a.modulus;
     let av = a.value; let bv = b.value; let cv = c.value;
     lemma_mod_mul_right(av, bv + cv, p);
-    // (av * (bv+cv)) % p
-    lemma_mul_distribute(av as int, 0, (bv + cv) as int);
-    // av * (bv + cv) == av * bv + av * cv
     assert(av * (bv + cv) == av * bv + av * cv) by (nonlinear_arith);
     // (av*bv + av*cv) % p == ((av*bv)%p + (av*cv)%p) % p
     lemma_mod_add_left(av * bv, av * cv, p);
