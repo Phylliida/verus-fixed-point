@@ -1730,12 +1730,13 @@ impl RuntimeFixedPointInterval {
             result@.n == target_n as nat,
             result@.frac == target_frac as nat,
             !a.sign ==> !result.sign,
+            // View correspondence: magnitude is floor-divided by pow2(frac_diff * 32)
+            limbs_to_nat(result@.limbs)
+                == limbs_to_nat(a@.limbs) / pow2(((a@.n - target_n as nat) * 32) as nat),
     {
-        let frac_diff = a.limbs.len() - target_n; // limbs to skip from the bottom
-        // This works when frac_diff == (a.frac - target_frac) / 32
+        let frac_diff = a.limbs.len() - target_n;
 
         let shifted = Self::shift_right_limbs(&a.limbs, a.limbs.len(), frac_diff);
-        // shifted has target_n limbs (if target_n == a.n - frac_diff)
 
         let result_limbs = if shifted.len() > target_n {
             slice_vec(&shifted, 0, target_n)
@@ -1752,6 +1753,38 @@ impl RuntimeFixedPointInterval {
             n: target_n as nat,
             frac: target_frac as nat,
         };
+
+        proof {
+            assert(a.limbs@ == a@.limbs);
+            let fd = frac_diff as nat;
+            let n_a = a.limbs@.len();
+
+            // shifted@ == a.limbs@.subrange(fd, n_a)
+            assert(shifted@ == a@.limbs.subrange(fd as int, n_a as int));
+
+            // By split lemma: ltn(a) == ltn(a[..fd]) + ltn(a[fd..]) * pow2(fd*32)
+            lemma_limbs_to_nat_split(a@.limbs, fd);
+
+            let lo = limbs_to_nat(a@.limbs.subrange(0, fd as int));
+            let hi = limbs_to_nat(a@.limbs.subrange(fd as int, n_a as int));
+
+            // lo < pow2(fd*32)
+            lemma_limbs_to_nat_upper_bound(a@.limbs.subrange(0, fd as int));
+            let shift_pow = pow2((fd * 32) as nat);
+            lemma_pow2_positive((fd * 32) as nat);
+
+            // hi == ltn(a) / shift_pow  (by fundamental div mod converse)
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(
+                limbs_to_nat(a@.limbs) as int,
+                shift_pow as int,
+                hi as int,
+                lo as int,
+            );
+
+            // result_limbs == shifted (since shifted.len() == target_n)
+            assert(shifted@.len() == target_n);
+            assert(fd == a@.n - target_n as nat);
+        }
 
         RuntimeFixedPoint {
             limbs: result_limbs,
