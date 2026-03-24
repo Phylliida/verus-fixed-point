@@ -464,4 +464,141 @@ pub proof fn lemma_limbs_to_nat_prepend_zeros(a: Seq<u32>, n: nat)
     }
 }
 
+/// Split a limb sequence at position `mid`:
+/// limbs_to_nat(limbs) == limbs_to_nat(limbs[..mid]) + limbs_to_nat(limbs[mid..]) * pow2(mid * 32)
+pub proof fn lemma_limbs_to_nat_split(limbs: Seq<u32>, mid: nat)
+    requires mid <= limbs.len(),
+    ensures
+        limbs_to_nat(limbs) == limbs_to_nat(limbs.subrange(0, mid as int))
+            + limbs_to_nat(limbs.subrange(mid as int, limbs.len() as int)) * pow2((mid * 32) as nat),
+    decreases mid,
+{
+    if mid == 0 {
+        assert(limbs.subrange(0, 0int) =~= Seq::<u32>::empty());
+        assert(limbs.subrange(0, limbs.len() as int) =~= limbs);
+        lemma_pow2_zero();
+    } else {
+        // Induction: split off the first element
+        // limbs = [limbs[0]] ++ limbs[1..]
+        // ltn(limbs) = limbs[0] + BASE * ltn(limbs[1..])
+        let tail = limbs.subrange(1, limbs.len() as int);
+        // IH on tail at mid-1:
+        // ltn(tail) = ltn(tail[..mid-1]) + ltn(tail[mid-1..]) * pow2((mid-1)*32)
+        lemma_limbs_to_nat_split(tail, (mid - 1) as nat);
+
+        // tail[..mid-1] == limbs[1..mid]
+        let tail_lo = tail.subrange(0, (mid - 1) as int);
+        let limbs_lo = limbs.subrange(0, mid as int);
+        let limbs_1_to_mid = limbs.subrange(1, mid as int);
+        assert(tail_lo =~= limbs_1_to_mid);
+
+        // tail[mid-1..] == limbs[mid..]
+        let tail_hi = tail.subrange((mid - 1) as int, tail.len() as int);
+        let limbs_hi = limbs.subrange(mid as int, limbs.len() as int);
+        assert(tail_hi =~= limbs_hi);
+
+        // ltn(limbs) = limbs[0] + BASE * ltn(tail)
+        //            = limbs[0] + BASE * (ltn(tail_lo) + ltn(tail_hi) * pow2((mid-1)*32))
+        //            = limbs[0] + BASE * ltn(limbs[1..mid]) + BASE * ltn(limbs[mid..]) * pow2((mid-1)*32)
+        //
+        // ltn(limbs[..mid]) = limbs[0] + BASE * ltn(limbs[1..mid])
+        //   (by the recursive definition applied to limbs[..mid])
+        let lo = limbs.subrange(0, mid as int);
+        assert(lo[0] == limbs[0]);
+        assert(lo.subrange(1, lo.len() as int) =~= limbs_1_to_mid);
+
+        // ltn(limbs[mid..]) * pow2(mid*32) = ltn(limbs_hi) * BASE * pow2((mid-1)*32)
+        //                                  = ltn(limbs_hi) * pow2(32) * pow2((mid-1)*32)
+        //                                  = ltn(limbs_hi) * pow2(mid*32)
+        lemma_limb_base_is_pow2_32();
+        lemma_pow2_add(32, ((mid - 1) * 32) as nat);
+        assert(32 + (mid - 1) * 32 == mid * 32);
+
+        // Chain the algebra
+        assert(limbs_to_nat(limbs) == limbs[0] as nat + limb_base() * limbs_to_nat(tail));
+        assert(limbs_to_nat(tail) == limbs_to_nat(tail_lo) + limbs_to_nat(tail_hi) * pow2(((mid - 1) * 32) as nat));
+        assert(limbs_to_nat(lo) == limbs[0] as nat + limb_base() * limbs_to_nat(limbs_1_to_mid));
+
+        assert(limbs_to_nat(limbs)
+            == limbs_to_nat(lo) + limb_base() * limbs_to_nat(limbs_hi) * pow2(((mid - 1) * 32) as nat))
+            by (nonlinear_arith)
+            requires
+                limbs_to_nat(limbs) == limbs[0] as nat + limb_base() * limbs_to_nat(tail),
+                limbs_to_nat(tail) == limbs_to_nat(limbs_1_to_mid) + limbs_to_nat(limbs_hi) * pow2(((mid - 1) * 32) as nat),
+                limbs_to_nat(lo) == limbs[0] as nat + limb_base() * limbs_to_nat(limbs_1_to_mid),
+        {}
+
+        assert(limb_base() * limbs_to_nat(limbs_hi) * pow2(((mid - 1) * 32) as nat)
+            == limbs_to_nat(limbs_hi) * pow2((mid * 32) as nat)) by (nonlinear_arith)
+            requires
+                limb_base() * pow2(((mid - 1) * 32) as nat) == pow2((mid * 32) as nat),
+        {}
+    }
+}
+
+/// Karatsuba algebraic identity (using int to avoid nat subtraction issues):
+/// (a_hi * B + a_lo) * (b_hi * B + b_lo)
+///   == z0 + z1 * B + z2 * B^2
+/// where z0 = a_lo*b_lo, z2 = a_hi*b_hi, z1 = (a_lo+a_hi)*(b_lo+b_hi) - z0 - z2
+pub proof fn lemma_karatsuba_identity(a_lo: int, a_hi: int, b_lo: int, b_hi: int, base: int)
+    ensures
+    ({
+        let z0 = a_lo * b_lo;
+        let z2 = a_hi * b_hi;
+        let z1 = (a_lo + a_hi) * (b_lo + b_hi) - z0 - z2;
+        (a_hi * base + a_lo) * (b_hi * base + b_lo) == z0 + z1 * base + z2 * base * base
+    }),
+{
+    // Expand LHS:
+    // (a_hi * B + a_lo)(b_hi * B + b_lo)
+    // = a_hi * b_hi * B^2 + a_hi * b_lo * B + a_lo * b_hi * B + a_lo * b_lo
+    //
+    // RHS z1 term:
+    // (a_lo + a_hi)(b_lo + b_hi) - a_lo*b_lo - a_hi*b_hi
+    // = a_lo*b_lo + a_lo*b_hi + a_hi*b_lo + a_hi*b_hi - a_lo*b_lo - a_hi*b_hi
+    // = a_lo*b_hi + a_hi*b_lo
+    //
+    // RHS = a_lo*b_lo + (a_lo*b_hi + a_hi*b_lo)*B + a_hi*b_hi*B^2
+    // = LHS ✓
+
+    let z0 = a_lo * b_lo;
+    let z2 = a_hi * b_hi;
+
+    // Step 1: Expand (a_lo + a_hi) * (b_lo + b_hi) using distributivity
+    let sa = a_lo + a_hi;
+    let sb = b_lo + b_hi;
+    // sa * sb = sa * b_lo + sa * b_hi
+    assert(sa * sb == sa * b_lo + sa * b_hi) by (nonlinear_arith);
+    // sa * b_lo = a_lo * b_lo + a_hi * b_lo
+    assert(sa * b_lo == a_lo * b_lo + a_hi * b_lo) by (nonlinear_arith);
+    // sa * b_hi = a_lo * b_hi + a_hi * b_hi
+    assert(sa * b_hi == a_lo * b_hi + a_hi * b_hi) by (nonlinear_arith);
+    // So sa * sb = z0 + a_hi*b_lo + a_lo*b_hi + z2
+    let cross = a_lo * b_hi + a_hi * b_lo;
+    let z1 = sa * sb - z0 - z2;
+    assert(z1 == cross);
+
+    // Step 2: Expand LHS = (a_hi * base + a_lo) * (b_hi * base + b_lo)
+    let p = a_hi * base + a_lo;
+    let q = b_hi * base + b_lo;
+    // p * q = p * b_hi * base + p * b_lo
+    assert(p * q == p * (b_hi * base) + p * b_lo) by (nonlinear_arith);
+    // p * b_lo = a_hi * base * b_lo + a_lo * b_lo
+    assert(p * b_lo == a_hi * base * b_lo + a_lo * b_lo) by (nonlinear_arith);
+    // p * (b_hi * base) = a_hi * base * b_hi * base + a_lo * b_hi * base
+    assert(p * (b_hi * base) == a_hi * (b_hi * base) * base + a_lo * (b_hi * base)) by (nonlinear_arith);
+    assert(a_hi * (b_hi * base) * base == z2 * base * base) by (nonlinear_arith);
+    assert(a_lo * (b_hi * base) == a_lo * b_hi * base) by (nonlinear_arith);
+    assert(a_hi * base * b_lo == a_hi * b_lo * base) by (nonlinear_arith);
+
+    // p * q = z2 * base * base + a_lo * b_hi * base + a_hi * b_lo * base + z0
+    //       = z2 * base * base + cross * base + z0
+    assert(cross * base == a_lo * b_hi * base + a_hi * b_lo * base) by (nonlinear_arith);
+    assert(p * q == z2 * base * base + cross * base + z0);
+
+    // Step 3: z0 + z1 * base + z2 * base * base == p * q
+    assert(z0 + z1 * base + z2 * base * base == z0 + cross * base + z2 * base * base) by (nonlinear_arith)
+        requires z1 == cross;
+}
+
 } // verus!
