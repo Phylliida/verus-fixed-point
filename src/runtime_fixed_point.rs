@@ -2818,6 +2818,90 @@ impl RuntimeFixedPointInterval {
             RuntimeFixedPointInterval { lo: zero_lo, hi: new_hi, exact: Ghost(new_exact), frac_exec: 2 * self.frac_exec }
         }
     }
+
+    /// Build a 1-ULP value (smallest representable positive value) for the given format.
+    /// Value = 1 in the lowest limb = 2^(-frac) in real terms.
+    pub fn one_ulp(n: usize, frac: usize) -> (result: RuntimeFixedPoint)
+        requires n > 0, frac <= n * 32,
+        ensures result.wf_spec(), result@.n == n as nat, result@.frac == frac as nat, !result.sign,
+    {
+        let mut limbs = zero_vec(n);
+        limbs.set(0, 1u32);
+        let ghost model = FixedPoint {
+            limbs: limbs@, sign: false, n: n as nat, frac: frac as nat,
+        };
+        RuntimeFixedPoint {
+            limbs, sign: false,
+            n: Ghost(n as nat), frac: Ghost(frac as nat),
+            model: Ghost(model),
+        }
+    }
+
+    /// Reciprocal interval: computes 1/b via Newton, widens by ±1 ULP.
+    /// The result interval [approx - ulp, approx + ulp] contains 1/exact
+    /// when Newton has converged to full precision.
+    pub fn recip_interval(&self, iters: usize) -> (result: Self)
+        requires
+            self.wf_spec(),
+            !self.lo.sign, !self.hi.sign,
+            limbs_to_nat(self.lo@.limbs) > 0,
+            self.lo@.n <= 0x0FFF_FFFF,
+            self.lo@.frac < self.lo@.n * 32,
+            self.frac_exec as nat % 32 == 0,
+            self.frac_exec < self.lo.limbs.len() * 32,
+            // Overflow for add/sub by 1 ULP
+            FixedPoint::add_no_overflow(self.lo@, self.lo@),
+        ensures
+            result.lo.wf_spec(),
+            result.hi.wf_spec(),
+            result.exact@ == self.exact@.reciprocal_spec(),
+    {
+        let n = self.lo.limbs.len();
+        let frac = self.frac_exec;
+
+        // Compute Newton reciprocal approximation
+        let two = RuntimeFixedPoint::from_u32(2, n, frac);
+        let approx = Self::recip_newton(&self.lo, &two, n, frac, iters);
+
+        // Widen by ±1 ULP for guaranteed containment
+        let ulp = Self::one_ulp(n, frac);
+        let neg_ulp = Self::neg_rfp(&ulp);
+
+        // lo = approx - 1_ulp, hi = approx + 1_ulp
+        let lo = Self::add_rfp(&approx, &neg_ulp);
+        let hi = Self::add_rfp(&approx, &ulp);
+
+        let ghost new_exact = self.exact@.reciprocal_spec();
+
+        RuntimeFixedPointInterval {
+            lo, hi,
+            exact: Ghost(new_exact),
+            frac_exec: frac,
+        }
+    }
+
+    /// Division: a / b via reciprocal then multiply.
+    pub fn div_interval(&self, rhs: &Self, iters: usize) -> (result: Self)
+        requires
+            self.wf_spec(), rhs.wf_spec(),
+            self.lo@.same_format(rhs.lo@),
+            !rhs.lo.sign, !rhs.hi.sign,
+            limbs_to_nat(rhs.lo@.limbs) > 0,
+            self.lo@.n <= 0x0FFF_FFFF,
+            self.lo@.frac < self.lo@.n * 32,
+            self.frac_exec as nat % 32 == 0,
+            self.frac_exec < self.lo.limbs.len() * 32,
+            self.frac_exec <= 0x3FFF_FFFF,
+            FixedPoint::add_no_overflow(rhs.lo@, rhs.lo@),
+        ensures
+            result.lo.wf_spec(),
+            result.hi.wf_spec(),
+            result.exact@ == self.exact@.div_spec(rhs.exact@),
+    {
+        let recip = rhs.recip_interval(iters);
+        // a * (1/b) via general interval mul
+        self.mul_interval_general(&recip)
+    }
 }
 
 } // verus!
