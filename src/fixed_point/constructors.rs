@@ -20,7 +20,7 @@ impl FixedPoint {
             limbs_to_nat(result.limbs) == 0,
             result.view().eqv_spec(Rational::from_int_spec(0)),
     {
-        let limbs = Seq::new(n as int, |_i: int| 0u32);
+        let limbs = Seq::new(n, |_i: int| 0u32);
         let fp = FixedPoint { limbs, sign: false, n, frac };
         // wf: limbs.len() == n, n > 0, frac <= n*32, sign==false (canonical zero trivial)
         assert(limbs.len() == n);
@@ -73,7 +73,7 @@ impl FixedPoint {
             // frac / 32 < n when frac < n * 32
         }
 
-        let limbs = Seq::new(n as int, |i: int| if i == k as int { limb_val } else { 0u32 });
+        let limbs = Seq::new(n, |i: int| if i == k as int { limb_val } else { 0u32 });
 
         // Prove limbs_to_nat(limbs) == pow2(frac)
         lemma_limbs_to_nat_single_nonzero(n, k, limb_val);

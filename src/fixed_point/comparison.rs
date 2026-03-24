@@ -163,7 +163,15 @@ impl FixedPoint {
         assert(a.view().num == sign_factor * magnitude);
         assert(sign_factor * magnitude == 0);
         // sign_factor is 1 or -1, so magnitude == 0
-        assert(magnitude == 0);
+        if a.sign {
+            assert(sign_factor == -1int);
+            assert(-1int * magnitude == 0);
+            assert(magnitude == 0) by (nonlinear_arith)
+                requires -1int * magnitude == 0int;
+        } else {
+            assert(sign_factor == 1int);
+            assert(magnitude == 0);
+        }
         assert(limbs_to_nat(a.limbs) == 0);
         // wf canonical zero: sign==true ==> magnitude != 0
         // magnitude == 0 ==> sign == false (contrapositive)
