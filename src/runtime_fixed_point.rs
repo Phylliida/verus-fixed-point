@@ -1902,6 +1902,65 @@ impl RuntimeFixedPointInterval {
     }
 
     /// Interval addition: [lo_a + lo_b, hi_a + hi_b], exact = exact_a + exact_b.
+    /// Fixed-point division: a / b via Newton-Raphson reciprocal + Karatsuba multiply.
+    /// Result = a * (1/b), computed to N-limb precision.
+    /// Uses log2(N*32) Newton iterations for full precision convergence.
+    /// Total cost: O(n^1.585 * log n).
+    ///
+    /// The result has the SAME format as the inputs (N limbs, FRAC fractional bits),
+    /// because: a (N limbs) * recip(b) (N limbs) = 2N limbs, then reduce back to N.
+    /// Fixed-point division: a / b via Newton-Raphson reciprocal + Karatsuba multiply.
+    /// `frac` must match the fractional bits of a, b, and two.
+    /// Total cost: O(n^1.585 * log n).
+    pub fn div_rfp(
+        a: &RuntimeFixedPoint,
+        b: &RuntimeFixedPoint,
+        two: &RuntimeFixedPoint,
+        frac: usize,
+        iters: usize,
+    ) -> (result: RuntimeFixedPoint)
+        requires
+            a.wf_spec(), b.wf_spec(), two.wf_spec(),
+            a@.same_format(b@),
+            b@.same_format(two@),
+            a@.frac == frac as nat,
+            !b.sign, !two.sign,
+            limbs_to_nat(b@.limbs) > 0,
+            a@.n > 0,
+            a@.n <= 0x0FFF_FFFF,
+            frac < a@.n * 32,
+            frac as nat % 32 == 0,
+        ensures
+            result.wf_spec(),
+            result@.n == a@.n,
+            result@.frac == frac as nat,
+    {
+        let n = a.limbs.len();
+
+        // Step 1: Compute 1/b via Newton-Raphson
+        let recip = Self::recip_newton(b, two, n, frac, iters);
+
+        // Step 2: a * (1/b) — widens to 2N limbs, 2*frac bits
+        let product_wide = Self::mul_rfp(a, &recip);
+
+        // Step 3: Reduce back to N limbs, frac bits
+        proof {
+            // mul_rfp ensures: product_wide@.n == 2 * a@.n, product_wide@.frac == 2 * frac
+            // reduce needs: frac_diff % 32 == 0 and n fits
+            assert(product_wide@.frac == 2 * frac as nat);
+            assert((product_wide@.frac - frac as nat) == frac as nat);
+            assert((frac as nat) % 32 == 0);
+            assert(product_wide@.n == 2 * a@.n);
+            assert(product_wide@.n >= n as nat + frac as nat / 32) by (nonlinear_arith)
+                requires
+                    product_wide@.n == 2 * a@.n,
+                    frac < a@.n * 32,
+                    n == a@.n,
+            {}
+        }
+        Self::reduce_rfp_floor(&product_wide, n, frac)
+    }
+
     pub fn add_interval(&self, rhs: &Self) -> (result: Self)
         requires
             self.wf_spec(), rhs.wf_spec(),
