@@ -430,4 +430,38 @@ pub proof fn lemma_limbs_to_nat_eq(a: Seq<u32>, b: Seq<u32>)
     ensures limbs_to_nat(a) == limbs_to_nat(b),
 {}
 
+/// Prepending n zero limbs scales the value by pow2(n * 32).
+/// limbs_to_nat(zeros(n) ++ a) == limbs_to_nat(a) * pow2(n * 32)
+pub proof fn lemma_limbs_to_nat_prepend_zeros(a: Seq<u32>, n: nat)
+    ensures
+        limbs_to_nat(Seq::new(n, |_j: int| 0u32).add(a))
+            == limbs_to_nat(a) * pow2((n * 32) as nat),
+    decreases n,
+{
+    let zeros = Seq::new(n, |_j: int| 0u32);
+    if n == 0 {
+        assert(zeros.add(a) =~= a);
+        lemma_pow2_zero();
+    } else {
+        // zeros(n) ++ a == [0] ++ (zeros(n-1) ++ a)
+        let inner = Seq::new((n - 1) as nat, |_j: int| 0u32).add(a);
+        let full = zeros.add(a);
+        assert(full[0] == 0u32);
+        assert(full.subrange(1, full.len() as int) =~= inner);
+
+        // ltn(full) = full[0] + BASE * ltn(full[1..]) = 0 + BASE * ltn(inner)
+        // By IH: ltn(inner) == ltn(a) * pow2((n-1)*32)
+        lemma_limbs_to_nat_prepend_zeros(a, (n - 1) as nat);
+
+        // ltn(full) = BASE * ltn(a) * pow2((n-1)*32) = ltn(a) * BASE * pow2((n-1)*32)
+        //           = ltn(a) * pow2(32) * pow2((n-1)*32) = ltn(a) * pow2(n*32)
+        lemma_limb_base_is_pow2_32();
+        lemma_pow2_add(32, ((n - 1) * 32) as nat);
+        assert(32 + (n - 1) * 32 == n * 32);
+        assert(limbs_to_nat(full) == limb_base() * (limbs_to_nat(a) * pow2(((n - 1) * 32) as nat)));
+        assert(limb_base() * (limbs_to_nat(a) * pow2(((n - 1) * 32) as nat))
+            == limbs_to_nat(a) * (limb_base() * pow2(((n - 1) * 32) as nat))) by (nonlinear_arith);
+    }
+}
+
 } // verus!

@@ -361,4 +361,286 @@ pub fn cmp_limbs(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: std::cmp::Ord
     }
 }
 
+/// Create a zero-filled Vec of length n.
+pub fn zero_vec(n: usize) -> (result: Vec<u32>)
+    ensures
+        result@.len() == n,
+        limbs_to_nat(result@) == 0,
+{
+    let mut out: Vec<u32> = Vec::new();
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            i <= n,
+            out@.len() == i as int,
+            forall|j: int| 0 <= j < i as int ==> out@[j] == 0u32,
+        decreases n - i,
+    {
+        out.push(0u32);
+        i = i + 1;
+    }
+    proof {
+        assert(out@ =~= Seq::new(n as nat, |_j: int| 0u32));
+        lemma_limbs_to_nat_all_zeros(n as nat);
+    }
+    out
+}
+
+/// Multiply an n-limb array by a single u32 scalar, producing an (n+1)-limb result.
+/// Ensures: limbs_to_nat(result) == limbs_to_nat(a) * scalar
+pub fn mul_by_u32(a: &Vec<u32>, scalar: u32, n: usize) -> (result: Vec<u32>)
+    requires
+        a@.len() == n,
+    ensures
+        result@.len() == n + 1,
+        limbs_to_nat(result@) == limbs_to_nat(a@) * (scalar as nat),
+{
+    let mut out: Vec<u32> = Vec::new();
+    let mut carry: u64 = 0;
+    let mut i: usize = 0;
+    let s = scalar as u64;
+
+    proof {
+        lemma_limbs_to_nat_subrange_zero(a@);
+        lemma_pow2_zero();
+        // Establish invariant at i=0:
+        // ltn(empty) + 0 * pow2(0*32) == ltn(a[..0]) * scalar
+        // = 0 + 0 == 0 * scalar = 0
+        assert(limbs_to_nat(a@.subrange(0, 0int)) == 0nat);
+        assert(0nat * (scalar as nat) == 0nat);
+        assert(pow2((0 * 32) as nat) == 1nat);
+    }
+
+    while i < n
+        invariant
+            i <= n,
+            a@.len() == n,
+            s == scalar as u64,
+            out@.len() == i as int,
+            carry <= 0xFFFF_FFFFu64,
+            limbs_to_nat(out@) + carry as nat * pow2((i * 32) as nat)
+                == limbs_to_nat(a@.subrange(0, i as int)) * (scalar as nat),
+        decreases n - i,
+    {
+        let ai = a[i] as u64;
+        proof {
+            assert(ai <= 0xFFFF_FFFFu64);
+            assert(s <= 0xFFFF_FFFFu64);
+            assert(carry <= 0xFFFF_FFFFu64);
+            assert(ai * s <= 0xFFFF_FFFE_0000_0001u64) by (nonlinear_arith)
+                requires ai <= 0xFFFF_FFFFu64, s <= 0xFFFF_FFFFu64;
+        }
+        let product: u64 = ai * s + carry;
+
+        let digit: u32 = (product % 4_294_967_296u64) as u32;
+        let next_carry: u64 = product / 4_294_967_296u64;
+
+        proof {
+            // digit + next_carry * BASE == ai * s + carry
+            assert(digit as nat + next_carry as nat * limb_base()
+                == ai as nat * s as nat + carry as nat) by (nonlinear_arith)
+                requires
+                    digit == (product % 4_294_967_296u64) as u32,
+                    next_carry == product / 4_294_967_296u64,
+                    product == ai * s + carry,
+            {}
+
+            // next_carry < BASE
+            assert(next_carry < 0x1_0000_0000u64) by (nonlinear_arith)
+                requires
+                    next_carry == product / 0x1_0000_0000u64,
+                    product <= 0xFFFF_FFFE_0000_0001u64 + 0xFFFF_FFFFu64,
+            {}
+
+            let p = pow2((i * 32) as nat);
+            let p_next = pow2(((i + 1) * 32) as nat);
+            lemma_pow2_add(32, (i * 32) as nat);
+            assert(32 + i * 32 == (i + 1) * 32);
+            lemma_limb_base_is_pow2_32();
+            assert(p_next == limb_base() * p) by (nonlinear_arith)
+                requires
+                    p_next == pow2(((i + 1) * 32) as nat),
+                    p == pow2((i * 32) as nat),
+                    pow2(((i + 1) * 32) as nat) == pow2(32nat) * pow2((i * 32) as nat),
+                    pow2(32nat) == limb_base(),
+            {}
+
+            lemma_limbs_to_nat_push(out@, digit);
+            lemma_limbs_to_nat_subrange_extend(a@, i as nat);
+
+            // Update invariant:
+            // ltn(out.push(digit)) + next_carry * p_next
+            //   == ltn(a[..i+1]) * scalar
+            //
+            // ltn(a[..i+1]) = ltn(a[..i]) + a[i] * p
+            // ltn(a[..i+1]) * scalar = ltn(a[..i]) * scalar + a[i] * scalar * p
+            //
+            // LHS = ltn(out) + digit * p + next_carry * p_next
+            //     = ltn(out) + digit * p + next_carry * BASE * p
+            // From invariant: ltn(out) + carry * p == ltn(a[..i]) * scalar
+            // So ltn(out) = ltn(a[..i]) * scalar - carry * p
+            // LHS = ltn(a[..i]) * scalar - carry * p + digit * p + next_carry * BASE * p
+            //     = ltn(a[..i]) * scalar + (digit - carry + next_carry * BASE) * p
+            //     = ltn(a[..i]) * scalar + (ai * s) * p  [since digit + next_carry*BASE == ai*s + carry]
+            //     = ltn(a[..i]) * scalar + a[i] * scalar * p
+            //     = ltn(a[..i+1]) * scalar  ✓
+
+            assert(
+                limbs_to_nat(out@) + (digit as nat) * p + (next_carry as nat) * p_next
+                == limbs_to_nat(a@.subrange(0, (i + 1) as int)) * (scalar as nat)
+            ) by (nonlinear_arith)
+                requires
+                    limbs_to_nat(out@) + carry as nat * p
+                        == limbs_to_nat(a@.subrange(0, i as int)) * (scalar as nat),
+                    (digit as nat) + (next_carry as nat) * limb_base()
+                        == (ai as nat) * (s as nat) + carry as nat,
+                    limbs_to_nat(a@.subrange(0, (i + 1) as int))
+                        == limbs_to_nat(a@.subrange(0, i as int)) + a@[i as int] as nat * p,
+                    ai == a@[i as int] as u64,
+                    s == scalar as u64,
+                    p_next == limb_base() * p,
+            {}
+        }
+
+        out.push(digit);
+        carry = next_carry;
+        i = i + 1;
+    }
+
+    proof {
+        lemma_limbs_to_nat_subrange_full(a@);
+        // At loop exit: ltn(out@) + carry * pow2(n*32) == ltn(a@) * scalar
+        // out@.len() == n
+    }
+
+    // Save the pre-push sequence for the proof
+    let ghost pre_push = out@;
+    out.push(carry as u32);
+
+    proof {
+        // out@ == pre_push.push(carry as u32)
+        assert(out@ =~= pre_push.push(carry as u32));
+        lemma_limbs_to_nat_push(pre_push, carry as u32);
+        // ltn(out@) == ltn(pre_push) + (carry as u32) as nat * pow2(n*32)
+        // From invariant: ltn(pre_push) + carry as nat * pow2(n*32) == ltn(a@) * scalar
+        // So: ltn(pre_push) == ltn(a@) * scalar - carry as nat * pow2(n*32)
+        // ltn(out@) = ltn(a@) * scalar - carry * pow2(n*32) + carry * pow2(n*32)
+        //           = ltn(a@) * scalar
+        assert((carry as u32) as nat == carry as nat);
+    }
+
+    out
+}
+
+/// Pad a Vec<u32> with zeros to reach target length.
+pub fn pad_to_length(a: &Vec<u32>, target: usize) -> (result: Vec<u32>)
+    requires target >= a@.len(),
+    ensures
+        result@.len() == target,
+        limbs_to_nat(result@) == limbs_to_nat(a@),
+{
+    let mut out: Vec<u32> = Vec::new();
+    let a_len = a.len();
+    let mut i: usize = 0;
+    while i < a_len
+        invariant
+            i <= a_len,
+            a_len == a@.len(),
+            out@.len() == i as int,
+            out@ =~= a@.subrange(0, i as int),
+        decreases a_len - i,
+    {
+        out.push(a[i]);
+        i = i + 1;
+    }
+
+    proof {
+        // After copying, out == a
+        assert(out@ =~= a@);
+    }
+
+    while i < target
+        invariant
+            a_len <= i,
+            i <= target,
+            a_len == a@.len(),
+            out@.len() == i as int,
+            limbs_to_nat(out@) == limbs_to_nat(a@),
+        decreases target - i,
+    {
+        proof {
+            lemma_limbs_to_nat_push_zero(out@);
+        }
+        out.push(0u32);
+        i = i + 1;
+    }
+
+    out
+}
+
+/// Shift a limb array left by `offset` positions (prepend `offset` zero limbs).
+/// Equivalent to multiplying by pow2(offset * 32).
+pub fn shift_left(a: &Vec<u32>, offset: usize) -> (result: Vec<u32>)
+    ensures
+        result@.len() == a@.len() + offset,
+        limbs_to_nat(result@) == limbs_to_nat(a@) * pow2((offset * 32) as nat),
+{
+    let mut out: Vec<u32> = Vec::new();
+    let mut i: usize = 0;
+
+    // Prepend offset zeros
+    while i < offset
+        invariant
+            i <= offset,
+            out@.len() == i as int,
+            forall|j: int| 0 <= j < i as int ==> out@[j] == 0u32,
+        decreases offset - i,
+    {
+        out.push(0u32);
+        i = i + 1;
+    }
+
+    proof {
+        assert(out@ =~= Seq::new(offset as nat, |_j: int| 0u32));
+    }
+
+    // Append a's limbs
+    let a_len = a.len();
+    let mut k: usize = 0;
+    while k < a_len
+        invariant
+            k <= a_len,
+            a_len == a@.len(),
+            out@.len() == offset + k,
+            out@.subrange(0, offset as int) =~= Seq::new(offset as nat, |_j: int| 0u32),
+            forall|j: int| 0 <= j < k as int ==> out@[offset as int + j] == a@[j],
+        decreases a_len - k,
+    {
+        out.push(a[k]);
+        k = k + 1;
+    }
+
+    proof {
+        // out == zeros(offset) ++ a
+        // limbs_to_nat(out) = limbs_to_nat(zeros(offset) ++ a)
+        // By the append_zeros lemma in reverse:
+        // zeros(offset) ++ a has ltn == ltn(zeros(offset)) + ltn(a) * pow2(offset*32)
+        //                         == 0 + ltn(a) * pow2(offset*32)
+
+        // Show out@ == Seq::new(offset, |_| 0u32).add(a@)
+        let zeros = Seq::new(offset as nat, |_j: int| 0u32);
+        assert(out@ =~= zeros.add(a@));
+
+        // ltn(zeros.add(a)) == ltn(zeros) + ltn(a) * pow2(offset*32)
+        // We need a lemma: ltn(prefix ++ suffix) == ltn(prefix) + ltn(suffix) * pow2(prefix.len() * 32)
+        // This follows from append_zeros (for zero prefix) + push lemma
+        // Actually: ltn(zeros ++ a) = ltn(a pushed onto zeros one by one)
+        // For zero prefix: ltn(zeros) == 0, so ltn(zeros ++ a) == ltn(a) * pow2(offset*32)
+        lemma_limbs_to_nat_all_zeros(offset as nat);
+        lemma_limbs_to_nat_prepend_zeros(a@, offset as nat);
+    }
+
+    out
+}
+
 } // verus!
