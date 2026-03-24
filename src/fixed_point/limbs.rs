@@ -536,6 +536,16 @@ pub proof fn lemma_limbs_to_nat_split(limbs: Seq<u32>, mid: nat)
     }
 }
 
+/// Distributive law: (a + b) * c == a * c + b * c.
+/// Verus's Z3 needs this as an explicit lemma for int multiplication.
+pub proof fn lemma_mul_distribute(a: int, b: int, c: int)
+    ensures (a + b) * c == a * c + b * c,
+{
+    // This should follow from Verus's built-in int arithmetic axioms
+    // If Z3 can't prove it directly, we can try nonlinear_arith
+    assert((a + b) * c == a * c + b * c) by (nonlinear_arith);
+}
+
 /// Karatsuba algebraic identity (using int to avoid nat subtraction issues):
 /// (a_hi * B + a_lo) * (b_hi * B + b_lo)
 ///   == z0 + z1 * B + z2 * B^2
@@ -561,44 +571,210 @@ pub proof fn lemma_karatsuba_identity(a_lo: int, a_hi: int, b_lo: int, b_hi: int
     // RHS = a_lo*b_lo + (a_lo*b_hi + a_hi*b_lo)*B + a_hi*b_hi*B^2
     // = LHS ✓
 
+    // We prove the identity by introducing intermediate product terms
+    // and using distributive lemmas.
+
     let z0 = a_lo * b_lo;
     let z2 = a_hi * b_hi;
 
-    // Step 1: Expand (a_lo + a_hi) * (b_lo + b_hi) using distributivity
-    let sa = a_lo + a_hi;
-    let sb = b_lo + b_hi;
-    // sa * sb = sa * b_lo + sa * b_hi
-    assert(sa * sb == sa * b_lo + sa * b_hi) by (nonlinear_arith);
-    // sa * b_lo = a_lo * b_lo + a_hi * b_lo
-    assert(sa * b_lo == a_lo * b_lo + a_hi * b_lo) by (nonlinear_arith);
-    // sa * b_hi = a_lo * b_hi + a_hi * b_hi
-    assert(sa * b_hi == a_lo * b_hi + a_hi * b_hi) by (nonlinear_arith);
-    // So sa * sb = z0 + a_hi*b_lo + a_lo*b_hi + z2
+    // Step 1: (a_lo + a_hi) * (b_lo + b_hi) == z0 + (a_lo*b_hi + a_hi*b_lo) + z2
+    lemma_mul_distribute(a_lo, a_hi, b_lo + b_hi);
+    lemma_mul_distribute(a_lo, a_hi, b_lo);
+    lemma_mul_distribute(a_lo, a_hi, b_hi);
+    // -> (a_lo + a_hi) * X = a_lo * X + a_hi * X, for X = b_lo+b_hi, b_lo, b_hi
+
+    lemma_mul_distribute(b_lo, b_hi, a_lo);
+    lemma_mul_distribute(b_lo, b_hi, a_hi);
+    // -> a_lo * (b_lo + b_hi) = a_lo * b_lo + a_lo * b_hi, etc.
+
     let cross = a_lo * b_hi + a_hi * b_lo;
-    let z1 = sa * sb - z0 - z2;
+    let z1 = (a_lo + a_hi) * (b_lo + b_hi) - z0 - z2;
     assert(z1 == cross);
 
-    // Step 2: Expand LHS = (a_hi * base + a_lo) * (b_hi * base + b_lo)
-    let p = a_hi * base + a_lo;
-    let q = b_hi * base + b_lo;
-    // p * q = p * b_hi * base + p * b_lo
-    assert(p * q == p * (b_hi * base) + p * b_lo) by (nonlinear_arith);
-    // p * b_lo = a_hi * base * b_lo + a_lo * b_lo
-    assert(p * b_lo == a_hi * base * b_lo + a_lo * b_lo) by (nonlinear_arith);
-    // p * (b_hi * base) = a_hi * base * b_hi * base + a_lo * b_hi * base
-    assert(p * (b_hi * base) == a_hi * (b_hi * base) * base + a_lo * (b_hi * base)) by (nonlinear_arith);
-    assert(a_hi * (b_hi * base) * base == z2 * base * base) by (nonlinear_arith);
+    // Step 2: Expand LHS
+    let lhs = (a_hi * base + a_lo) * (b_hi * base + b_lo);
+
+    // (a_hi*B + a_lo) * (b_hi*B + b_lo) = (a_hi*B)*(b_hi*B+b_lo) + a_lo*(b_hi*B+b_lo)
+    lemma_mul_distribute(a_hi * base, a_lo, b_hi * base + b_lo);
+    let t1 = (a_hi * base) * (b_hi * base + b_lo);
+    let t2 = a_lo * (b_hi * base + b_lo);
+    assert(lhs == t1 + t2);
+
+    // t1 = (a_hi*B)*(b_hi*B) + (a_hi*B)*b_lo
+    lemma_mul_distribute(b_hi * base, b_lo, a_hi * base);
+    assert(t1 == (a_hi * base) * (b_hi * base) + (a_hi * base) * b_lo);
+
+    // t2 = a_lo*(b_hi*B) + a_lo*b_lo
+    lemma_mul_distribute(b_hi * base, b_lo, a_lo);
+    assert(t2 == a_lo * (b_hi * base) + z0);
+
+    // (a_hi*B)*(b_hi*B) = a_hi*b_hi*B*B = z2*B*B
+    // Break into two steps: first rearrange, then substitute z2
+    assert((a_hi * base) * (b_hi * base) == a_hi * b_hi * (base * base)) by (nonlinear_arith);
+    assert(a_hi * b_hi * (base * base) == z2 * base * base) by (nonlinear_arith)
+        requires z2 == a_hi * b_hi;
+
+    // (a_hi*B)*b_lo = a_hi*b_lo*B
+    assert((a_hi * base) * b_lo == a_hi * b_lo * base) by (nonlinear_arith);
+
+    // a_lo*(b_hi*B) = a_lo*b_hi*B
     assert(a_lo * (b_hi * base) == a_lo * b_hi * base) by (nonlinear_arith);
-    assert(a_hi * base * b_lo == a_hi * b_lo * base) by (nonlinear_arith);
 
-    // p * q = z2 * base * base + a_lo * b_hi * base + a_hi * b_lo * base + z0
-    //       = z2 * base * base + cross * base + z0
-    assert(cross * base == a_lo * b_hi * base + a_hi * b_lo * base) by (nonlinear_arith);
-    assert(p * q == z2 * base * base + cross * base + z0);
+    // lhs = z2*B*B + a_hi*b_lo*B + a_lo*b_hi*B + z0
+    assert(lhs == z2 * base * base + a_hi * b_lo * base + a_lo * b_hi * base + z0);
 
-    // Step 3: z0 + z1 * base + z2 * base * base == p * q
-    assert(z0 + z1 * base + z2 * base * base == z0 + cross * base + z2 * base * base) by (nonlinear_arith)
-        requires z1 == cross;
+    // cross*B = (a_lo*b_hi + a_hi*b_lo)*B = a_lo*b_hi*B + a_hi*b_lo*B
+    lemma_mul_distribute(a_lo * b_hi, a_hi * b_lo, base);
+    assert(cross * base == a_lo * b_hi * base + a_hi * b_lo * base);
+
+    // lhs = z0 + cross*B + z2*B*B
+    assert(lhs == z0 + cross * base + z2 * base * base);
+
+    // z1 == cross, so z0 + z1*B + z2*B*B == lhs
+}
+
+/// Helper for Karatsuba: if the full product is correct and fits,
+/// then the subtraction borrows and addition carries are all zero.
+pub proof fn lemma_karatsuba_no_overflow(
+    ltn_a: nat, ltn_b: nat, bound: nat,
+    z0: nat, z2: nat, z1_full: nat,
+    ltn_z1_tmp: nat, bw1: nat,
+    ltn_z1: nat, bw2: nat,
+    P_sub: nat,
+)
+    requires
+        ltn_a < bound, ltn_b < bound, bound > 0,
+        z0 == ltn_a * ltn_b,  // This should be z0 from a_lo*b_lo — caller provides correct values
+        // Actually, let me make this more abstract:
+        // z1_full >= z0 + z2  (cross terms are non-negative)
+        z1_full >= z0 + z2,
+        // sub_limbs #1: ltn_z1_tmp + z0 == z1_full + bw1 * P_sub
+        ltn_z1_tmp + z0 == z1_full + bw1 * P_sub,
+        ltn_z1_tmp < P_sub,
+        bw1 <= 1,
+        // sub_limbs #2: ltn_z1 + z2 == ltn_z1_tmp + bw2 * P_sub
+        ltn_z1 + z2 == ltn_z1_tmp + bw2 * P_sub,
+        ltn_z1 < P_sub,
+        bw2 <= 1,
+    ensures
+        bw1 == 0,
+        bw2 == 0,
+        ltn_z1_tmp == z1_full - z0,
+        ltn_z1 == z1_full - z0 - z2,
+{
+    // bw1 == 0: if bw1 == 1, then ltn_z1_tmp + z0 == z1_full + P_sub
+    // => ltn_z1_tmp = z1_full - z0 + P_sub >= P_sub (since z1_full >= z0)
+    // But ltn_z1_tmp < P_sub. Contradiction.
+    assert(bw1 == 0) by (nonlinear_arith)
+        requires
+            ltn_z1_tmp + z0 == z1_full + bw1 * P_sub,
+            z1_full >= z0,
+            ltn_z1_tmp < P_sub,
+            bw1 <= 1,
+    {}
+    assert(ltn_z1_tmp == z1_full - z0);
+
+    // bw2 == 0: similarly, ltn_z1_tmp >= z2 (since z1_full - z0 >= z2)
+    assert(ltn_z1_tmp >= z2) by (nonlinear_arith)
+        requires ltn_z1_tmp == z1_full - z0, z1_full >= z0 + z2;
+    assert(bw2 == 0) by (nonlinear_arith)
+        requires
+            ltn_z1 + z2 == ltn_z1_tmp + bw2 * P_sub,
+            ltn_z1_tmp >= z2,
+            ltn_z1 < P_sub,
+            bw2 <= 1,
+    {}
+}
+
+/// Helper for Karatsuba: the final adds don't overflow and produce the correct product.
+pub proof fn lemma_karatsuba_combine(
+    ltn_a: nat, ltn_b: nat, n: nat, half: nat,
+    z0: nat, z2: nat, z1: nat,
+    ltn_z1_shifted: nat, ltn_z2_shifted: nat,
+    ltn_s1: nat, c1: nat,
+    ltn_s2: nat, c2: nat,
+    Rn: nat,
+)
+    requires
+        ltn_a < pow2((n * 32) as nat),
+        ltn_b < pow2((n * 32) as nat),
+        half <= n,
+        Rn == pow2((2 * n * 32) as nat),
+        // Karatsuba identity (from lemma_karatsuba_identity)
+        (ltn_a as int) * (ltn_b as int) == (z0 as int) + (z1 as int) * (pow2((half * 32) as nat) as int) + (z2 as int) * (pow2((half * 32) as nat) as int) * (pow2((half * 32) as nat) as int),
+        // Shifted values
+        ltn_z1_shifted == z1 * pow2((half * 32) as nat),
+        ltn_z2_shifted == z2 * pow2((2 * half * 32) as nat),
+        pow2((2 * half * 32) as nat) == pow2((half * 32) as nat) * pow2((half * 32) as nat),
+        // add_limbs #1
+        ltn_s1 + c1 * Rn == z0 + ltn_z1_shifted,
+        ltn_s1 < Rn,
+        c1 <= 1,
+        // add_limbs #2
+        ltn_s2 + c2 * Rn == ltn_s1 + ltn_z2_shifted,
+        ltn_s2 < Rn,
+        c2 <= 1,
+    ensures
+        c1 == 0,
+        c2 == 0,
+        ltn_s2 == ltn_a * ltn_b,
+{
+    lemma_pow2_positive((n * 32) as nat);
+    let bound = pow2((n * 32) as nat);
+
+    // Product < bound^2 = Rn
+    assert(ltn_a * ltn_b < bound * bound) by (nonlinear_arith)
+        requires ltn_a < bound, ltn_b < bound, bound > 0;
+    lemma_pow2_double((n * 32) as nat);
+    assert(2 * (n * 32) == 2 * n * 32) by (nonlinear_arith);
+    assert(bound * bound == Rn);
+    let product = ltn_a * ltn_b;
+    assert(product < Rn);
+
+    // z0 + z1_shifted == z0 + z1 * B^half
+    // z0 + z1*B^half + z2*B^(2*half) == product < Rn
+    // So z0 + z1_shifted <= product < Rn => c1 == 0
+    let B = pow2((half * 32) as nat);
+    // z0 + z1*B + z2*B*B == product (from Karatsuba identity)
+    // z1_shifted == z1*B, z2_shifted == z2*B*B
+    assert(ltn_z2_shifted == z2 * B * B) by (nonlinear_arith)
+        requires
+            ltn_z2_shifted == z2 * pow2((2 * half * 32) as nat),
+            pow2((2 * half * 32) as nat) == B * B,
+    {}
+    assert(z0 + ltn_z1_shifted + ltn_z2_shifted == product) by (nonlinear_arith)
+        requires
+            product as int == (z0 as int) + (z1 as int) * (B as int) + (z2 as int) * (B as int) * (B as int),
+            ltn_z1_shifted == z1 * B,
+            ltn_z2_shifted == z2 * B * B,
+    {}
+
+    assert(z0 + ltn_z1_shifted <= product) by (nonlinear_arith)
+        requires z0 + ltn_z1_shifted + ltn_z2_shifted == product;
+    assert(z0 + ltn_z1_shifted < Rn) by (nonlinear_arith)
+        requires z0 + ltn_z1_shifted <= product, product < Rn;
+
+    assert(c1 == 0) by (nonlinear_arith)
+        requires
+            ltn_s1 + c1 * Rn == z0 + ltn_z1_shifted,
+            z0 + ltn_z1_shifted < Rn,
+            ltn_s1 < Rn,
+            c1 <= 1,
+    {}
+
+    assert(ltn_s1 == z0 + ltn_z1_shifted);
+    assert(ltn_s1 + ltn_z2_shifted == product);
+
+    assert(c2 == 0) by (nonlinear_arith)
+        requires
+            ltn_s2 + c2 * Rn == ltn_s1 + ltn_z2_shifted,
+            ltn_s1 + ltn_z2_shifted == product,
+            product < Rn,
+            ltn_s2 < Rn,
+            c2 <= 1,
+    {}
+
+    assert(ltn_s2 == product);
 }
 
 } // verus!

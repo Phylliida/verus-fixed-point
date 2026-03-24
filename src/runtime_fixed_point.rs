@@ -800,4 +800,326 @@ pub fn mul_schoolbook(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: Vec<u32>
     acc
 }
 
+/// Extract a subrange of a Vec as a new Vec.
+pub fn slice_vec(a: &Vec<u32>, start: usize, end: usize) -> (result: Vec<u32>)
+    requires start <= end, end <= a@.len(),
+    ensures result@ == a@.subrange(start as int, end as int),
+{
+    let mut out: Vec<u32> = Vec::new();
+    let mut i: usize = start;
+    while i < end
+        invariant
+            start <= i, i <= end, end <= a@.len(),
+            out@.len() == i - start,
+            out@ =~= a@.subrange(start as int, i as int),
+        decreases end - i,
+    {
+        out.push(a[i]);
+        i = i + 1;
+    }
+    out
+}
+
+/// Karatsuba multiplication: a * b -> 2n-limb result. O(n^1.585).
+/// Falls back to schoolbook for small n.
+pub fn mul_karatsuba(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: Vec<u32>)
+    requires
+        a@.len() == n,
+        b@.len() == n,
+        n > 0,
+        n <= 0x1FFF_FFFF,
+    ensures
+        result@.len() == 2 * n,
+        limbs_to_nat(result@) == limbs_to_nat(a@) * limbs_to_nat(b@),
+    decreases n,
+{
+    if n <= 4 {
+        return mul_schoolbook(a, b, n);
+    }
+
+    let half: usize = n / 2;
+    let upper: usize = n - half;
+
+    // Split inputs
+    let a_lo = slice_vec(a, 0, half);
+    let a_hi = slice_vec(a, half, n);
+    let b_lo = slice_vec(b, 0, half);
+    let b_hi = slice_vec(b, half, n);
+
+    // Pad a_lo, b_lo to `upper` limbs (they have `half` limbs, upper >= half)
+    let a_lo_p = pad_to_length(&a_lo, upper);
+    let b_lo_p = pad_to_length(&b_lo, upper);
+
+    // z0 = a_lo * b_lo
+    let z0 = mul_karatsuba(&a_lo_p, &b_lo_p, upper);
+
+    // z2 = a_hi * b_hi
+    let z2 = mul_karatsuba(&a_hi, &b_hi, upper);
+
+    // Sums for z1: (a_lo + a_hi), (b_lo + b_hi)
+    // These may have a carry, making them upper+1 limbs
+    let (a_sum_body, a_carry) = add_limbs(&a_lo_p, &a_hi, upper);
+    let (b_sum_body, b_carry) = add_limbs(&b_lo_p, &b_hi, upper);
+
+    // Build (upper+1)-limb sums by copying body + pushing carry
+    let ghost a_sum_pre = a_sum_body@;
+    let mut a_sum = a_sum_body;
+    a_sum.push(a_carry);
+    let ghost b_sum_pre = b_sum_body@;
+    let mut b_sum = b_sum_body;
+    b_sum.push(b_carry);
+
+    proof {
+        assert(a_sum@ =~= a_sum_pre.push(a_carry));
+        lemma_limbs_to_nat_push(a_sum_pre, a_carry);
+        // ltn(a_sum) == ltn(a_sum_pre) + a_carry * pow2(upper*32)
+        //            == ltn(a_lo_p) + ltn(a_hi) == ltn(a_lo) + ltn(a_hi)
+
+        assert(b_sum@ =~= b_sum_pre.push(b_carry));
+        lemma_limbs_to_nat_push(b_sum_pre, b_carry);
+    }
+
+    // z1_full = (a_lo + a_hi) * (b_lo + b_hi)
+    let z1_full = mul_karatsuba(&a_sum, &b_sum, upper + 1);
+
+    // z1 = z1_full - z0 - z2
+    let tgt = 2 * (upper + 1);
+    let z0_p = pad_to_length(&z0, tgt);
+    let z2_p = pad_to_length(&z2, tgt);
+    let (z1_tmp, bw1) = sub_limbs(&z1_full, &z0_p, tgt);
+    let (z1, bw2) = sub_limbs(&z1_tmp, &z2_p, tgt);
+
+    // Combine: result = z0 + z1 * B^half + z2 * B^(2*half)
+    let z1_shifted = shift_left(&z1, half);
+    let z2_shifted = shift_left(&z2, 2 * half);
+
+    let rlen = 2 * n;
+    let z0_f = pad_to_length(&z0, rlen);
+    let z1_f = pad_to_length(&z1_shifted, rlen);
+    let z2_f = pad_to_length(&z2_shifted, rlen);
+
+    let (s1, c1) = add_limbs(&z0_f, &z1_f, rlen);
+    let (s2, c2) = add_limbs(&s1, &z2_f, rlen);
+
+    proof {
+        // ── Connect everything to the Karatsuba identity ──
+
+        let la = limbs_to_nat(a@) as int;
+        let lb = limbs_to_nat(b@) as int;
+        let la_lo = limbs_to_nat(a_lo@) as int;
+        let la_hi = limbs_to_nat(a_hi@) as int;
+        let lb_lo = limbs_to_nat(b_lo@) as int;
+        let lb_hi = limbs_to_nat(b_hi@) as int;
+        let B = pow2((half * 32) as nat) as int;
+
+        // 1. Split correctness: a == a_hi * B + a_lo, b == b_hi * B + b_lo
+        lemma_limbs_to_nat_split(a@, half as nat);
+        lemma_limbs_to_nat_split(b@, half as nat);
+        assert(la == la_lo + la_hi * B);
+        assert(lb == lb_lo + lb_hi * B);
+        // Rewrite as a_hi * B + a_lo form
+        assert(la == la_hi * B + la_lo) by (nonlinear_arith)
+            requires la == la_lo + la_hi * B;
+        assert(lb == lb_hi * B + lb_lo) by (nonlinear_arith)
+            requires lb == lb_lo + lb_hi * B;
+
+        // 2. z0, z2, z1_full values
+        let vz0 = limbs_to_nat(z0@) as int;
+        let vz2 = limbs_to_nat(z2@) as int;
+        assert(vz0 == la_lo * lb_lo);
+        assert(vz2 == la_hi * lb_hi);
+
+        let va_sum = limbs_to_nat(a_sum@) as int;
+        let vb_sum = limbs_to_nat(b_sum@) as int;
+        assert(va_sum == la_lo + la_hi);
+        assert(vb_sum == lb_lo + lb_hi);
+
+        let vz1_full = limbs_to_nat(z1_full@) as int;
+        assert(vz1_full == va_sum * vb_sum);
+        assert(vz1_full == (la_lo + la_hi) * (lb_lo + lb_hi)) by (nonlinear_arith)
+            requires vz1_full == va_sum * vb_sum, va_sum == la_lo + la_hi, vb_sum == lb_lo + lb_hi;
+
+        // 3. z1 = z1_full - z0 - z2 (subtractions don't underflow)
+        // sub_limbs: ltn(z1_tmp) + ltn(z0_p) == ltn(z1_full) + bw1 * pow2(tgt*32)
+        // sub_limbs: ltn(z1) + ltn(z2_p) == ltn(z1_tmp) + bw2 * pow2(tgt*32)
+        let vz1_tmp = limbs_to_nat(z1_tmp@) as int;
+        let vz1 = limbs_to_nat(z1@) as int;
+        let P = pow2((tgt * 32) as nat) as int;
+
+        // z1_full >= z0 + z2 (because z1 = cross terms >= 0)
+        // This follows from the Karatsuba identity: z1 = a_lo*b_hi + a_hi*b_lo >= 0
+        lemma_karatsuba_identity(la_lo, la_hi, lb_lo, lb_hi, B);
+        // From the identity: la * lb == vz0 + z1 * B + vz2 * B * B
+
+        // The subtractions: bw1 and bw2 should be 0 (no underflow)
+        // vz1_tmp + vz0 == vz1_full + bw1 * P  =>  vz1_tmp == vz1_full - vz0 + bw1 * P
+        // vz1 + vz2 == vz1_tmp + bw2 * P  =>  vz1 == vz1_tmp - vz2 + bw2 * P
+
+        // z1_full - z0 - z2 >= 0 (cross terms are non-negative)
+        // (la_lo+la_hi)(lb_lo+lb_hi) - la_lo*lb_lo - la_hi*lb_hi = la_lo*lb_hi + la_hi*lb_lo >= 0
+        assert(vz1_full - vz0 - vz2 >= 0) by (nonlinear_arith)
+            requires
+                vz1_full == (la_lo + la_hi) * (lb_lo + lb_hi),
+                vz0 == la_lo * lb_lo,
+                vz2 == la_hi * lb_hi,
+                la_lo >= 0, la_hi >= 0, lb_lo >= 0, lb_hi >= 0,
+        {
+            lemma_mul_distribute(la_lo, la_hi, lb_lo + lb_hi);
+            lemma_mul_distribute(lb_lo, lb_hi, la_lo);
+            lemma_mul_distribute(lb_lo, lb_hi, la_hi);
+        }
+
+        // Work in nat to match sub_limbs postconditions directly
+        let Pn = pow2((tgt * 32) as nat);
+
+        // sub_limbs #1: ltn(z1_tmp) + ltn(z0_p) == ltn(z1_full) + bw1 * Pn
+        // Since pad preserves value: ltn(z0_p) == ltn(z0)
+        assert(limbs_to_nat(z0_p@) == limbs_to_nat(z0@));
+        assert(limbs_to_nat(z1_tmp@) + limbs_to_nat(z0@) == limbs_to_nat(z1_full@) + (bw1 as nat) * Pn);
+
+        // bw1 == 0: z1_full >= z0 (from cross terms being non-negative)
+        lemma_limbs_to_nat_upper_bound(z1_tmp@);
+        assert(bw1 == 0) by (nonlinear_arith)
+            requires
+                limbs_to_nat(z1_tmp@) + limbs_to_nat(z0@) == limbs_to_nat(z1_full@) + (bw1 as nat) * Pn,
+                vz1_full - vz0 >= 0,
+                limbs_to_nat(z1_tmp@) < Pn,
+                bw1 <= 1,
+        {}
+
+        // sub_limbs #2: ltn(z1) + ltn(z2_p) == ltn(z1_tmp) + bw2 * Pn
+        assert(limbs_to_nat(z2_p@) == limbs_to_nat(z2@));
+        assert(limbs_to_nat(z1@) + limbs_to_nat(z2@) == limbs_to_nat(z1_tmp@) + (bw2 as nat) * Pn);
+
+        // bw2 == 0: z1_tmp - z2 >= 0 (since z1_tmp == z1_full - z0, and z1_full - z0 - z2 >= 0)
+        lemma_limbs_to_nat_upper_bound(z1@);
+        assert(limbs_to_nat(z1_tmp@) as int == vz1_full - vz0);
+        assert(bw2 == 0) by (nonlinear_arith)
+            requires
+                limbs_to_nat(z1@) + limbs_to_nat(z2@) == limbs_to_nat(z1_tmp@) + (bw2 as nat) * Pn,
+                limbs_to_nat(z1_tmp@) as int == vz1_full - vz0,
+                vz1_full - vz0 - vz2 >= 0,
+                limbs_to_nat(z2@) as int == vz2,
+                limbs_to_nat(z1@) < Pn,
+                bw2 <= 1,
+        {}
+
+        let vz1 = limbs_to_nat(z1@) as int;
+        assert(vz1 == vz1_full - vz0 - vz2);
+
+        // 4. Combine: result = z0 + z1 * B^half + z2 * B^(2*half)
+        // z1_shifted: ltn == vz1 * pow2(half*32) == vz1 * B
+        // z2_shifted: ltn == vz2 * pow2(2*half*32) == vz2 * B * B
+
+        let vz1s = limbs_to_nat(z1_shifted@) as int;
+        let vz2s = limbs_to_nat(z2_shifted@) as int;
+        assert(vz1s == vz1 * B);
+        lemma_pow2_double((half * 32) as nat);
+        assert(2 * (half * 32) == 2 * half * 32) by (nonlinear_arith);
+        assert(vz2s == vz2 * (B * B)) by (nonlinear_arith)
+            requires
+                vz2s == (vz2 as int) * (pow2((2 * half * 32) as nat) as int),
+                pow2((2 * half * 32) as nat) == pow2((half * 32) as nat) * pow2((half * 32) as nat),
+                B == pow2((half * 32) as nat) as int,
+        {}
+
+        // add_limbs: ltn(s1) + c1 * pow2(rlen*32) == ltn(z0_f) + ltn(z1_f)
+        // add_limbs: ltn(s2) + c2 * pow2(rlen*32) == ltn(s1) + ltn(z2_f)
+
+        let vs1 = limbs_to_nat(s1@) as int;
+        let vs2 = limbs_to_nat(s2@) as int;
+        let R = pow2((rlen * 32) as nat) as int;
+
+        // Total: vs2 + c2*R == vs1 + vz2s == (vz0 + vz1s + c1*R) + vz2s
+        //      == vz0 + vz1*B + vz2*B*B + (c1+c2)*R... wait, need to be more careful
+
+        // From Karatsuba identity: la * lb == vz0 + vz1 * B + vz2 * B * B
+        // And vz0 + vz1*B + vz2*B*B < pow2(2*n*32) == pow2(rlen*32) == R
+        // (because la < pow2(n*32) and lb < pow2(n*32))
+        // So c1 == 0 and c2 == 0, and vs2 == la * lb
+
+        lemma_limbs_to_nat_upper_bound(a@);
+        lemma_limbs_to_nat_upper_bound(b@);
+        let bound = pow2((n * 32) as nat) as int;
+        assert(la * lb < bound * bound) by (nonlinear_arith)
+            requires la < bound, lb < bound, la >= 0, lb >= 0, bound > 0;
+        lemma_pow2_double((n * 32) as nat);
+        assert(2 * (n * 32) == rlen * 32) by (nonlinear_arith)
+            requires rlen == 2 * n;
+        assert(bound * bound == R);
+
+        // From identity: la * lb == vz0 + vz1 * B + vz2 * B * B
+        // Already proved this via lemma_karatsuba_identity
+
+        // Work in nat for add_limbs postconditions
+        let Rn = pow2((rlen * 32) as nat);
+
+        // Pad preserves values
+        assert(limbs_to_nat(z0_f@) == limbs_to_nat(z0@));
+        assert(limbs_to_nat(z1_f@) == limbs_to_nat(z1_shifted@));
+        assert(limbs_to_nat(z2_f@) == limbs_to_nat(z2_shifted@));
+
+        // add_limbs #1: ltn(s1) + c1*Rn == ltn(z0_f) + ltn(z1_f)
+        // == ltn(z0) + ltn(z1_shifted) == ltn(z0) + ltn(z1) * pow2(half*32)
+        let ltn_s1 = limbs_to_nat(s1@);
+        assert(ltn_s1 + (c1 as nat) * Rn == limbs_to_nat(z0@) + limbs_to_nat(z1_shifted@));
+
+        // Product bound: la * lb < Rn
+        assert(la * lb < bound * bound) by (nonlinear_arith)
+            requires la < bound, lb < bound, la >= 0, lb >= 0, bound > 0;
+        assert(bound * bound == Rn as int);
+        assert(la * lb < Rn as int);
+
+        // From Karatsuba identity: la*lb == vz0 + vz1*B + vz2*B*B
+        // So vz0 + vz1*B + vz2*B*B < Rn
+        // And vz0 + vz1*B < Rn (since vz2*B*B >= 0)
+
+        // c1 == 0
+        lemma_limbs_to_nat_upper_bound(s1@);
+        assert(c1 == 0) by (nonlinear_arith)
+            requires
+                ltn_s1 + (c1 as nat) * Rn == limbs_to_nat(z0@) + limbs_to_nat(z1_shifted@),
+                limbs_to_nat(z0@) as int == vz0,
+                limbs_to_nat(z1_shifted@) as int == vz1 * B,
+                vz0 + vz1 * B + vz2 * B * B == la * lb,
+                la * lb < Rn as int,
+                vz2 * B * B >= 0,
+                ltn_s1 < Rn,
+                c1 <= 1,
+        {
+            assert(vz2 * B * B >= 0) by (nonlinear_arith)
+                requires vz2 >= 0, B >= 0;
+        }
+
+        // add_limbs #2: ltn(s2) + c2*Rn == ltn(s1) + ltn(z2_f) == ltn(s1) + ltn(z2_shifted)
+        let ltn_s2 = limbs_to_nat(s2@);
+        assert(ltn_s2 + (c2 as nat) * Rn == ltn_s1 + limbs_to_nat(z2_shifted@));
+
+        // ltn(s1) == ltn(z0) + ltn(z1)*pow2(half*32) (since c1==0)
+        assert(ltn_s1 as int == vz0 + vz1 * B);
+        // ltn(s1) + ltn(z2_shifted) == vz0 + vz1*B + vz2*B*B == la*lb
+        assert(ltn_s1 as int + limbs_to_nat(z2_shifted@) as int == la * lb) by (nonlinear_arith)
+            requires
+                ltn_s1 as int == vz0 + vz1 * B,
+                limbs_to_nat(z2_shifted@) as int == vz2 * B * B,
+                vz0 + vz1 * B + vz2 * B * B == la * lb,
+        {}
+
+        // c2 == 0
+        lemma_limbs_to_nat_upper_bound(s2@);
+        assert(c2 == 0) by (nonlinear_arith)
+            requires
+                ltn_s2 + (c2 as nat) * Rn == ltn_s1 + limbs_to_nat(z2_shifted@),
+                ltn_s1 as int + limbs_to_nat(z2_shifted@) as int == la * lb,
+                la * lb < Rn as int,
+                ltn_s2 < Rn,
+                c2 <= 1,
+        {}
+
+        assert(ltn_s2 as int == la * lb);
+    }
+
+    s2
+}
+
 } // verus!
