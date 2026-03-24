@@ -1053,6 +1053,7 @@ pub struct RuntimeFixedPointInterval {
     pub lo: RuntimeFixedPoint,
     pub hi: RuntimeFixedPoint,
     pub exact: Ghost<Rational>,
+    pub frac_exec: usize, // exec-accessible frac (matches lo@.frac)
 }
 
 impl RuntimeFixedPointInterval {
@@ -1062,6 +1063,7 @@ impl RuntimeFixedPointInterval {
         &&& self.lo@.same_format(self.hi@)
         &&& self.lo@.view().le_spec(self.exact@)
         &&& self.exact@.le_spec(self.hi@.view())
+        &&& self.frac_exec as nat == self.lo@.frac
     }
 
     /// The ghost exact Rational value.
@@ -1109,7 +1111,7 @@ impl RuntimeFixedPointInterval {
             Rational::lemma_le_iff_lt_or_eqv(fp_model.view(), fp_model.view());
         }
 
-        RuntimeFixedPointInterval { lo, hi, exact: Ghost(exact) }
+        RuntimeFixedPointInterval { lo, hi, exact: Ghost(exact), frac_exec: frac }
     }
 
     /// Deep copy.
@@ -1162,7 +1164,7 @@ impl RuntimeFixedPointInterval {
             model: Ghost(self.hi@),
         };
 
-        RuntimeFixedPointInterval { lo, hi, exact: Ghost(self.exact@) }
+        RuntimeFixedPointInterval { lo, hi, exact: Ghost(self.exact@), frac_exec: self.frac_exec }
     }
 
     /// Negation: swap lo/hi, negate both, exact = -exact.
@@ -1253,7 +1255,7 @@ impl RuntimeFixedPointInterval {
             );
         }
 
-        RuntimeFixedPointInterval { lo: new_lo, hi: new_hi, exact: Ghost(new_exact) }
+        RuntimeFixedPointInterval { lo: new_lo, hi: new_hi, exact: Ghost(new_exact), frac_exec: self.frac_exec }
     }
 
     /// Signed addition of two RuntimeFixedPoints with same format.
@@ -2094,7 +2096,7 @@ impl RuntimeFixedPointInterval {
             Rational::lemma_le_transitive(new_exact, self.hi@.view().add_spec(rhs.hi@.view()), new_hi@.view());
         }
 
-        RuntimeFixedPointInterval { lo: new_lo, hi: new_hi, exact: Ghost(new_exact) }
+        RuntimeFixedPointInterval { lo: new_lo, hi: new_hi, exact: Ghost(new_exact), frac_exec: self.frac_exec }
     }
     /// Interval subtraction: exact = exact_a - exact_b.
     /// [lo_a, hi_a] - [lo_b, hi_b] uses negated rhs: add([lo_a, hi_a], [-hi_b, -lo_b]).
@@ -2139,7 +2141,7 @@ impl RuntimeFixedPointInterval {
         }
 
         let neg_rhs = RuntimeFixedPointInterval {
-            lo: neg_hi, hi: neg_lo, exact: Ghost(neg_exact),
+            lo: neg_hi, hi: neg_lo, exact: Ghost(neg_exact), frac_exec: rhs.frac_exec,
         };
 
         // add_interval(self, neg_rhs) gives exact = exact_a + (-exact_b) = exact_a - exact_b
@@ -2163,7 +2165,7 @@ impl RuntimeFixedPointInterval {
             self.wf_spec(), rhs.wf_spec(),
             self.lo@.same_format(rhs.lo@),
             self.lo@.n <= 0x1FFF_FFFF,
-            // Both intervals are non-negative
+            self.frac_exec <= 0x3FFF_FFFF, // prevent 2*frac overflow
             !self.lo@.sign, !self.hi@.sign,
             !rhs.lo@.sign, !rhs.hi@.sign,
         ensures
@@ -2236,7 +2238,7 @@ impl RuntimeFixedPointInterval {
             Rational::lemma_le_transitive(new_exact, self.hi@.view().mul_spec(rhs.hi@.view()), new_hi@.view());
         }
 
-        RuntimeFixedPointInterval { lo: new_lo, hi: new_hi, exact: Ghost(new_exact) }
+        RuntimeFixedPointInterval { lo: new_lo, hi: new_hi, exact: Ghost(new_exact), frac_exec: 2 * self.frac_exec }
     }
     /// Compare two RuntimeFixedPoints by signed value.
     /// Returns -1 if a < b, 0 if a == b, 1 if a > b (by magnitude + sign).
@@ -2433,6 +2435,7 @@ impl RuntimeFixedPointInterval {
             self.wf_spec(), rhs.wf_spec(),
             self.lo@.same_format(rhs.lo@),
             self.lo@.n <= 0x1FFF_FFFF,
+            self.frac_exec <= 0x3FFF_FFFF,
         ensures
             result.lo.wf_spec(),
             result.hi.wf_spec(),
@@ -2549,7 +2552,7 @@ impl RuntimeFixedPointInterval {
             // The key facts are all established above.
         }
 
-        RuntimeFixedPointInterval { lo: new_lo, hi: new_hi, exact: Ghost(new_exact) }
+        RuntimeFixedPointInterval { lo: new_lo, hi: new_hi, exact: Ghost(new_exact), frac_exec: 2 * self.frac_exec }
     }
 
     /// Interval squaring: tighter than mul_interval(a, a).
@@ -2559,6 +2562,7 @@ impl RuntimeFixedPointInterval {
         requires
             self.wf_spec(),
             self.lo@.n <= 0x1FFF_FFFF,
+            self.frac_exec <= 0x3FFF_FFFF,
         ensures
             result.lo.wf_spec(),
             result.hi.wf_spec(),
@@ -2574,11 +2578,9 @@ impl RuntimeFixedPointInterval {
         if lo_nonneg {
             // lo >= 0: both endpoints non-negative, squaring preserves order
             // [lo², hi²]
-            RuntimeFixedPointInterval { lo: lo_sq, hi: hi_sq, exact: Ghost(new_exact) }
+            RuntimeFixedPointInterval { lo: lo_sq, hi: hi_sq, exact: Ghost(new_exact), frac_exec: 2 * self.frac_exec }
         } else if hi_nonpos {
-            // hi <= 0: both endpoints non-positive, squaring reverses order
-            // [hi², lo²]
-            RuntimeFixedPointInterval { lo: hi_sq, hi: lo_sq, exact: Ghost(new_exact) }
+            RuntimeFixedPointInterval { lo: hi_sq, hi: lo_sq, exact: Ghost(new_exact), frac_exec: 2 * self.frac_exec }
         } else {
             // Spans zero: lo < 0 < hi. Minimum is 0, max is max(lo², hi²).
             let zero_fp = Self::mul_rfp(&self.lo, &self.hi); // placeholder for zero
@@ -2603,7 +2605,7 @@ impl RuntimeFixedPointInterval {
                     requires self.lo.frac@ <= self.lo.n@ * 32;
             }
             let new_hi = Self::max_rfp(lo_sq, hi_sq);
-            RuntimeFixedPointInterval { lo: zero_lo, hi: new_hi, exact: Ghost(new_exact) }
+            RuntimeFixedPointInterval { lo: zero_lo, hi: new_hi, exact: Ghost(new_exact), frac_exec: 2 * self.frac_exec }
         }
     }
 }
