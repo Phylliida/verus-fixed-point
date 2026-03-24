@@ -377,4 +377,33 @@ pub proof fn lemma_limbs_to_nat_append_zeros(limbs: Seq<u32>, extra: nat)
     }
 }
 
+/// Subrange growth: extending a subrange by one element equals pushing that element.
+/// limbs_to_nat(limbs.subrange(0, i+1)) == limbs_to_nat(limbs.subrange(0, i)) + limbs[i] * pow2(i * 32)
+pub proof fn lemma_limbs_to_nat_subrange_extend(limbs: Seq<u32>, i: nat)
+    requires i < limbs.len(),
+    ensures
+        limbs_to_nat(limbs.subrange(0, (i + 1) as int))
+            == limbs_to_nat(limbs.subrange(0, i as int)) + limbs[i as int] as nat * pow2((i * 32) as nat),
+{
+    let prefix = limbs.subrange(0, i as int);
+    let extended = limbs.subrange(0, (i + 1) as int);
+    // extended == prefix.push(limbs[i])
+    assert(extended =~= prefix.push(limbs[i as int]));
+    lemma_limbs_to_nat_push(prefix, limbs[i as int]);
+}
+
+/// Subrange of length 0 has value 0.
+pub proof fn lemma_limbs_to_nat_subrange_zero(limbs: Seq<u32>)
+    ensures limbs_to_nat(limbs.subrange(0, 0int)) == 0nat,
+{
+    assert(limbs.subrange(0, 0int) =~= Seq::<u32>::empty());
+}
+
+/// Full subrange equals the original sequence.
+pub proof fn lemma_limbs_to_nat_subrange_full(limbs: Seq<u32>)
+    ensures limbs_to_nat(limbs.subrange(0, limbs.len() as int)) == limbs_to_nat(limbs),
+{
+    assert(limbs.subrange(0, limbs.len() as int) =~= limbs);
+}
+
 } // verus!
