@@ -142,15 +142,17 @@ pub proof fn lemma_error_after_k_bounded(e_0: int, m: int, k: nat)
     decreases k,
 {
     if k == 0 {
-        // error_after_k(e, 0) == e, bound is m^1 = m
+        // error_after_k(e, 0) == e, bound is m
     } else {
         lemma_error_after_k_bounded(e_0, m, (k - 1) as nat);
         let prev = error_after_k_int(e_0, (k - 1) as nat);
         let prev_bound = pow2k_power(m, (k - 1) as nat);
-        // |prev| <= prev_bound
-        // error_after_k(e, k) = prev * prev
-        // |prev * prev| = prev² <= prev_bound² = pow2k_power(m, k)
+        // |prev| <= prev_bound, so prev² <= prev_bound²
         lemma_error_squared_bound(prev, prev_bound);
+        // error_after_k(e, k) = prev * prev >= 0 (it's a square)
+        assert(prev * prev >= 0) by (nonlinear_arith);
+        // -pow2k_power(m, k) = -(prev_bound²) <= 0 <= prev² = error
+        lemma_pow2k_power_nonneg(m, k);
     }
 }
 
