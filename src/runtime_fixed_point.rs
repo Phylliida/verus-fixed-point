@@ -1412,7 +1412,7 @@ impl RuntimeFixedPointInterval {
             result.wf_spec(),
             result@.n == a@.n,
             result@.frac == a@.frac,
-            result@.view().eqv_spec(a@.neg_spec().view()),
+            result@ == a@.neg_spec(),
     {
         let n = a.limbs.len();
         let mut out_limbs: Vec<u32> = Vec::new();
@@ -1495,12 +1495,50 @@ impl RuntimeFixedPointInterval {
             model: Ghost(model),
         }
     }
-    // Interval add/sub/mul operations require exec-to-spec view correspondence
-    // (proving that exec-computed limbs produce the same Rational view as the
-    // spec-level add_spec/mul_spec). This needs a base-2^32 uniqueness lemma.
-    // The building blocks (add_rfp, neg_rfp, mul_rfp, copy_interval, neg_interval,
-    // zero_interval) are all proven correct. Interval composition will be added
-    // when the uniqueness infrastructure is in place.
+    /// Interval addition: [lo_a + lo_b, hi_a + hi_b], exact = exact_a + exact_b.
+    pub fn add_interval(&self, rhs: &Self) -> (result: Self)
+        requires
+            self.wf_spec(), rhs.wf_spec(),
+            self.lo@.same_format(rhs.lo@),
+            FixedPoint::add_no_overflow(self.lo@, rhs.lo@),
+            FixedPoint::add_no_overflow(self.hi@, rhs.hi@),
+        ensures
+            result.wf_spec(),
+            result.exact@ == self.exact@.add_spec(rhs.exact@),
+    {
+        let new_lo = Self::add_rfp(&self.lo, &rhs.lo);
+        let new_hi = Self::add_rfp(&self.hi, &rhs.hi);
+        let ghost new_exact = self.exact@.add_spec(rhs.exact@);
+
+        proof {
+            // add_rfp ensures: new_lo@ == self.lo@.add_spec(rhs.lo@)
+            //                  new_hi@ == self.hi@.add_spec(rhs.hi@)
+            // Need: new_lo@.view() <= new_exact <= new_hi@.view()
+
+            // From add_spec view correspondence:
+            FixedPoint::lemma_add_view(self.lo@, rhs.lo@);
+            FixedPoint::lemma_add_view(self.hi@, rhs.hi@);
+            // new_lo@.view() eqv lo.view() + rhs_lo.view()
+            // new_hi@.view() eqv hi.view() + rhs_hi.view()
+
+            // From wf: lo.view() <= exact <= hi.view() for both self and rhs
+            Rational::lemma_le_add_both(self.lo@.view(), self.exact@, rhs.lo@.view(), rhs.exact@);
+            // lo.view() + rhs_lo.view() <= exact + rhs_exact
+            Rational::lemma_le_add_both(self.exact@, self.hi@.view(), rhs.exact@, rhs.hi@.view());
+            // exact + rhs_exact <= hi.view() + rhs_hi.view()
+
+            // Chain through eqv: new_lo@.view() eqv lo+rhs_lo <= exact+rhs_exact
+            Rational::lemma_eqv_implies_le(new_lo@.view(), self.lo@.view().add_spec(rhs.lo@.view()));
+            Rational::lemma_le_transitive(new_lo@.view(), self.lo@.view().add_spec(rhs.lo@.view()), new_exact);
+
+            // exact+rhs_exact <= hi+rhs_hi eqv new_hi@.view()
+            Rational::lemma_eqv_symmetric(new_hi@.view(), self.hi@.view().add_spec(rhs.hi@.view()));
+            Rational::lemma_eqv_implies_le(self.hi@.view().add_spec(rhs.hi@.view()), new_hi@.view());
+            Rational::lemma_le_transitive(new_exact, self.hi@.view().add_spec(rhs.hi@.view()), new_hi@.view());
+        }
+
+        RuntimeFixedPointInterval { lo: new_lo, hi: new_hi, exact: Ghost(new_exact) }
+    }
 }
 
 } // verus!
