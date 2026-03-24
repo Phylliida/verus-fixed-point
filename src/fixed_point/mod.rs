@@ -11,6 +11,7 @@ pub mod promotion;
 pub mod reduce;
 pub mod interval;
 pub mod modular;
+pub mod ntt;
 
 verus! {
 
