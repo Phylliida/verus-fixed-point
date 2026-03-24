@@ -37,7 +37,11 @@ pub proof fn lemma_limbs_to_nat_empty()
 pub proof fn lemma_limbs_to_nat_single(v: u32)
     ensures limbs_to_nat(seq![v]) == v as nat,
 {
-    assert(seq![v].subrange(1, 1int) =~= Seq::<u32>::empty());
+    let s = seq![v];
+    let tail = s.subrange(1, s.len() as int);
+    assert(tail =~= Seq::<u32>::empty());
+    assert(limbs_to_nat(tail) == 0);
+    assert(limbs_to_nat(s) == v as nat + limb_base() * 0nat);
 }
 
 /// Recursive step: value = head + base * tail_value.
@@ -50,14 +54,17 @@ pub proof fn lemma_limbs_to_nat_cons(limbs: Seq<u32>)
 
 /// All-zero limbs have value 0.
 pub proof fn lemma_limbs_to_nat_all_zeros(n: nat)
-    ensures limbs_to_nat(Seq::new(n as int, |_i: int| 0u32)) == 0nat,
+    ensures limbs_to_nat(Seq::new(n, |_i: int| 0u32)) == 0nat,
     decreases n,
 {
-    let limbs = Seq::new(n as int, |_i: int| 0u32);
+    let limbs = Seq::new(n, |_i: int| 0u32);
     if n > 0 {
         let tail = limbs.subrange(1, n as int);
-        assert(tail =~= Seq::new((n - 1) as int, |_i: int| 0u32));
+        assert(tail =~= Seq::new((n - 1) as nat, |_i: int| 0u32));
         lemma_limbs_to_nat_all_zeros((n - 1) as nat);
+        assert(limbs_to_nat(tail) == 0);
+        assert(limbs[0] == 0u32);
+        assert(limbs_to_nat(limbs) == 0u32 as nat + limb_base() * 0nat);
     }
 }
 
@@ -143,22 +150,35 @@ pub proof fn lemma_limbs_to_nat_push(limbs: Seq<u32>, d: u32)
         assert(extended =~= seq![d]);
         lemma_limbs_to_nat_single(d);
         lemma_pow2_zero();
+        assert(limbs_to_nat(limbs) == 0nat);
+        assert(pow2(0nat) == 1nat);
+        assert(d as nat * 1nat == d as nat);
     } else {
         let tail = limbs.subrange(1, limbs.len() as int);
         let ext_tail = extended.subrange(1, extended.len() as int);
         assert(ext_tail =~= tail.push(d));
         lemma_limbs_to_nat_push(tail, d);
         assert(extended[0] == limbs[0]);
-        // limbs_to_nat(ext) = limbs[0] + base * limbs_to_nat(ext_tail)
-        //   = limbs[0] + base * (limbs_to_nat(tail) + d * pow2(tail.len() * 32))
-        //   = (limbs[0] + base * limbs_to_nat(tail)) + base * d * pow2(tail.len() * 32)
-        //   = limbs_to_nat(limbs) + d * base * pow2(tail.len() * 32)
-        //   = limbs_to_nat(limbs) + d * pow2(32) * pow2(tail.len() * 32)
-        //   = limbs_to_nat(limbs) + d * pow2(32 + tail.len() * 32)
-        //   = limbs_to_nat(limbs) + d * pow2(limbs.len() * 32)
+        // IH: limbs_to_nat(ext_tail) == limbs_to_nat(tail) + d * pow2(tail.len() * 32)
+        let tail_val = limbs_to_nat(tail);
+        let d_nat = d as nat;
+        let tail_pow = pow2((tail.len() * 32) as nat);
+
+        // limbs_to_nat(extended) = extended[0] + base * limbs_to_nat(ext_tail)
+        //   = limbs[0] + base * (tail_val + d * tail_pow)
+        //   = limbs[0] + base * tail_val + base * d * tail_pow
+        //   = limbs_to_nat(limbs) + base * d * tail_pow
+        assert(limbs_to_nat(extended) == limbs[0] as nat + limb_base() * (tail_val + d_nat * tail_pow));
+        assert(limb_base() * (tail_val + d_nat * tail_pow)
+            == limb_base() * tail_val + limb_base() * d_nat * tail_pow) by (nonlinear_arith);
+        assert(limbs_to_nat(limbs) == limbs[0] as nat + limb_base() * tail_val);
+
+        // base * d * tail_pow == d * (base * tail_pow) == d * pow2(32 + tail.len() * 32)
         lemma_limb_base_is_pow2_32();
         lemma_pow2_add(32, (tail.len() * 32) as nat);
         assert(32 + tail.len() * 32 == limbs.len() * 32);
+        assert(limb_base() * tail_pow == pow2((limbs.len() * 32) as nat));
+        assert(limb_base() * d_nat * tail_pow == d_nat * (limb_base() * tail_pow)) by (nonlinear_arith);
     }
 }
 
@@ -190,11 +210,11 @@ pub proof fn lemma_limbs_to_nat_nonzero_means_nonzero_limb(limbs: Seq<u32>)
 pub proof fn lemma_limbs_to_nat_single_nonzero(n: nat, k: nat, v: u32)
     requires k < n,
     ensures
-        limbs_to_nat(Seq::new(n as int, |i: int| if i == k as int { v } else { 0u32 }))
+        limbs_to_nat(Seq::new(n, |i: int| if i == k as int { v } else { 0u32 }))
             == v as nat * pow2((k * 32) as nat),
     decreases n,
 {
-    let limbs = Seq::new(n as int, |i: int| if i == k as int { v } else { 0u32 });
+    let limbs = Seq::new(n, |i: int| if i == k as int { v } else { 0u32 });
     if n == 1 {
         // k must be 0
         assert(k == 0);
@@ -205,13 +225,13 @@ pub proof fn lemma_limbs_to_nat_single_nonzero(n: nat, k: nat, v: u32)
         let tail = limbs.subrange(1, n as int);
         if k == 0 {
             // limbs[0] == v, tail is all zeros
-            assert(tail =~= Seq::new((n - 1) as int, |_i: int| 0u32));
+            assert(tail =~= Seq::new((n - 1) as nat, |_i: int| 0u32));
             lemma_limbs_to_nat_all_zeros((n - 1) as nat);
             assert(limbs_to_nat(limbs) == v as nat + limb_base() * 0);
             lemma_pow2_zero();
         } else {
             // limbs[0] == 0, recurse on tail with k-1
-            assert(tail =~= Seq::new((n - 1) as int, |i: int| if i == (k - 1) as int { v } else { 0u32 }));
+            assert(tail =~= Seq::new((n - 1) as nat, |i: int| if i == (k - 1) as int { v } else { 0u32 }));
             lemma_limbs_to_nat_single_nonzero((n - 1) as nat, (k - 1) as nat, v);
             // IH: limbs_to_nat(tail) == v * pow2((k-1) * 32)
             assert(limbs[0] == 0u32);

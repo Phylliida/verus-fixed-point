@@ -28,7 +28,9 @@ pub proof fn lemma_pow2_zero()
 /// pow2(1) == 2.
 pub proof fn lemma_pow2_one()
     ensures pow2(1nat) == 2nat,
-{}
+{
+    assert(pow2(1) == 2 * pow2(0nat));
+}
 
 /// pow2(a + b) == pow2(a) * pow2(b).
 pub proof fn lemma_pow2_add(a: nat, b: nat)
@@ -36,12 +38,22 @@ pub proof fn lemma_pow2_add(a: nat, b: nat)
     decreases a,
 {
     if a == 0 {
-        assert(pow2(0 + b) == pow2(b));
         assert(pow2(0nat) == 1nat);
+        assert(pow2(0 + b) == pow2(b));
+        assert(pow2(0nat) * pow2(b) == pow2(b));
     } else {
-        lemma_pow2_add((a - 1) as nat, b);
-        assert(pow2(a + b) == 2 * pow2(((a + b) - 1) as nat));
-        assert(((a + b) - 1) as nat == ((a - 1) as nat + b));
+        let a1 = (a - 1) as nat;
+        lemma_pow2_add(a1, b);
+        // IH: pow2(a1 + b) == pow2(a1) * pow2(b)
+        // pow2(a + b) == 2 * pow2((a + b - 1)) == 2 * pow2(a1 + b)
+        assert((a + b) - 1 == a1 + b);
+        assert(pow2(a + b) == 2 * pow2((a1 + b) as nat));
+        // pow2(a) == 2 * pow2(a1)
+        assert(pow2(a) == 2 * pow2(a1));
+        // So pow2(a) * pow2(b) == 2 * pow2(a1) * pow2(b) == 2 * (pow2(a1) * pow2(b))
+        assert(pow2(a) * pow2(b) == 2 * pow2(a1) * pow2(b)) by (nonlinear_arith)
+            requires pow2(a) == 2 * pow2(a1);
+        assert(2 * pow2(a1) * pow2(b) == 2 * (pow2(a1) * pow2(b))) by (nonlinear_arith);
     }
 }
 
