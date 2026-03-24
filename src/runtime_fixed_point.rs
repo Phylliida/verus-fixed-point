@@ -85,6 +85,22 @@ impl RuntimeFixedPoint {
             frac: frac as nat,
         };
 
+        proof {
+            // wf: canonical zero — if sign is set, value != 0, so some limb is nonzero
+            if result_sign {
+                assert(value > 0);
+                // We placed lo = value % BASE at position frac_limbs
+                // If value > 0, lo > 0 or hi > 0, so limbs_to_nat != 0
+                if frac_limbs < n {
+                    let lo = (value % 0x1_0000_0000u64) as u32;
+                    if lo > 0 {
+                        lemma_limbs_to_nat_prefix_le_full(limbs@, (frac_limbs + 1) as nat);
+                        lemma_limbs_to_nat_subrange_extend(limbs@, frac_limbs as nat);
+                    }
+                }
+            }
+        }
+
         RuntimeFixedPoint {
             limbs, sign: result_sign,
             n: Ghost(n as nat), frac: Ghost(frac as nat),
