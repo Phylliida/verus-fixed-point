@@ -10,6 +10,7 @@ pub mod arithmetic;
 pub mod promotion;
 pub mod reduce;
 pub mod interval;
+pub mod modular;
 
 verus! {
 
