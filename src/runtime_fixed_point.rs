@@ -43,6 +43,73 @@ impl View for RuntimeFixedPoint {
     }
 }
 
+// ── RuntimeFixedPoint constructors ─────────────────────
+
+impl RuntimeFixedPoint {
+    /// Construct a RuntimeFixedPoint from a u64 value.
+    /// Places the integer value at the correct position based on frac.
+    /// Requires: value * 2^frac fits in n limbs.
+    pub fn from_u64(value: u64, sign: bool, n: usize, frac: usize) -> (result: Self)
+        requires
+            n > 0,
+            frac <= n * 32,
+            frac as nat % 32 == 0, // limb-aligned for simplicity
+            n <= 0x7FFF_FFFF,
+            // The value fits: value < pow2((n*32 - frac) as nat)
+        ensures
+            result.wf_spec(),
+            result@.n == n as nat,
+            result@.frac == frac as nat,
+            result.sign == sign || value == 0,
+    {
+        let mut limbs = zero_vec(n);
+        let frac_limbs = frac / 32;
+
+        // Place value in the limbs starting at position frac_limbs
+        if frac_limbs < n {
+            let lo = (value % 0x1_0000_0000u64) as u32;
+            limbs.set(frac_limbs, lo);
+            if frac_limbs + 1 < n {
+                let hi = (value / 0x1_0000_0000u64) as u32;
+                limbs.set(frac_limbs + 1, hi);
+            }
+        }
+
+        let is_zero = value == 0;
+        let result_sign = if is_zero { false } else { sign };
+
+        let ghost model = FixedPoint {
+            limbs: limbs@,
+            sign: result_sign,
+            n: n as nat,
+            frac: frac as nat,
+        };
+
+        RuntimeFixedPoint {
+            limbs, sign: result_sign,
+            n: Ghost(n as nat), frac: Ghost(frac as nat),
+            model: Ghost(model),
+        }
+    }
+
+    /// Construct a RuntimeFixedPoint zero.
+    pub fn from_zero(n: usize, frac: usize) -> (result: Self)
+        requires n > 0, frac <= n * 32,
+        ensures result.wf_spec(), result@.n == n as nat, result@.frac == frac as nat, !result.sign,
+    {
+        let limbs = zero_vec(n);
+        proof { lemma_limbs_to_nat_all_zeros(n as nat); }
+        let ghost model = FixedPoint {
+            limbs: limbs@, sign: false, n: n as nat, frac: frac as nat,
+        };
+        RuntimeFixedPoint {
+            limbs, sign: false,
+            n: Ghost(n as nat), frac: Ghost(frac as nat),
+            model: Ghost(model),
+        }
+    }
+}
+
 // ── Unsigned limb operations ───────────────────────────
 
 /// Unsigned carry-chain addition of two n-limb arrays.
