@@ -349,8 +349,18 @@ pub proof fn lemma_first_step_error_bound(b: nat, s: nat)
 
     // b * x_1 = (s+d)(s-d) = s² - d²
     let prod = b * x_1;
+    // prod = b * x_1: nat multiplication lifts to int
+    assert(prod as int == b as int * x_1 as int);
+    // Step 2: expand (s+d)(s-d) using the distributive law helper
+    super::limbs::lemma_mul_distribute(s as int, d as int, (s - d) as int);
+    // (s + d) * (s - d) = s*(s-d) + d*(s-d)
+    // s*(s-d) = s*s - s*d, d*(s-d) = d*s - d*d
+    // Total: s*s - s*d + d*s - d*d = s*s - d*d
     assert(prod as int == s as int * s as int - d as int * d as int) by (nonlinear_arith)
-        requires b as int == s as int + d as int, x_1 as int == s as int - d as int;
+        requires prod as int == b as int * x_1 as int,
+                 b as int == s as int + d as int,
+                 x_1 as int == s as int - d as int,
+                 (s as int + d as int) * (s as int - d as int) == s as int * (s as int - d as int) + d as int * (s as int - d as int);
 
     // d ≤ s/2 (from 2b ≤ 3s, b = s+d → 2d ≤ s)
     assert(d <= s / 2) by (nonlinear_arith) requires 2 * b <= 3 * s, b == s + d;
