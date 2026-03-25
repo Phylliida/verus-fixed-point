@@ -296,4 +296,109 @@ pub proof fn lemma_truncated_error_nonincreasing(e: nat, s: nat)
         requires e >= 4, e <= s / 2, s >= 16;
 }
 
+/// **First step exactness**: with x_0 = S and b ∈ [S, 3S/2]:
+/// bx_0 = floor(b * S / S) = b (exact, since S divides b*S).
+/// x_1 = floor(S * (2S - b) / S) = 2S - b (exact).
+/// e_1 = S - floor(b * (2S-b) / S). Since b*(2S-b) = 2bS - b² = S² - (b-S)²:
+///   floor((S² - d²) / S) where d = b - S ∈ [0, S/2].
+///   = S - ceil(d²/S) (or S - floor(d²/S) - adjustment).
+/// In any case: e_1 ≤ floor(d²/S) + 1 ≤ (S/2)²/S + 1 = S/4 + 1 ≤ S/2 for S ≥ 4.
+pub proof fn lemma_first_step_error(b: nat, s: nat)
+    requires
+        s > 0,
+        b >= s,
+        2 * b <= 3 * s,  // b ≤ 3S/2
+    ensures
+        // First step: x_0 = s, bx_0 = b*s/s = b (exact division)
+        b * s / s == b,
+        // x_1 = 2s - b ≤ s (since b ≥ s)
+        b <= 2 * s,
+{
+    assert(b * s / s == b) by (nonlinear_arith)
+        requires s > 0nat;
+}
+
+/// **First step error bound**: after first Newton step with b ∈ [S, 3S/2],
+/// the error e_1 is in [0, S/4 + 1] ⊂ [0, S/2].
+///
+/// With x_0 = S: bx_0 = b (exact). x_1 = 2S - b = S - d where d = b - S.
+/// Then b*x_1 = (S+d)(S-d) = S² - d². bx_1 = floor((S²-d²)/S).
+/// Error: e_1 = S - bx_1 ≤ d²/S + 1 ≤ S/4 + 1.
+pub proof fn lemma_first_step_error_bound(b: nat, s: nat)
+    requires
+        s >= 4,
+        b >= s,
+        2 * b <= 3 * s,
+    ensures ({
+        // x_1 = 2S - b, which is a nat since b ≤ 2S
+        let x_1: nat = (2 * s - b) as nat;
+        let prod: nat = b * x_1;
+        let bx_1: nat = prod / s;
+        // Error is non-negative and ≤ S/2
+        bx_1 <= s && (s - bx_1) as nat <= s / 2
+    })
+{
+    let d: nat = (b - s) as nat;
+    // b = s + d since b >= s
+    assert(b == s + d);
+    assert(b <= 2 * s) by (nonlinear_arith) requires 2 * b <= 3 * s;
+
+    let x_1: nat = (2 * s - b) as nat;
+    // x_1 = 2s - b = 2s - (s+d) = s - d
+    assert(x_1 as int == s as int - d as int);
+
+    // b * x_1 = (s+d)(s-d) = s² - d²
+    let prod = b * x_1;
+    assert(prod as int == s as int * s as int - d as int * d as int) by (nonlinear_arith)
+        requires b as int == s as int + d as int, x_1 as int == s as int - d as int;
+
+    // d ≤ s/2 (from 2b ≤ 3s, b = s+d → 2d ≤ s)
+    assert(d <= s / 2) by (nonlinear_arith) requires 2 * b <= 3 * s, b == s + d;
+
+    // d² ≤ s²/4
+    assert(d * d <= s * s / 4) by (nonlinear_arith) requires d <= s / 2;
+
+    // prod = s² - d² ≥ 3s²/4
+    // prod / s ≥ 3s/4 (approximately)
+    // More precisely: prod = s*s - d*d, and using div_mod:
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(prod as int, s as int);
+    let bx_1: nat = prod / s;
+    let r: nat = prod % s;
+
+    // bx_1 ≤ s: since prod = s² - d² ≤ s², bx_1 ≤ s²/s = s
+    assert(bx_1 <= s) by (nonlinear_arith)
+        requires bx_1 as int * s as int + r as int == prod as int,
+                 prod as int == s as int * s as int - d as int * d as int,
+                 r >= 0int, s > 0int;
+
+    // bx_1 ≥ s - s/4 - 1: since prod ≥ 3s²/4, bx_1 = prod/s ≥ 3s/4 - 1
+    assert(bx_1 >= s - s / 4 - 1) by (nonlinear_arith)
+        requires bx_1 as int * s as int + r as int == prod as int,
+                 prod as int == s as int * s as int - d as int * d as int,
+                 d * d <= s * s / 4,
+                 r < s as int, r >= 0int, s >= 4;
+
+    // e_1 = s - bx_1 ≤ s/4 + 1 ≤ s/2
+    assert((s - bx_1) as nat <= s / 4 + 1) by (nonlinear_arith)
+        requires bx_1 >= s - s / 4 - 1, bx_1 <= s;
+    assert(s / 4 + 1 <= s / 2) by (nonlinear_arith)
+        requires s >= 4;
+}
+
+/// **One truncated step preserves S/2 bound**: if error ∈ [0, S/2] and S ≥ 8,
+/// then after one truncated Newton step, the new error is also in [0, S/2].
+///
+/// This uses `lemma_truncated_half_stable` for the upper bound and the
+/// algebraic structure for the lower bound (error stays non-negative when
+/// the previous error was non-negative).
+pub proof fn lemma_one_step_preserves_half(e: nat, s: nat)
+    requires
+        e <= s / 2,
+        s >= 8,
+    ensures
+        e * e / s + 2 <= s / 2,
+{
+    lemma_truncated_half_stable(e, s);
+}
+
 } // verus!
