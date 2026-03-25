@@ -411,4 +411,110 @@ pub proof fn lemma_one_step_preserves_half(e: nat, s: nat)
     lemma_truncated_half_stable(e, s);
 }
 
+/// **AM-GM for bx**: for any bx in [0, 2S], bx*(2S-bx) ≤ S².
+pub proof fn lemma_bx_amgm(bx: nat, s: nat)
+    requires
+        bx <= 2 * s,
+    ensures
+        bx * ((2 * s - bx) as nat) <= s * s,
+{
+    let tmb = (2 * s - bx) as nat;
+    assert(bx * tmb <= s * s) by (nonlinear_arith)
+        requires bx <= 2 * s, tmb as int == 2 * s as int - bx as int;
+}
+
+/// **Key loop invariant preservation: bx ≤ S + 1 is self-preserving.**
+///
+/// Given: bx = floor(b*x/S) ≤ S+1, b ∈ [S, 3S/2], S > 0.
+/// After one truncated Newton step:
+///   tmb = 2S - bx, x_new = floor(x*tmb/S), bx_new = floor(b*x_new/S).
+/// Then: bx_new ≤ S + 1.
+///
+/// Proof: By AM-GM, bx*(2S-bx) ≤ S² for bx ∈ [0, 2S].
+/// Then B*tmb = (bx*S+r1)*(2S-bx) < S³ + 2S².
+/// So b*x_new ≤ B*tmb/S < S² + 2S = (S+2)*S.
+/// Thus bx_new = floor(b*x_new/S) ≤ S + 1.
+pub proof fn lemma_bx_bound_preserved(b: nat, x: nat, s: nat)
+    requires
+        s > 0,
+        b * x / s <= s + 1,
+        b * x / s <= 2 * s, // from cmp guard
+    ensures ({
+        let bx: nat = b * x / s;
+        let tmb: nat = (2 * s - bx) as nat;
+        let x_new: nat = x * tmb / s;
+        b * x_new / s <= s + 1
+    })
+{
+    let bx = b * x / s;
+    let tmb: nat = (2 * s - bx) as nat;
+
+    // AM-GM: bx * tmb ≤ S²
+    lemma_bx_amgm(bx, s);
+
+    // b*x = bx*S + r1 where 0 ≤ r1 < S
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod((b * x) as int, s as int);
+    let r1 = (b * x) % s;
+
+    // B*tmb = (bx*S + r1)*tmb = bx*tmb*S + r1*tmb
+    // bx*tmb ≤ S² (AM-GM), so bx*tmb*S ≤ S³
+    // r1 < S, tmb ≤ 2S, so r1*tmb < 2S²
+    // B*tmb < S³ + 2S²
+
+    // x_new = floor(x*tmb/S) ≤ x*tmb/S
+    // b*x_new ≤ b*x*tmb/S = B*tmb/S
+    // B*tmb/S < (S³ + 2S²)/S = S² + 2S
+
+    let x_new = x * tmb / s;
+
+    // Key: b * x_new < (S+2)*S
+    // From x_new ≤ x*tmb/S:
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod((x * tmb) as int, s as int);
+    let r2 = (x * tmb) % s;
+    // x_new*S + r2 = x*tmb, so x_new*S ≤ x*tmb
+    // b*x_new*S ≤ b*x*tmb = B*tmb
+
+    // B*tmb = bx*tmb*S + r1*tmb
+    assert(b * x * tmb == bx * tmb * s + r1 * tmb) by (nonlinear_arith)
+        requires b * x == bx * s + r1;
+
+    // bx*tmb ≤ S²
+    assert(bx * tmb <= s * s);
+
+    // r1*tmb < 2*S²  (r1 < S, tmb ≤ 2S)
+    assert(r1 < s);
+    assert(bx <= 2 * s);
+    assert(tmb as int == 2 * s as int - bx as int);
+    assert(tmb <= 2 * s);
+    assert(r1 * tmb < 2 * s * s) by (nonlinear_arith)
+        requires r1 < s, tmb <= 2 * s;
+
+    // b*x*tmb < S³ + 2S²
+    assert(b * x * tmb < s * s * s + 2 * s * s) by (nonlinear_arith)
+        requires bx * tmb <= s * s,
+                 r1 * tmb < 2 * s * s,
+                 b * x * tmb == bx * tmb * s + r1 * tmb;
+
+    // b*x_new*S ≤ b*x*tmb (since x_new*S ≤ x*tmb)
+    assert(b * x_new * s <= b * x * tmb) by (nonlinear_arith)
+        requires x_new * s + r2 == x * tmb, r2 >= 0int, b >= 0nat;
+
+    // b*x_new*S < S³ + 2S²
+    // b*x_new < S² + 2S = (S+2)*S
+    assert(b * x_new < s * s + 2 * s) by (nonlinear_arith)
+        requires b * x_new * s < s * s * s + 2 * s * s,
+                 s > 0;
+
+    // floor(b*x_new/S) ≤ S + 1 (since b*x_new < (S+2)*S)
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod((b * x_new) as int, s as int);
+    let bx_new = b * x_new / s;
+    let r3 = (b * x_new) % s;
+
+    assert(bx_new <= s + 1) by (nonlinear_arith)
+        requires bx_new * s + r3 == b * x_new,
+                 b * x_new < s * s + 2 * s,
+                 r3 >= 0int,
+                 s > 0;
+}
+
 } // verus!

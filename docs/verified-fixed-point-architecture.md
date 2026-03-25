@@ -1,9 +1,6 @@
-# verus-fixed-point Session Summary
+# verus-fixed-point Architecture
 
-## What We Built
-
-From an empty repo to **381 verified lemmas, 0 errors, 15 files, zero assumes** —
-a formally verified arbitrary-precision fixed-point arithmetic library in Verus.
+## Current State: 412 verified, 0 errors, 15 files, zero assumes
 
 ## Architecture
 
@@ -27,7 +24,6 @@ Exec Unsigned Limb Ops
 Base-2^32 Uniqueness Bridge
   lemma_limbs_to_nat_unique — if ltn(a) == ltn(b) and len equal, then a == b
   lemma_limbs_nat_to_limbs_identity — a == nat_to_limbs(ltn(a), n)
-  This was THE key lemma that unlocked structural equality between exec and spec.
         ↑
 Exec NTT
   RuntimeModularInt (add/sub/mul/copy exec ops)
@@ -37,8 +33,7 @@ Exec NTT
 Newton-Raphson Division
   recip_newton: x_{n+1} = x_n * (2 - b*x_n), O(n^1.585 * log n)
   div_rfp: a * recip(b), recip_interval, div_interval
-  Convergence proof: 1 - b*x' = (1-b*x)² (integer identity, fully proved)
-  Error bound: |error_k| ≤ m^{2^k} (inductive, fully proved)
+  Convergence proofs: see "Truncated Newton Convergence" below
         ↑
 Spec Interval Arithmetic
   FixedPointInterval with ghost exact: Rational
@@ -72,163 +67,83 @@ Spec Foundations
 4. **reduce is the only approximation** — `reduce_down` (toward -∞) and `reduce_up`
    (toward +∞) are sign-aware directed rounding. Proven to preserve containment.
 
-5. **Base-2^32 uniqueness** — THE breakthrough that connected exec to spec. If two
-   u32 sequences of the same length have the same `limbs_to_nat`, they're identical.
-   This means exec-computed limbs ARE the spec model's limbs — structural equality,
-   not just equivalence.
+5. **Base-2^32 uniqueness** — THE breakthrough that connected exec to spec.
 
 6. **`frac_exec` field** — RuntimeFixedPointInterval stores frac as a usize (not just
    Ghost) so exec operations can access it for Newton division, from_u32 construction, etc.
 
-## What's Proven (Highlights)
+## reduce_rfp_floor: The Shift Fix
 
-- **Karatsuba algebraic identity** — `(a_hi*B + a_lo)(b_hi*B + b_lo) = z0 + z1*B + z2*B²`
-  proved step-by-step via distributive law. No-overflow and combine lemmas for all carries/borrows.
+**Bug found and fixed:** The original `reduce_rfp_floor` shifted by `a.n - target_n` limbs
+(the limb count difference). For mul results (2N limbs, 2F frac) → (N limbs, F frac), the
+correct shift is `(a.frac - target_frac) / 32 = F/32` limbs (the fractional precision
+difference). These differ when there are integer bits (D = N*32 - F > 0).
 
-- **Modular arithmetic Ring axioms** — associativity of add and mul mod p,
-  distributive law, all proved from `lemma_fundamental_div_mod`.
+**Example:** N=2, F=32. Product 1.5×1.0=1.5 as wide limbs `[0, 2^31, 1, 0]` (n=4, frac=64).
+- Old (wrong): shift by 2 limbs → `[1, 0]` → value ≈ 0
+- New (correct): shift by 1 limb → `[2^31, 1]` → value = 1.5 ✓
 
-- **Newton convergence** — `1 - b*x*(2-b*x) = (1-b*x)²` (the core identity),
-  plus `|error_k| ≤ m^{2^k}` (inductive error bound).
-
-- **cmp_signed_rfp → Rational ordering** — exec comparison of RuntimeFixedPoints
-  proven to correspond to `lt_spec`/`eqv_spec` on Rational views. All 4 sign cases.
-
-- **div_by_u32 full correctness** — `ltn(quot) * divisor + remainder == ltn(a)`.
-  Top-down loop invariant with ghost accumulators, `q < BASE` proof, set-stability.
-
-- **add_rfp structural equality** — `result@ == a@.add_spec(b@)`. The exec-computed
-  FixedPoint IS the spec-level add result, not just eqv. Same for mul_rfp, neg_rfp.
-
-- **Interval add containment** — `lo.view() <= exact_sum <= hi.view()` where
-  exact_sum = ghost_a + ghost_b. Chain through `lemma_le_add_both` + eqv bridge.
-
-## What's NOT Yet Proven / Remaining Work
-
-### 1. Truncated Newton Convergence (THE remaining hard proof)
-
-The pure Newton identity is proved: `1 - b*x' = (1-b*x)²`.
-The error bound is proved: `|e_k| ≤ m^{2^k}`.
-
-**What's missing:** connecting this to the EXEC Newton which has `reduce_rfp_floor`
-(truncation) at each step. The truncated recurrence is:
+**Postcondition:** Uses modulo to handle potential overflow gracefully:
 ```
-e_{k+1} = e_k² + δ_k   where |δ_k| ≤ 1 ULP = 2^(-frac)
+ltn(result) == (ltn(a) / pow2(shift_limbs * 32)) % pow2(target_n * 32)
 ```
+When there's no overflow, the modulo is a no-op and this simplifies to exact floor division.
 
-For convergence: once `|e_k|` is small enough, `|e_k|² + 2^(-frac) < |e_k|`,
-so the error keeps shrinking. After log₂(frac) iterations, error < 1 ULP.
+## Truncated Newton Convergence
 
-**Literature insight:** The MDPI paper "Divisions and Square Roots with Tight Error
-Analysis from Newton-Raphson Iteration in Secure Fixed-Point Arithmetic" handles
-exactly this — tight error bounds for Newton with fixed-point truncation.
+The exec Newton iteration uses `reduce_rfp_floor` at each step, introducing floor truncation.
+The mathematical analysis shows:
 
-**Approach:** Define `truncated_error(b, x, frac) = b * ltn(x) - pow2(frac)`
-at the integer level. Prove: each exec step satisfies
-`|truncated_error_{k+1}| ≤ |truncated_error_k|² / pow2(frac) + 1`.
-For `|e_0| < pow2(frac)` and `k ≥ log2(frac)`: `|e_k| < 2`.
+**Error recurrence:** `e_{k+1} ≤ e_k² / S + 2` where S = pow2(frac), accounting for two
+floor operations per step.
 
-### 2. RuntimeFieldOps<Rational> Trait Implementation
+**Convergence to fixpoint:** The iteration converges to |e| ≤ 3 (not 0), giving ~3 ULP
+accuracy. This is sufficient for interval arithmetic (widen by ±4 ULP).
 
-**Blocked on #1.** The trait requires `rf_recip` with exact ghost ensures:
-`out.rf_view() == self.rf_view().recip()`. The ghost exact IS a Rational (works),
-but `wf_spec` requires `lo.view() <= exact <= hi.view()` which needs proven
-containment of the Newton reciprocal.
+**Proven spec lemmas:**
+- `lemma_first_step_error` — First step is exact: bx₀ = b, x₁ = 2S - b
+- `lemma_first_step_error_bound` — After first step with b ∈ [S, 3S/2]: error ≤ S/2
+- `lemma_truncated_half_stable` — e ≤ S/2 preserved (S ≥ 8)
+- `lemma_truncated_fixpoint_3` — e ≤ 3 is a fixpoint (S ≥ 12)
+- `lemma_truncated_error_nonincreasing` — e doesn't grow for e ∈ [4, S/2]
+- `lemma_bx_amgm` — For bx ∈ [0, 2S]: bx*(2S-bx) ≤ S² (AM-GM)
+- `lemma_bx_bound_preserved` — bx ≤ S+1 is self-preserving via AM-GM
 
-**All ring operations are ready:** add, sub, neg, mul (both nonneg and general),
-copy, zero_like, one_like, comparison. Only recip/div need the truncated convergence.
+**Precondition:** `b ∈ [S, 3S/2]` (1.0 ≤ b_real ≤ 1.5). Callers normalize b to this range.
 
-### 3. Perturbation Theory (goes in verus-fractals, not verus-fixed-point)
+## Remaining Work
 
-Types and operations for deep fractal zoom:
-- `PerturbedValue { reference: RuntimeFixedPoint, delta: RuntimeFixedPointInterval }`
-- `perturb_step`: δ_{n+1} = 2*Z_n*δ_n + δ_n² + δ_c
-- `glitch_detect`: interval width check
-- `rebase`: shift to new reference point
+### 1. Exec↔Spec Connection for Newton Loop (next step)
+Connect the exec `mul_rfp → reduce_rfp_floor` chain to `ltn(bx) = (b*x/S) % pow2(n*32)`.
+This chains mul structural equality through reduce modulo. Once done, `lemma_bx_bound_preserved`
+becomes the loop invariant proof and the convergence postcondition follows.
+
+### 2. recip_interval Containment
+With the convergence postcondition: widen Newton result by ±4 ULP, prove the interval
+contains the exact reciprocal 1/b.
+
+### 3. RuntimeFieldOps<Rational> Trait Implementation
+Blocked on #2. All ring ops ready, only recip/div need proven containment.
 
 ### 4. NTT Full Correctness
+Stage-by-stage loop invariant matching Cooley-Tukey decomposition.
 
-The exec butterfly runs and is verified wf-preserving. The spec-level NTT is defined
-(DFT matrix, forward/inverse, convolution theorem). The butterfly identity is proven.
-**Not yet proven:** that the exec butterfly output equals `ntt_forward_spec(input)`.
-This needs a stage-by-stage loop invariant matching the Cooley-Tukey decomposition.
+### 5. Perturbation Theory (in verus-fractals)
+PerturbedValue type, perturb_step, glitch_detect, rebase.
 
-### 5. General Interval Mul Containment
+## Lessons Learned (Updated)
 
-The min4/max4 exec selection is proven to produce bounds where lo ≤ all corners and
-hi ≥ all corners. **Not yet formally proven:** that the ghost exact product falls
-between lo and hi. Structurally sound (from `Interval::lemma_mul_containment`) but
-the formal chain connecting exec min/max to the Rational-level containment is verbose.
+1-10. (See previous version — all still apply)
 
-## Crate Structure
+11. **`nat - nat` gives `int` in Verus.** Every subtraction of nats produces int,
+    requiring explicit `as nat` casts and proofs of non-negativity.
 
-```
-verus-fixed-point/
-├── Cargo.toml
-├── docs/
-│   ├── design.md              (original design document)
-│   └── session-summary.md     (this file)
-├── src/
-│   ├── lib.rs
-│   ├── runtime_fixed_point.rs  (exec: RuntimeFixedPoint, RuntimeFixedPointInterval,
-│   │                            all exec limb ops, interval ops, Newton, NTT mul)
-│   └── fixed_point/
-│       ├── mod.rs              (FixedPoint spec struct, view, wf, signed_value)
-│       ├── pow2.rs             (pow2 spec + lemmas, pow_int)
-│       ├── limbs.rs            (limbs_to_nat, nat_to_limbs, uniqueness, split, etc.)
-│       ├── constructors.rs     (zero, one proof constructors)
-│       ├── comparison.rs       (eqv/le/lt via Rational delegation)
-│       ├── view_lemmas.rs      (from_frac bridge lemmas: neg, mul, add, sub, ordering)
-│       ├── arithmetic.rs       (spec add/sub/neg/mul/promote)
-│       ├── promotion.rs        (promote_n, promote with fractional shift)
-│       ├── reduce.rs           (ceil_div, reduce_down/up with directed rounding)
-│       ├── interval.rs         (FixedPointInterval with ghost exact)
-│       ├── modular.rs          (ModularInt spec + Ring axioms + RuntimeModularInt exec)
-│       ├── ntt.rs              (NTT specs + exec butterfly + NTT mul pipeline)
-│       └── newton_convergence.rs (convergence identity + error bounds)
-```
+12. **`nonlinear_arith` can't prove `(x/32)*32 == x` from `x%32 == 0`.**
+    Use `lemma_fundamental_div_mod(x, 32)` instead.
 
-## Dependencies
+13. **AM-GM at the integer level** — `bx*(2S-bx) ≤ S²` for bx ∈ [0, 2S] is the key
+    bound for Newton loop invariant preservation. Proved via `nonlinear_arith`.
 
-- `vstd` — Verus standard library
-- `verus-rational` — Rational type, field axioms, ordering lemmas
-- `verus-interval-arithmetic` — Interval spec type, containment lemmas
-- `verus-quadratic-extension` — RuntimeFieldOps trait (for future impl)
-- `verus-algebra` — Ring/Field/OrderedField trait hierarchy
-
-## Lessons Learned
-
-1. **`nonlinear_arith` is very limited.** Can't prove distributive law, modular
-   properties, or multi-variable polynomial identities. Break everything into
-   2-variable steps with explicit `requires`.
-
-2. **`nat` subtraction produces `int`.** Every `a - b` for nats becomes int,
-   causing type issues in `nonlinear_arith` blocks and spec functions.
-
-3. **`lemma_fundamental_div_mod` is crucial.** The only way to prove modular
-   arithmetic properties (associativity etc.) — provides `x == d*(x/d) + x%d`.
-
-4. **Ghost fields can't be accessed at exec level.** `frac: Ghost<nat>` means
-   Newton can't construct `two` or `one`. Fixed by adding `frac_exec: usize`.
-
-5. **`reveal_with_fuel` needed for recursive spec unfolding.** Z3 won't unfold
-   recursive spec functions automatically. `reveal_with_fuel(f, k)` forces k steps.
-
-6. **Base-2^32 uniqueness was the key insight.** Without it, exec results only
-   have `ltn(exec_limbs) == ltn(spec_limbs)` — same value but potentially
-   different sequences. Uniqueness gives structural equality, which Z3 propagates.
-
-7. **Save mutable state before mutation.** The `div_by_u32` bug: `rem` was updated
-   before the proof block tried to use it to reason about `cur`. Always save
-   `let ghost old_rem = rem` before `rem = new_rem`.
-
-8. **`Vec::set` doesn't change other indices.** But Z3 needs explicit assertions
-   like `v.subrange(i+1, n) =~= old_v.subrange(i+1, n)` after `v.set(i, x)`.
-
-9. **Overflow proofs must come BEFORE the exec operation.** Verus checks overflow
-   at the point of computation, not retroactively. Put the overflow bound in a
-   `proof {}` block before `let product = a * b`.
-
-10. **Karatsuba proof needs very small steps.** Even `(a+b)*c == a*c + b*c`
-    can't be proved in one `nonlinear_arith` call. Use `lemma_mul_distribute`
-    (our own helper) and chain through named intermediates.
+14. **Modulo postcondition avoids circular overflow dependencies.** When overflow bounds
+    depend on convergence which depends on the reduce output, use modulo postcondition
+    (always valid) and prove modulo is no-op separately.
