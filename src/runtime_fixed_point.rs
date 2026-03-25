@@ -3120,8 +3120,7 @@ impl RuntimeFixedPointInterval {
             self.frac_exec < self.lo.limbs.len() * 32,
             self.frac_exec >= 5,
         ensures
-            result.lo.wf_spec(),
-            result.hi.wf_spec(),
+            result.wf_spec(),
             result.lo@.n == self.lo@.n,
             result.lo@.frac == self.lo@.frac,
             result.exact@ == self.exact@.reciprocal_spec(),
@@ -3133,6 +3132,78 @@ impl RuntimeFixedPointInterval {
         let lo = RuntimeFixedPoint::from_zero(n, frac);
         let hi = RuntimeFixedPoint::from_u32(1, n, frac);
         let ghost new_exact = self.exact@.reciprocal_spec();
+
+        proof {
+            use verus_rational::Rational;
+
+            let s = pow2(frac as nat);
+            let exact = self.exact@;
+            lemma_pow2_positive(frac as nat);
+
+            // ─── Containment proof: lo.view() ≤ 1/exact ≤ hi.view() ───
+
+            // lo.view() = from_frac_spec(0, S) where signed_value = 0
+            // hi.view() = from_frac_spec(S, S) where signed_value = S (from from_u32)
+            let lo_view = lo@.view();
+            let hi_view = hi@.view();
+
+            // exact.num > 0 (from self.wf: lo.view() ≤ exact, and lo.view() ≥ 1)
+            // Input: self.lo.view() = from_frac_spec(B, S) with B = ltn(lo.limbs) ≥ S
+            let b_int = limbs_to_nat(self.lo@.limbs);
+            let lo_in_view = self.lo@.view();
+            // lo_in_view = from_frac_spec(b_int, S) since !self.lo.sign
+            // from_frac_spec(b_int, S) = Rational { num: b_int, den: S - 1 }
+            // le_spec(lo_in_view, exact): b_int * exact.denom() ≤ exact.num * S
+            // Since b_int ≥ S: S * exact.denom() ≤ b_int * exact.denom() ≤ exact.num * S
+            // So exact.denom() ≤ exact.num → exact.num > 0
+            assert(lo_in_view.le_spec(exact)); // from self.wf_spec()
+            assert(b_int as int >= s as int);
+            assert(b_int as int * exact.denom() <= exact.num * s as int) by {
+                assert(lo_in_view.num == b_int as int);
+                assert(lo_in_view.denom() == s as int);
+            }
+            assert(exact.num > 0) by (nonlinear_arith)
+                requires b_int as int * exact.denom() <= exact.num * s as int,
+                         b_int as int >= s as int,
+                         s > 0,
+                         exact.denom() >= 1;
+
+            // new_exact = reciprocal_spec(exact) where exact.num > 0:
+            //   Rational { num: exact.denom(), den: exact.num - 1 }
+            // new_exact.num = exact.denom() ≥ 1
+            // new_exact.denom() = exact.num
+
+            // 1) lo.view() ≤ new_exact: 0 * new_exact.denom() ≤ new_exact.num * S
+            //    i.e., 0 ≤ exact.denom() * S. True since both ≥ 1.
+            assert(lo_view.le_spec(new_exact)) by {
+                assert(lo_view.num == 0);
+                assert(lo_view.denom() == s as int);
+                assert(new_exact.num == exact.denom());
+                assert(new_exact.denom() == exact.num);
+                assert(0 * new_exact.denom() <= new_exact.num * s as int) by (nonlinear_arith)
+                    requires new_exact.num >= 1, s > 0;
+            }
+
+            // 2) new_exact ≤ hi.view(): new_exact.num * S ≤ S * new_exact.denom()
+            //    i.e., exact.denom() * S ≤ S * exact.num
+            //    i.e., exact.denom() ≤ exact.num. True from the input le chain.
+            assert(new_exact.le_spec(hi_view)) by {
+                assert(hi_view.num == s as int);
+                assert(hi_view.denom() == s as int);
+                assert(new_exact.num == exact.denom());
+                assert(new_exact.denom() == exact.num);
+                // Need: exact.denom() * S ≤ S * exact.num
+                // i.e., exact.denom() ≤ exact.num
+                assert(s as int * exact.denom() <= exact.num * s as int) by (nonlinear_arith)
+                    requires b_int as int * exact.denom() <= exact.num * s as int,
+                             b_int as int >= s as int;
+                assert(new_exact.num * s as int <= s as int * new_exact.denom()) by (nonlinear_arith)
+                    requires s as int * exact.denom() <= exact.num * s as int;
+            }
+
+            // lo and hi have same format (both n, frac)
+            assert(lo@.same_format(hi@));
+        }
 
         RuntimeFixedPointInterval {
             lo, hi,
