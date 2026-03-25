@@ -2000,7 +2000,7 @@ impl RuntimeFixedPointInterval {
                     lemma_pow2_monotone(sl_bits, (target_n as nat * 32) as nat);
                 }
                 // hi < target_pow, so hi % target_pow == hi
-                vstd::arithmetic::div_mod::lemma_small_mod(hi as int, target_pow as int);
+                vstd::arithmetic::div_mod::lemma_small_mod(hi, target_pow);
             }
         }
 
@@ -2016,9 +2016,6 @@ impl RuntimeFixedPointInterval {
     /// Multiply then reduce: a * b at N-limb precision.
     /// Chains mul_rfp (widens to 2N) → reduce_rfp_floor (truncates back to N).
     /// The standard operation for fixed-point iteration loops.
-    ///
-    /// No-overflow: the product magnitude, after dividing by pow2(frac), must fit in N limbs.
-    /// This holds when the real product value < pow2(n*32 - frac) (fits in integer range).
     pub fn mul_reduce_rfp(a: &RuntimeFixedPoint, b: &RuntimeFixedPoint, frac: usize) -> (result: RuntimeFixedPoint)
         requires
             a.wf_spec(), b.wf_spec(),
@@ -2027,9 +2024,6 @@ impl RuntimeFixedPointInterval {
             a@.frac == frac as nat,
             frac as nat % 32 == 0,
             frac < a@.n * 32,
-            // No overflow: product magnitude fits after frac reduction
-            limbs_to_nat(a@.limbs) as int * limbs_to_nat(b@.limbs) as int
-                < pow2((frac as nat + a@.n * 32) as nat) as int,
         ensures
             result.wf_spec(),
             result@.n == a@.n,
@@ -2042,19 +2036,8 @@ impl RuntimeFixedPointInterval {
             assert(wide@.n == 2 * a@.n);
             assert(wide@.frac == 2 * frac as nat);
             // shift_limbs * 32 == frac
-            assert(frac_shift as nat * 32 == frac as nat) by (nonlinear_arith)
-                requires frac as nat % 32 == 0;
-            // After shift, enough limbs: 2*n - frac/32 >= n (since frac/32 < n)
-            assert(wide@.n - frac_shift as nat >= n as nat) by (nonlinear_arith)
-                requires wide@.n == 2 * a@.n, frac < a@.n * 32, n == a@.n,
-                    frac_shift as nat * 32 == frac as nat;
-            // No overflow: ltn(wide) < pow2((frac_shift + n) * 32)
-            // ltn(wide) = ltn(a) * ltn(b) (from mul structural equality)
-            // Need to connect ltn(wide.limbs) to ltn(a.limbs) * ltn(b.limbs)
-            // wide@ == a@.mul_spec(b@), so ltn(wide.limbs) == |a.sv * b.sv|
-            // For the no-overflow, the caller guarantees the bound
-            assert((frac_shift as nat + n as nat) * 32 == frac as nat + a@.n * 32) by (nonlinear_arith)
-                requires frac_shift as nat * 32 == frac as nat, n == a@.n;
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(frac as int, 32int);
+                assert(frac_shift as nat * 32 == frac as nat);
         }
         Self::reduce_rfp_floor(&wide, n, frac, frac_shift)
     }
@@ -2151,7 +2134,13 @@ impl RuntimeFixedPointInterval {
             let bx_wide = Self::mul_rfp(b, &x);
 
             // Step 2: reduce bx back to N limbs
-            let bx = Self::reduce_rfp_floor(&bx_wide, n, frac);
+            let frac_shift = frac / 32;
+            proof {
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(frac as int, 32int);
+                assert(frac_shift as nat * 32 == frac as nat);
+                assert(bx_wide@.frac == 2 * frac as nat);
+            }
+            let bx = Self::reduce_rfp_floor(&bx_wide, n, frac, frac_shift);
 
             // Step 3: two_minus_bx = 2 - bx
             // Need add_no_overflow for sub. Since we're computing 2 - bx where
@@ -2241,7 +2230,10 @@ impl RuntimeFixedPointInterval {
             let x_wide = Self::mul_rfp(&x, &two_minus_bx);
 
             // Step 5: reduce back to N limbs
-            let x_new = Self::reduce_rfp_floor(&x_wide, n, frac);
+            proof {
+                assert(x_wide@.frac == 2 * frac as nat);
+            }
+            let x_new = Self::reduce_rfp_floor(&x_wide, n, frac, frac_shift);
 
             // Guard: x must stay positive for invariant
             if x_new.sign {
@@ -2304,17 +2296,14 @@ impl RuntimeFixedPointInterval {
             // mul_rfp ensures: product_wide@.n == 2 * a@.n, product_wide@.frac == 2 * frac
             // reduce needs: frac_diff % 32 == 0 and n fits
             assert(product_wide@.frac == 2 * frac as nat);
-            assert((product_wide@.frac - frac as nat) == frac as nat);
-            assert((frac as nat) % 32 == 0);
             assert(product_wide@.n == 2 * a@.n);
-            assert(product_wide@.n >= n as nat + frac as nat / 32) by (nonlinear_arith)
-                requires
-                    product_wide@.n == 2 * a@.n,
-                    frac < a@.n * 32,
-                    n == a@.n,
-            {}
         }
-        Self::reduce_rfp_floor(&product_wide, n, frac)
+        let frac_shift = frac / 32;
+        proof {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(frac as int, 32int);
+                assert(frac_shift as nat * 32 == frac as nat);
+        }
+        Self::reduce_rfp_floor(&product_wide, n, frac, frac_shift)
     }
 
     pub fn add_interval(&self, rhs: &Self) -> (result: Self)
@@ -2967,7 +2956,12 @@ impl RuntimeFixedPointInterval {
             // So self.lo and recip.lo have the same format
         }
         let product = Self::mul_rfp(&self.lo, &recip.lo);
-        let product_reduced = Self::reduce_rfp_floor(&product, n, frac);
+        let frac_shift = frac / 32;
+        proof {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(frac as int, 32int);
+                assert(frac_shift as nat * 32 == frac as nat);
+        }
+        let product_reduced = Self::reduce_rfp_floor(&product, n, frac, frac_shift);
         let hi_copy = Self::neg_rfp(&Self::neg_rfp(&product_reduced));
 
         RuntimeFixedPointInterval {
