@@ -96,7 +96,9 @@ impl RuntimeFixedPoint {
     /// Construct a RuntimeFixedPoint zero.
     pub fn from_zero(n: usize, frac: usize) -> (result: Self)
         requires n > 0, frac <= n * 32,
-        ensures result.wf_spec(), result@.n == n as nat, result@.frac == frac as nat, !result.sign,
+        ensures
+            result.wf_spec(), result@.n == n as nat, result@.frac == frac as nat, !result.sign,
+            limbs_to_nat(result@.limbs) == 0,
     {
         let limbs = zero_vec(n);
         proof { lemma_limbs_to_nat_all_zeros(n as nat); }
@@ -3173,32 +3175,40 @@ impl RuntimeFixedPointInterval {
             // new_exact.num = exact.denom() ≥ 1
             // new_exact.denom() = exact.num
 
-            // 1) lo.view() ≤ new_exact: 0 * new_exact.denom() ≤ new_exact.num * S
-            //    i.e., 0 ≤ exact.denom() * S. True since both ≥ 1.
+            // Help Z3 unfold view() for lo and hi
+            assert(lo@.signed_value() == 0) by {
+                assert(!lo@.sign);
+            }
+            assert(lo_view == Rational::from_frac_spec(0, s as int));
+            assert(hi_view == Rational::from_frac_spec(s as int, s as int));
+
+            // Help Z3 unfold reciprocal_spec for positive exact
+            assert(new_exact.num == exact.denom());
+            assert(new_exact.denom() == exact.num);
+
+            // 1) lo.view() ≤ new_exact: 0 ≤ 1/exact
             assert(lo_view.le_spec(new_exact)) by {
                 assert(lo_view.num == 0);
-                assert(lo_view.denom() == s as int);
-                assert(new_exact.num == exact.denom());
-                assert(new_exact.denom() == exact.num);
-                assert(0 * new_exact.denom() <= new_exact.num * s as int) by (nonlinear_arith)
-                    requires new_exact.num >= 1, s > 0;
+                assert(0 * new_exact.denom() <= new_exact.num * lo_view.denom()) by (nonlinear_arith)
+                    requires new_exact.num >= 1, lo_view.denom() >= 1;
             }
 
-            // 2) new_exact ≤ hi.view(): new_exact.num * S ≤ S * new_exact.denom()
-            //    i.e., exact.denom() * S ≤ S * exact.num
-            //    i.e., exact.denom() ≤ exact.num. True from the input le chain.
+            // 2) new_exact ≤ hi.view(): 1/exact ≤ 1
+            //    exact.denom() ≤ exact.num (from b ≥ 1)
+            assert(exact.denom() <= exact.num) by (nonlinear_arith)
+                requires b_int as int * exact.denom() <= exact.num * s as int,
+                         b_int as int >= s as int,
+                         s > 0int,
+                         exact.denom() >= 1int;
             assert(new_exact.le_spec(hi_view)) by {
                 assert(hi_view.num == s as int);
                 assert(hi_view.denom() == s as int);
-                assert(new_exact.num == exact.denom());
-                assert(new_exact.denom() == exact.num);
-                // Need: exact.denom() * S ≤ S * exact.num
-                // i.e., exact.denom() ≤ exact.num
-                assert(s as int * exact.denom() <= exact.num * s as int) by (nonlinear_arith)
-                    requires b_int as int * exact.denom() <= exact.num * s as int,
-                             b_int as int >= s as int;
-                assert(new_exact.num * s as int <= s as int * new_exact.denom()) by (nonlinear_arith)
-                    requires s as int * exact.denom() <= exact.num * s as int;
+                assert(new_exact.num * hi_view.denom() <= hi_view.num * new_exact.denom()) by (nonlinear_arith)
+                    requires new_exact.num == exact.denom(),
+                             new_exact.denom() == exact.num,
+                             exact.denom() <= exact.num,
+                             hi_view.num == s as int,
+                             hi_view.denom() == s as int;
             }
 
             // lo and hi have same format (both n, frac)
