@@ -2074,7 +2074,11 @@ impl RuntimeFixedPointInterval {
             b@.n == n as nat, b@.frac == frac as nat,
             two@.n == n as nat, two@.frac == frac as nat,
             !b.sign, !two.sign,
-            limbs_to_nat(b@.limbs) > 0,
+            // b ∈ [S, 3S/2] where S = pow2(frac): ensures 1.0 ≤ b_real ≤ 1.5
+            // This guarantees |e_0| ≤ S/2 and rapid quadratic convergence.
+            // Callers with b outside this range should normalize first.
+            limbs_to_nat(b@.limbs) >= pow2(frac as nat),
+            2 * limbs_to_nat(b@.limbs) <= 3 * pow2(frac as nat),
             n > 0,
             n <= 0x0FFF_FFFF, // ensure 4*n doesn't overflow
             frac < n * 32,
@@ -2083,6 +2087,7 @@ impl RuntimeFixedPointInterval {
             result.wf_spec(),
             result@.n == n as nat,
             result@.frac == frac as nat,
+            !result.sign,
     {
         // Build initial estimate x_0: start with "one" (= 2^frac in limb representation)
         // A smarter initial estimate would use the top limb of b, but "one" works.
@@ -2273,7 +2278,9 @@ impl RuntimeFixedPointInterval {
             b@.same_format(two@),
             a@.frac == frac as nat,
             !b.sign, !two.sign,
-            limbs_to_nat(b@.limbs) > 0,
+            // b ∈ [S, 3S/2] for Newton convergence
+            limbs_to_nat(b@.limbs) >= pow2(frac as nat),
+            2 * limbs_to_nat(b@.limbs) <= 3 * pow2(frac as nat),
             a@.n > 0,
             a@.n <= 0x0FFF_FFFF,
             frac < a@.n * 32,
@@ -2885,13 +2892,13 @@ impl RuntimeFixedPointInterval {
         requires
             self.wf_spec(),
             !self.lo.sign, !self.hi.sign,
-            limbs_to_nat(self.lo@.limbs) > 0,
+            // b ∈ [S, 3S/2] for Newton convergence
+            limbs_to_nat(self.lo@.limbs) >= pow2(self.lo@.frac),
+            2 * limbs_to_nat(self.lo@.limbs) <= 3 * pow2(self.lo@.frac),
             self.lo@.n <= 0x0FFF_FFFF,
             self.lo@.frac < self.lo@.n * 32,
             self.frac_exec as nat % 32 == 0,
             self.frac_exec < self.lo.limbs.len() * 32,
-            // Overflow for add/sub by 1 ULP
-            FixedPoint::add_no_overflow(self.lo@, self.lo@),
         ensures
             result.lo.wf_spec(),
             result.hi.wf_spec(),
