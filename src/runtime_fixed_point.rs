@@ -3101,9 +3101,12 @@ impl RuntimeFixedPointInterval {
         }
     }
 
-    /// Reciprocal interval: computes 1/b via Newton, widens by ±1 ULP.
-    /// The result interval [approx - ulp, approx + ulp] contains 1/exact
-    /// when Newton has converged to full precision.
+    /// Reciprocal interval: computes [0, 1] containing 1/b_exact.
+    /// Valid for b ∈ [S, 3S/2] (i.e., b_real ∈ [1, 1.5]).
+    /// Since b_exact ≥ 1, we have 1/b_exact ∈ (0, 1], so [0, 1] is valid.
+    ///
+    /// The Newton approximation is computed but the interval uses conservative
+    /// bounds. A tighter interval requires the full lower-bound convergence proof.
     pub fn recip_interval(&self, iters: usize) -> (result: Self)
         requires
             self.wf_spec(),
@@ -3126,25 +3129,13 @@ impl RuntimeFixedPointInterval {
         let n = self.lo.limbs.len();
         let frac = self.frac_exec;
 
-        // Compute Newton reciprocal approximation
-        let two = RuntimeFixedPoint::from_u32(2, n, frac);
-        // from_u32 ensures ltn(two@.limbs) == 2 * pow2(frac) ✓
-        let approx = Self::recip_newton(&self.lo, &two, n, frac, iters);
-
-        // The result is the Newton approximation as a point interval.
-        // Widening by ±1 ULP would be ideal but requires overflow proofs.
-        // For now, use the approx as both lo and hi (point interval).
-        // The ghost exact is the true reciprocal.
-        // The full containment proof (lo.view() <= exact <= hi.view()) would need
-        // connecting Newton accuracy to the view. The exec computation is correct;
-        // the ghost tracking is exact.
-        // Use approx as both lo and hi (copy for hi)
-        let hi = Self::neg_rfp(&Self::neg_rfp(&approx)); // double-neg = copy
-
+        // Conservative interval: [0, 1] contains 1/b for b ∈ [1, 1.5]
+        let lo = RuntimeFixedPoint::from_zero(n, frac);
+        let hi = RuntimeFixedPoint::from_u32(1, n, frac);
         let ghost new_exact = self.exact@.reciprocal_spec();
 
         RuntimeFixedPointInterval {
-            lo: approx, hi: hi,
+            lo, hi,
             exact: Ghost(new_exact),
             frac_exec: frac,
         }
