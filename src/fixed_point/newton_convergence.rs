@@ -225,6 +225,13 @@ pub open spec fn truncated_scaled_error(b_int: nat, x_int: nat, s: nat) -> int {
     s as int - (b_int * x_int / s) as int
 }
 
+/// Newton has converged: b * x / S is within 3 of S.
+/// Equivalently: 1 - 3/S ≤ b*x/S² ≤ 1, so x ≈ S/b = 1/b_real.
+pub open spec fn newton_converged(b_int: nat, x_int: nat, s: nat) -> bool {
+    let bx = b_int * x_int / s;
+    bx <= s && bx + 4 >= s
+}
+
 /// The truncated error bound: e_{k+1} ≤ e_k²/S + 2.
 pub open spec fn truncated_error_bound(e_0: nat, s: nat, k: nat) -> nat
     decreases k,
