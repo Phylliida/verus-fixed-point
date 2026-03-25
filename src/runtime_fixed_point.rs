@@ -1894,32 +1894,37 @@ impl RuntimeFixedPointInterval {
     }
 
     /// Exec-level reduce: truncate a wide RuntimeFixedPoint back to target format.
-    /// Right-shifts by (frac - target_frac) / 32 limbs, then takes target_n limbs.
-    /// Floor rounding (truncation toward zero).
-    /// Requires: frac - target_frac is a multiple of 32, and target_n fits.
+    /// Right-shifts by shift_limbs limbs (= (a.frac - target_frac) / 32),
+    /// then takes bottom target_n limbs. Floor rounding (truncation toward zero).
+    ///
+    /// The shift_limbs parameter must equal the fractional precision reduction in limbs.
+    /// For mul results (2N limbs, 2F frac) reducing to (N limbs, F frac): shift_limbs = F/32.
+    ///
+    /// No-overflow precondition: the value after shifting must fit in target_n limbs.
     pub fn reduce_rfp_floor(
-        a: &RuntimeFixedPoint, target_n: usize, target_frac: usize,
+        a: &RuntimeFixedPoint, target_n: usize, target_frac: usize, shift_limbs: usize,
     ) -> (result: RuntimeFixedPoint)
         requires
             a.wf_spec(),
             a@.frac >= target_frac as nat,
-            (a@.frac - target_frac as nat) % 32 == 0, // shift is limb-aligned
+            shift_limbs as nat * 32 == a@.frac - target_frac as nat,
+            shift_limbs <= a@.n,
             target_n > 0,
             target_frac <= target_n * 32,
-            // The result fits: upper limbs don't overflow
-            a@.n >= target_n as nat + (a@.frac - target_frac as nat) / 32,
+            // After shifting, enough limbs remain
+            a@.n - shift_limbs as nat >= target_n as nat,
+            // No overflow: value after shift fits in target_n limbs
+            limbs_to_nat(a@.limbs) < pow2(((shift_limbs as nat + target_n as nat) * 32) as nat),
         ensures
             result.wf_spec(),
             result@.n == target_n as nat,
             result@.frac == target_frac as nat,
             !a.sign ==> !result.sign,
-            // View correspondence: magnitude is floor-divided by pow2(frac_diff * 32)
+            // View correspondence: floor-divided by pow2(frac_shift_bits)
             limbs_to_nat(result@.limbs)
-                == limbs_to_nat(a@.limbs) / pow2(((a@.n - target_n as nat) * 32) as nat),
+                == limbs_to_nat(a@.limbs) / pow2((shift_limbs as nat * 32) as nat),
     {
-        let frac_diff = a.limbs.len() - target_n;
-
-        let shifted = Self::shift_right_limbs(&a.limbs, a.limbs.len(), frac_diff);
+        let shifted = Self::shift_right_limbs(&a.limbs, a.limbs.len(), shift_limbs);
 
         let result_limbs = if shifted.len() > target_n {
             slice_vec(&shifted, 0, target_n)
@@ -1939,22 +1944,22 @@ impl RuntimeFixedPointInterval {
 
         proof {
             assert(a.limbs@ == a@.limbs);
-            let fd = frac_diff as nat;
+            let sl = shift_limbs as nat;
             let n_a = a.limbs@.len();
 
-            // shifted@ == a.limbs@.subrange(fd, n_a)
-            assert(shifted@ == a@.limbs.subrange(fd as int, n_a as int));
+            // shifted@ == a.limbs@.subrange(sl, n_a)
+            assert(shifted@ == a@.limbs.subrange(sl as int, n_a as int));
 
-            // By split lemma: ltn(a) == ltn(a[..fd]) + ltn(a[fd..]) * pow2(fd*32)
-            lemma_limbs_to_nat_split(a@.limbs, fd);
+            // By split lemma: ltn(a) == ltn(a[..sl]) + ltn(a[sl..n_a]) * pow2(sl*32)
+            lemma_limbs_to_nat_split(a@.limbs, sl);
 
-            let lo = limbs_to_nat(a@.limbs.subrange(0, fd as int));
-            let hi = limbs_to_nat(a@.limbs.subrange(fd as int, n_a as int));
+            let lo = limbs_to_nat(a@.limbs.subrange(0, sl as int));
+            let hi = limbs_to_nat(a@.limbs.subrange(sl as int, n_a as int));
 
-            // lo < pow2(fd*32)
-            lemma_limbs_to_nat_upper_bound(a@.limbs.subrange(0, fd as int));
-            let shift_pow = pow2((fd * 32) as nat);
-            lemma_pow2_positive((fd * 32) as nat);
+            // lo < pow2(sl*32)
+            lemma_limbs_to_nat_upper_bound(a@.limbs.subrange(0, sl as int));
+            let shift_pow = pow2((sl * 32) as nat);
+            lemma_pow2_positive((sl * 32) as nat);
 
             // hi == ltn(a) / shift_pow  (by fundamental div mod converse)
             vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(
@@ -1963,10 +1968,43 @@ impl RuntimeFixedPointInterval {
                 hi as int,
                 lo as int,
             );
+            // Now: hi == ltn(a) / pow2(sl*32) and ltn(shifted) == hi
 
-            // result_limbs == shifted (since shifted.len() == target_n)
-            assert(shifted@.len() == target_n);
-            assert(fd == a@.n - target_n as nat);
+            // Prove: hi < pow2(target_n * 32) from no-overflow precondition
+            let target_pow = pow2((target_n as nat * 32) as nat);
+            lemma_pow2_add((sl * 32) as nat, (target_n as nat * 32) as nat);
+            // pow2((sl + target_n)*32) == pow2(sl*32) * pow2(target_n*32)
+            lemma_pow2_positive((target_n as nat * 32) as nat);
+            assert(hi < target_pow) by (nonlinear_arith)
+                requires
+                    hi as int * shift_pow as int + lo as int == limbs_to_nat(a@.limbs) as int,
+                    limbs_to_nat(a@.limbs) < (shift_pow * target_pow) as int,
+                    shift_pow > 0int,
+                    lo >= 0int;
+
+            if shifted@.len() as int > target_n as int {
+                // Slice case: take bottom target_n limbs, prove upper limbs are zero
+                lemma_limbs_to_nat_split(shifted@, target_n as nat);
+                let s_lo = limbs_to_nat(shifted@.subrange(0, target_n as int));
+                let s_hi = limbs_to_nat(shifted@.subrange(target_n as int, shifted@.len() as int));
+
+                lemma_limbs_to_nat_upper_bound(shifted@.subrange(0, target_n as int));
+
+                // hi == s_lo + s_hi * target_pow, and hi < target_pow
+                // Since s_hi >= 0, s_lo >= 0: s_hi must be 0
+                assert(s_hi == 0nat) by (nonlinear_arith)
+                    requires
+                        s_lo as int + s_hi as int * target_pow as int == hi as int,
+                        hi < target_pow as int,
+                        s_lo >= 0int,
+                        s_hi >= 0int,
+                        target_pow > 0int;
+                // Therefore s_lo == hi
+                assert(result_limbs@ =~= shifted@.subrange(0, target_n as int));
+            } else {
+                // Pad case: padding with zeros preserves ltn
+                // pad_to_length ensures ltn(result) == ltn(shifted) == hi
+            }
         }
 
         RuntimeFixedPoint {
@@ -1981,6 +2019,9 @@ impl RuntimeFixedPointInterval {
     /// Multiply then reduce: a * b at N-limb precision.
     /// Chains mul_rfp (widens to 2N) → reduce_rfp_floor (truncates back to N).
     /// The standard operation for fixed-point iteration loops.
+    ///
+    /// No-overflow: the product magnitude, after dividing by pow2(frac), must fit in N limbs.
+    /// This holds when the real product value < pow2(n*32 - frac) (fits in integer range).
     pub fn mul_reduce_rfp(a: &RuntimeFixedPoint, b: &RuntimeFixedPoint, frac: usize) -> (result: RuntimeFixedPoint)
         requires
             a.wf_spec(), b.wf_spec(),
@@ -1989,22 +2030,36 @@ impl RuntimeFixedPointInterval {
             a@.frac == frac as nat,
             frac as nat % 32 == 0,
             frac < a@.n * 32,
+            // No overflow: product magnitude fits after frac reduction
+            limbs_to_nat(a@.limbs) as int * limbs_to_nat(b@.limbs) as int
+                < pow2((frac as nat + a@.n * 32) as nat) as int,
         ensures
             result.wf_spec(),
             result@.n == a@.n,
             result@.frac == frac as nat,
     {
         let n = a.limbs.len();
+        let frac_shift = frac / 32;
         let wide = Self::mul_rfp(a, b);
         proof {
             assert(wide@.n == 2 * a@.n);
             assert(wide@.frac == 2 * frac as nat);
-            assert((wide@.frac - frac as nat) == frac as nat);
-            assert((frac as nat) % 32 == 0);
-            assert(wide@.n >= n as nat + frac as nat / 32) by (nonlinear_arith)
-                requires wide@.n == 2 * a@.n, frac < a@.n * 32, n == a@.n;
+            // shift_limbs * 32 == frac
+            assert(frac_shift as nat * 32 == frac as nat) by (nonlinear_arith)
+                requires frac as nat % 32 == 0;
+            // After shift, enough limbs: 2*n - frac/32 >= n (since frac/32 < n)
+            assert(wide@.n - frac_shift as nat >= n as nat) by (nonlinear_arith)
+                requires wide@.n == 2 * a@.n, frac < a@.n * 32, n == a@.n,
+                    frac_shift as nat * 32 == frac as nat;
+            // No overflow: ltn(wide) < pow2((frac_shift + n) * 32)
+            // ltn(wide) = ltn(a) * ltn(b) (from mul structural equality)
+            // Need to connect ltn(wide.limbs) to ltn(a.limbs) * ltn(b.limbs)
+            // wide@ == a@.mul_spec(b@), so ltn(wide.limbs) == |a.sv * b.sv|
+            // For the no-overflow, the caller guarantees the bound
+            assert((frac_shift as nat + n as nat) * 32 == frac as nat + a@.n * 32) by (nonlinear_arith)
+                requires frac_shift as nat * 32 == frac as nat, n == a@.n;
         }
-        Self::reduce_rfp_floor(&wide, n, frac)
+        Self::reduce_rfp_floor(&wide, n, frac, frac_shift)
     }
 
     /// Signed subtraction: a - b = a + (-b).
