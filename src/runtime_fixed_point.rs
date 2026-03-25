@@ -1900,7 +1900,8 @@ impl RuntimeFixedPointInterval {
     /// The shift_limbs parameter must equal the fractional precision reduction in limbs.
     /// For mul results (2N limbs, 2F frac) reducing to (N limbs, F frac): shift_limbs = F/32.
     ///
-    /// No-overflow precondition: the value after shifting must fit in target_n limbs.
+    /// The result is the shifted value modulo pow2(target_n * 32). When there is no
+    /// overflow (the shifted value fits in target_n limbs), the modulo is a no-op.
     pub fn reduce_rfp_floor(
         a: &RuntimeFixedPoint, target_n: usize, target_frac: usize, shift_limbs: usize,
     ) -> (result: RuntimeFixedPoint)
@@ -1911,18 +1912,15 @@ impl RuntimeFixedPointInterval {
             shift_limbs <= a@.n,
             target_n > 0,
             target_frac <= target_n * 32,
-            // After shifting, enough limbs remain
-            a@.n - shift_limbs as nat >= target_n as nat,
-            // No overflow: value after shift fits in target_n limbs
-            limbs_to_nat(a@.limbs) < pow2(((shift_limbs as nat + target_n as nat) * 32) as nat),
         ensures
             result.wf_spec(),
             result@.n == target_n as nat,
             result@.frac == target_frac as nat,
             !a.sign ==> !result.sign,
-            // View correspondence: floor-divided by pow2(frac_shift_bits)
+            // View correspondence: floor-divided by pow2(frac_shift), modulo target capacity
             limbs_to_nat(result@.limbs)
-                == limbs_to_nat(a@.limbs) / pow2((shift_limbs as nat * 32) as nat),
+                == (limbs_to_nat(a@.limbs) / pow2((shift_limbs as nat * 32) as nat))
+                   % pow2((target_n as nat * 32) as nat),
     {
         let shifted = Self::shift_right_limbs(&a.limbs, a.limbs.len(), shift_limbs);
 
@@ -1970,40 +1968,39 @@ impl RuntimeFixedPointInterval {
             );
             // Now: hi == ltn(a) / pow2(sl*32) and ltn(shifted) == hi
 
-            // Prove: hi < pow2(target_n * 32) from no-overflow precondition
             let target_pow = pow2((target_n as nat * 32) as nat);
-            lemma_pow2_add((sl * 32) as nat, (target_n as nat * 32) as nat);
-            // pow2((sl + target_n)*32) == pow2(sl*32) * pow2(target_n*32)
             lemma_pow2_positive((target_n as nat * 32) as nat);
-            assert(hi < target_pow) by (nonlinear_arith)
-                requires
-                    hi as int * shift_pow as int + lo as int == limbs_to_nat(a@.limbs) as int,
-                    limbs_to_nat(a@.limbs) < (shift_pow * target_pow) as int,
-                    shift_pow > 0int,
-                    lo >= 0int;
 
             if shifted@.len() as int > target_n as int {
-                // Slice case: take bottom target_n limbs, prove upper limbs are zero
+                // Slice case: result = shifted[0..target_n]
+                // ltn(shifted) = ltn(shifted[0..tn]) + ltn(shifted[tn..]) * pow2(tn*32)
                 lemma_limbs_to_nat_split(shifted@, target_n as nat);
                 let s_lo = limbs_to_nat(shifted@.subrange(0, target_n as int));
                 let s_hi = limbs_to_nat(shifted@.subrange(target_n as int, shifted@.len() as int));
 
+                // s_lo < pow2(target_n*32) (from upper_bound on target_n limbs)
                 lemma_limbs_to_nat_upper_bound(shifted@.subrange(0, target_n as int));
 
-                // hi == s_lo + s_hi * target_pow, and hi < target_pow
-                // Since s_hi >= 0, s_lo >= 0: s_hi must be 0
-                assert(s_hi == 0nat) by (nonlinear_arith)
-                    requires
-                        s_lo as int + s_hi as int * target_pow as int == hi as int,
-                        hi < target_pow as int,
-                        s_lo >= 0int,
-                        s_hi >= 0int,
-                        target_pow > 0int;
-                // Therefore s_lo == hi
+                // By fundamental_div_mod_converse: s_lo = hi % target_pow
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(
+                    hi as int,
+                    target_pow as int,
+                    s_hi as int,
+                    s_lo as int,
+                );
+
                 assert(result_limbs@ =~= shifted@.subrange(0, target_n as int));
             } else {
-                // Pad case: padding with zeros preserves ltn
-                // pad_to_length ensures ltn(result) == ltn(shifted) == hi
+                // Pad case: ltn(result) == ltn(shifted) == hi
+                // hi = ltn(shifted), and shifted has ≤ target_n limbs
+                // so hi < pow2(shifted.len()*32) ≤ pow2(target_n*32) = target_pow
+                lemma_limbs_to_nat_upper_bound(shifted@);
+                let sl_bits = (shifted@.len() * 32) as nat;
+                if shifted@.len() < target_n {
+                    lemma_pow2_monotone(sl_bits, (target_n as nat * 32) as nat);
+                }
+                // hi < target_pow, so hi % target_pow == hi
+                vstd::arithmetic::div_mod::lemma_small_mod(hi as int, target_pow as int);
             }
         }
 
