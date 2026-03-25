@@ -2134,6 +2134,9 @@ impl RuntimeFixedPointInterval {
                 n <= 0x0FFF_FFFF,
                 frac < n * 32,
                 frac as nat % 32 == 0,
+                frac >= 5,
+                limbs_to_nat(b@.limbs) >= pow2(frac as nat),
+                2 * limbs_to_nat(b@.limbs) <= 3 * pow2(frac as nat),
             decreases iters - i,
         {
             // Step 1: bx = b * x (widens to 2N limbs, 2*frac bits)
@@ -2247,6 +2250,7 @@ impl RuntimeFixedPointInterval {
                 // Return current x.
                 return x;
             }
+
             x = x_new;
 
             i = i + 1;
