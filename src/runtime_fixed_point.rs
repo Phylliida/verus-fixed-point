@@ -61,6 +61,8 @@ impl RuntimeFixedPoint {
             result@.n == n as nat,
             result@.frac == frac as nat,
             !result.sign,
+            // The limb value: value * pow2(frac)
+            limbs_to_nat(result@.limbs) == value as nat * pow2(frac as nat),
     {
         let mut limbs = zero_vec(n);
         let frac_limbs = frac / 32;
@@ -68,6 +70,13 @@ impl RuntimeFixedPoint {
 
         proof {
             lemma_limbs_to_nat_all_zeros(n as nat);
+            // Prove ltn = value * pow2(frac) via single_nonzero lemma
+            let fl = frac_limbs as nat;
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(frac as int, 32int);
+            assert(fl * 32 == frac as nat) by (nonlinear_arith)
+                requires fl == frac as nat / 32, frac as nat % 32 == 0;
+            assert(limbs@ =~= Seq::new(n as nat, |j: int| if j == fl as int { value } else { 0u32 }));
+            lemma_limbs_to_nat_single_nonzero(n as nat, fl, value);
         }
 
         let ghost model = FixedPoint {
@@ -2074,6 +2083,8 @@ impl RuntimeFixedPointInterval {
             b@.n == n as nat, b@.frac == frac as nat,
             two@.n == n as nat, two@.frac == frac as nat,
             !b.sign, !two.sign,
+            // two represents 2.0: ltn = 2 * pow2(frac)
+            limbs_to_nat(two@.limbs) == 2 * pow2(frac as nat),
             // b ∈ [S, 3S/2] where S = pow2(frac): ensures 1.0 ≤ b_real ≤ 1.5
             // This guarantees |e_0| ≤ S/2 and rapid quadratic convergence.
             // Callers with b outside this range should normalize first.
@@ -2089,6 +2100,10 @@ impl RuntimeFixedPointInterval {
             result@.n == n as nat,
             result@.frac == frac as nat,
             !result.sign,
+            // Convergence: after ≥ 1 iteration, b*result/S ≤ S+1.
+            iters >= 1 ==>
+                limbs_to_nat(b@.limbs) * limbs_to_nat(result@.limbs)
+                    / pow2(frac as nat) <= pow2(frac as nat) + 1,
     {
         // Build initial estimate x_0: start with "one" (= 2^frac in limb representation)
         // A smarter initial estimate would use the top limb of b, but "one" works.
@@ -2112,6 +2127,17 @@ impl RuntimeFixedPointInterval {
 
         proof {
             assert(x.wf_spec());
+            // Prove ltn(x.limbs) == pow2(frac) for the initial value invariant
+            // x has a single 1 at position limb_pos = frac/32, zeros elsewhere
+            let lp = limb_pos as nat;
+            assert(x@.limbs =~= Seq::new(n as nat, |j: int| if j == lp as int { 1u32 } else { 0u32 }));
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(frac as int, 32int);
+            assert(lp * 32 == frac as nat) by (nonlinear_arith)
+                requires lp == frac as nat / 32, frac as nat % 32 == 0;
+            assert(lp < n) by (nonlinear_arith) requires frac < n * 32, lp * 32 == frac as nat;
+            lemma_limbs_to_nat_single_nonzero(n as nat, lp, 1u32);
+            assert(limbs_to_nat(x@.limbs) == 1 * pow2((lp * 32) as nat));
+            assert(limbs_to_nat(x@.limbs) == pow2(frac as nat));
         }
 
         // Newton iterations
@@ -2130,6 +2156,7 @@ impl RuntimeFixedPointInterval {
                 two@.n == n as nat,
                 two@.frac == frac as nat,
                 !b.sign, !two.sign,
+                limbs_to_nat(two@.limbs) == 2 * pow2(frac as nat),
                 n > 0,
                 n <= 0x0FFF_FFFF,
                 frac < n * 32,
@@ -2137,9 +2164,19 @@ impl RuntimeFixedPointInterval {
                 frac >= 5,
                 limbs_to_nat(b@.limbs) >= pow2(frac as nat),
                 2 * limbs_to_nat(b@.limbs) <= 3 * pow2(frac as nat),
+                // Initial value tracking: at i=0, x is still the initial S
+                i == 0 ==> limbs_to_nat(x@.limbs) == pow2(frac as nat),
+                // Convergence: after first iteration, bx ≤ S+1
+                i >= 1 ==> limbs_to_nat(b@.limbs) * limbs_to_nat(x@.limbs)
+                    / pow2(frac as nat) <= pow2(frac as nat) + 1,
             decreases iters - i,
         {
-            // Step 1: bx = b * x (widens to 2N limbs, 2*frac bits)
+            let ghost s = pow2(frac as nat);
+            let ghost b_int = limbs_to_nat(b@.limbs);
+            let ghost x_int = limbs_to_nat(x@.limbs);
+            let ghost p = pow2((n * 32) as nat);
+
+            // Step 1: bx_wide = b * x (widens to 2N limbs)
             let bx_wide = Self::mul_rfp(b, &x);
 
             // Step 2: reduce bx back to N limbs
@@ -2151,108 +2188,280 @@ impl RuntimeFixedPointInterval {
             }
             let bx = Self::reduce_rfp_floor(&bx_wide, n, frac, frac_shift);
 
-            // Step 3: two_minus_bx = 2 - bx
-            // Need add_no_overflow for sub. Since we're computing 2 - bx where
-            // bx is an approximation of b*x ≈ 1, the result should be around 1.
-            // We can't prove overflow-freedom generically without bounds on b*x,
-            // but for the iteration to converge, |bx| < 2 is required.
-            // Add the overflow precondition to the loop invariant or assume it.
-            // For a first version, we compute neg(bx) then add to two.
+            // ═══ Exec↔Spec connection: ltn(bx) = (b_int * x_int / S) % pow2(n*32) ═══
+            proof {
+                // Both b and x are positive: signed_value == ltn(limbs)
+                let b_sv = b@.signed_value();
+                let x_sv = x@.signed_value();
+                assert(b_sv >= 0);
+                assert(x_sv >= 0);
+                assert(b_sv == b_int as int);
+                assert(x_sv == x_int as int);
+                assert(b_sv * x_sv >= 0) by (nonlinear_arith)
+                    requires b_sv >= 0, x_sv >= 0;
+
+                // bx_wide@ == b@.mul_spec(x@): structural equality from mul_rfp
+                // mul_spec for positive values: limbs = nat_to_limbs(b_sv * x_sv, 2n)
+                assert(!bx_wide@.sign);
+                let magnitude = (b_sv * x_sv) as nat;
+                assert(magnitude == b_int * x_int);
+
+                // ltn(nat_to_limbs(m, k)) = m when m < pow2(k*32)
+                // Need: b_int * x_int < pow2(2*n*32)
+                lemma_limbs_to_nat_upper_bound(b@.limbs);
+                lemma_limbs_to_nat_upper_bound(x@.limbs);
+                assert(b_int < p);
+                assert(x_int < p);
+                lemma_pow2_add((n * 32) as nat, (n * 32) as nat);
+                assert(b_int * x_int < p * p) by (nonlinear_arith)
+                    requires b_int < p, x_int < p, p > 0;
+                assert(p * p == pow2((2 * n * 32) as nat)) by {
+                    assert((n * 32 + n * 32) as nat == (2 * n * 32) as nat) by (nonlinear_arith);
+                }
+                lemma_nat_to_limbs_roundtrip(magnitude, (2 * n) as nat);
+                assert(limbs_to_nat(bx_wide@.limbs) == b_int * x_int);
+
+                // From reduce: ltn(bx) = (ltn(bx_wide) / S) % pow2(n*32)
+                let bx_val = (b_int * x_int / s) % p;
+                assert(limbs_to_nat(bx@.limbs) == bx_val);
+
+                // Show modulo is no-op: b_int * x_int / S < pow2(n*32)
+                // At i=0: x = S, so b*S/S = b < pow2(n*32) ✓
+                // At i≥1: b*x/S ≤ S+1 < pow2(n*32) ✓
+                // s + 1 < p: since frac ≤ n*32 - 32, pow2(frac) ≤ pow2(n*32)/pow2(32)
+                // so s + 1 ≤ 2*s ≤ pow2(frac+1) ≤ pow2(n*32) = p
+                lemma_pow2_monotone((frac as nat + 1) as nat, (n * 32) as nat);
+                assert(2 * s == pow2((frac as nat + 1) as nat)) by {
+                    lemma_pow2_add(frac as nat, 1);
+                    assert(pow2(1nat) == 2) by { lemma_pow2_one(); }
+                }
+                reveal_with_fuel(pow2, 6);
+                assert(pow2(5nat) == 32nat);
+                lemma_pow2_monotone(5, frac as nat);
+                assert(s >= 32nat);
+                assert(s + 1 < p) by (nonlinear_arith)
+                    requires 2 * s <= p, s >= 32;
+
+                if i == 0 {
+                    // At i=0, x is the initial value with ltn = S
+                    assert(x_int == s); // from loop invariant
+                    assert(b_int * s / s == b_int) by (nonlinear_arith)
+                        requires s > 0nat;
+                    assert(b_int * x_int / s == b_int);
+                    assert(b_int < p);
+                } else {
+                    assert(b_int * x_int / s <= s + 1);
+                }
+                // Modulo is no-op
+                vstd::arithmetic::div_mod::lemma_small_mod(
+                    b_int * x_int / s, p);
+                assert(bx_val == b_int * x_int / s);
+
+                // Therefore: ltn(bx@.limbs) = b_int * x_int / S
+                // And this is ≤ 2S (for the cmp guard)
+                if i == 0 {
+                    // b_int ≤ 3S/2 ≤ 2S
+                    assert(limbs_to_nat(bx@.limbs) <= 2 * s) by (nonlinear_arith)
+                        requires limbs_to_nat(bx@.limbs) == b_int,
+                                 2 * b_int <= 3 * s;
+                } else {
+                    // S+1 ≤ 2S for S ≥ 1
+                    assert(s + 1 <= 2 * s) by (nonlinear_arith) requires s >= 1;
+                    assert(limbs_to_nat(bx@.limbs) <= 2 * s);
+                }
+
+                // bx is positive (mul of two positives + reduce)
+                assert(!bx_wide.sign);
+                assert(!bx.sign);
+            }
+
+            // Step 3: compute two_minus_bx = 2 - bx
             let neg_bx = Self::neg_rfp(&bx);
             proof {
                 FixedPoint::lemma_neg_wf(bx@);
                 FixedPoint::lemma_neg_same_format(bx@);
             }
-            // two_minus_bx = two + (-bx)
-            // Check if we can add (overflow condition)
-            // For Newton convergence, bx should be close to 1, so 2 - bx ≈ 1
-            // If bx > 2, the iteration diverges anyway. We guard this at runtime.
+
+            // Guard: bx > 2 check — NEVER triggers under our preconditions
             if cmp_limbs(&bx.limbs, &two.limbs, n) > 0i8 {
-                // bx > 2: iteration won't converge, just return current x
                 return x;
             }
-            // two + neg_bx: two is positive, neg_bx is negative (or zero)
-            // |neg_bx| = |bx| <= |two|, so |two + neg_bx| = two - bx <= two
-            // which fits in N limbs since two fits in N limbs.
-            // The add_no_overflow condition:
-            // signed_value(two) + signed_value(neg_bx) = ltn(two) - ltn(bx)
-            // |result| <= ltn(two) < pow2(n*32) ✓
-            proof {
-                // Prove add_no_overflow(two@, neg_bx@)
-                // neg_bx@ == bx@.neg_spec()
-                // neg_bx@.signed_value() == -bx@.signed_value()
-                FixedPoint::lemma_neg_signed_value(bx@);
 
-                // bx is positive: mul of two positives is positive, reduce preserves sign
-                // mul_rfp: bx_wide@ == b@.mul_spec(x@)
-                // mul_spec sign: (b.sv * x.sv < 0) is false since both sv >= 0
-                // Both b and x are positive => mul result is positive
-                // b@.signed_value() >= 0, x@.signed_value() >= 0
-                // sv = b.sv * x.sv >= 0, so sign = false
-                let b_sv = b@.signed_value();
-                let x_sv = x@.signed_value();
-                assert(b_sv >= 0);
-                assert(x_sv >= 0);
-                assert(b_sv * x_sv >= 0) by (nonlinear_arith)
-                    requires b_sv >= 0, x_sv >= 0;
-                // bx_wide@ == b@.mul_spec(x@), sign = (b_sv * x_sv < 0) = false
-                assert(!bx_wide@.sign);
-                assert(bx_wide.sign == bx_wide@.sign); // from wf
-                assert(!bx_wide.sign);
-                assert(!bx.sign); // reduce sets sign from a.sign which is false
+            // Prove add_no_overflow(two@, neg_bx@)
+            proof {
+                FixedPoint::lemma_neg_signed_value(bx@);
+                assert(!bx.sign);
                 let bx_sv = bx@.signed_value();
                 let two_sv = two@.signed_value();
-                assert(bx_sv >= 0);
-                assert(two_sv >= 0);
-
-                // From cmp guard: ltn(bx.limbs) <= ltn(two.limbs)
-                assert(bx.limbs@ == bx@.limbs);
-                assert(two.limbs@ == two@.limbs);
-                // cmp_limbs returned <= 0, meaning ltn(bx.limbs) <= ltn(two.limbs)
-                assert(limbs_to_nat(bx@.limbs) <= limbs_to_nat(two@.limbs));
-
-                // sv = two_sv + neg_bx_sv = two_sv - bx_sv >= 0
-                // |sv| = two_sv - bx_sv <= two_sv = ltn(two.limbs) < pow2(n*32)
-                lemma_limbs_to_nat_upper_bound(two@.limbs);
-                let p = pow2((n * 32) as nat);
-                assert(two_sv < p as int);
-
-                // The overflow condition holds
-                // bx_sv <= two_sv from cmp guard: ltn(bx.limbs) <= ltn(two.limbs)
-                // For positive values: signed_value == limbs_to_nat
                 assert(bx_sv == limbs_to_nat(bx@.limbs) as int);
                 assert(two_sv == limbs_to_nat(two@.limbs) as int);
-                assert(bx.limbs@ == bx@.limbs);
-                assert(two.limbs@ == two@.limbs);
-                assert(bx_sv <= two_sv);
-
+                assert(bx_sv >= 0);
+                assert(two_sv >= 0);
+                assert(limbs_to_nat(bx@.limbs) <= limbs_to_nat(two@.limbs));
+                lemma_limbs_to_nat_upper_bound(two@.limbs);
                 let sv = two_sv + neg_bx@.signed_value();
                 assert(neg_bx@.signed_value() == -bx_sv);
-                assert(sv == two_sv - bx_sv);
                 assert(sv >= 0);
-                assert(sv < p as int) by (nonlinear_arith)
-                    requires sv == two_sv - bx_sv, two_sv < p as int, bx_sv >= 0;
+                assert(sv < pow2((n * 32) as nat) as int) by (nonlinear_arith)
+                    requires sv == two_sv - bx_sv, two_sv < pow2((n * 32) as nat) as int, bx_sv >= 0;
             }
             let two_minus_bx = Self::add_rfp(two, &neg_bx);
 
-            // Step 4: x_new = x * two_minus_bx (widens to 2N)
+            // Step 4: x_new = x * (2 - bx), widens to 2N
             let x_wide = Self::mul_rfp(&x, &two_minus_bx);
 
             // Step 5: reduce back to N limbs
-            proof {
-                assert(x_wide@.frac == 2 * frac as nat);
-            }
+            proof { assert(x_wide@.frac == 2 * frac as nat); }
             let x_new = Self::reduce_rfp_floor(&x_wide, n, frac, frac_shift);
 
-            // Guard: x must stay positive for invariant
+            // Guard: sign check — NEVER triggers (both factors positive, result positive)
             if x_new.sign {
-                // Iteration produced negative — shouldn't happen with valid inputs.
-                // Return current x.
                 return x;
             }
 
-            x = x_new;
+            // ═══ Convergence proof: connect exec x_new to spec, then apply lemma ═══
+            proof {
+                use crate::fixed_point::newton_convergence::*;
+                let bx_val = b_int * x_int / s;
 
+                // --- Connect two_minus_bx to spec: ltn = 2S - bx_val ---
+                // add_rfp gives structural equality: two_minus_bx@ == two@.add_spec(neg_bx@)
+                // signed_value = two_sv - bx_sv = 2S - bx_val (positive)
+                // So ltn(two_minus_bx@.limbs) = 2S - bx_val
+                let tmb_int = limbs_to_nat(two_minus_bx@.limbs);
+
+                // two_minus_bx@ == two@.add_spec(neg_bx@) (structural equality from add_rfp)
+                // add_spec unfolds: sign = (two_sv + neg_bx_sv < 0), limbs = nat_to_limbs(|sv|, n)
+                // two_sv = 2S, neg_bx_sv = -bx_val. Sum = 2S - bx_val ≥ 0.
+                // Connect ltn(two_minus_bx@.limbs) to 2S - bx_val
+                // add_rfp: two_minus_bx@ == two@.add_spec(neg_bx@)
+                // add_spec: sv = two_sv + neg_bx_sv = 2S + (-bx_val) = 2S - bx_val ≥ 0
+                // sign = false, limbs = nat_to_limbs(2S - bx_val, n)
+                // ltn(nat_to_limbs(m, n)) = m (roundtrip) when m < pow2(n*32)
+                // bx_val = ltn(bx.limbs) (from earlier proof) and bx_val ≤ 2S
+                assert(bx_val == limbs_to_nat(bx@.limbs));
+                assert(bx_val <= 2 * s);
+
+                let tmb_nat: nat = (2 * s - bx_val) as nat;
+                // The add_spec gives signed_value = 2S - bx_val
+                assert(two@.signed_value() == (2 * s) as int);
+                assert(neg_bx@.signed_value() == -(bx_val as int));
+                let add_sv = (2 * s) as int - bx_val as int;
+                assert(add_sv >= 0);
+                // add_spec produces sign = false, magnitude = tmb_nat
+                // two_minus_bx@.limbs = nat_to_limbs(tmb_nat, n)
+                assert(!two_minus_bx@.sign);
+                // ltn = tmb_nat via roundtrip
+                assert(tmb_nat < p) by (nonlinear_arith) requires tmb_nat <= 2 * s, 2 * s < p;
+                lemma_nat_to_limbs_roundtrip(tmb_nat, n as nat);
+                let tmb_int = limbs_to_nat(two_minus_bx@.limbs);
+                assert(tmb_int == tmb_nat);
+
+                // --- Connect x_wide to spec: ltn = x_int * tmb_nat ---
+                // mul_rfp gives x_wide@ == x@.mul_spec(two_minus_bx@)
+                // Both positive: ltn = x_int * tmb_nat
+                let x_sv = x@.signed_value();
+                let tmb_sv = two_minus_bx@.signed_value();
+                assert(x_sv >= 0);
+                assert(tmb_sv >= 0);
+                assert(x_sv * tmb_sv >= 0) by (nonlinear_arith)
+                    requires x_sv >= 0, tmb_sv >= 0;
+                assert(!x_wide@.sign);
+                let x_wide_mag = (x_sv * tmb_sv) as nat;
+                assert(x_wide_mag == x_int * tmb_nat);
+                lemma_limbs_to_nat_upper_bound(x@.limbs);
+                lemma_limbs_to_nat_upper_bound(two_minus_bx@.limbs);
+                assert(x_int < p);
+                assert(tmb_nat < p);
+                assert(x_int * tmb_nat < p * p) by (nonlinear_arith)
+                    requires x_int < p, tmb_nat < p, p > 0;
+                assert(p * p == pow2((2 * n * 32) as nat)) by {
+                    lemma_pow2_add((n * 32) as nat, (n * 32) as nat);
+                    assert((n * 32 + n * 32) as nat == (2 * n * 32) as nat) by (nonlinear_arith);
+                }
+                lemma_nat_to_limbs_roundtrip(x_wide_mag, (2 * n) as nat);
+                assert(limbs_to_nat(x_wide@.limbs) == x_int * tmb_nat);
+
+                // --- Connect x_new to spec via reduce ---
+                // reduce gives: ltn(x_new) = (x_int * tmb_nat / S) % pow2(n*32)
+                let x_new_int = limbs_to_nat(x_new@.limbs);
+                assert(x_new_int == (x_int * tmb_nat / s) % p);
+
+                // Show modulo is no-op: x_int * tmb_nat / S < pow2(n*32)
+                // At i=0: x_int = S, tmb = 2S-b ≤ S. x*tmb/S = tmb ≤ S < p.
+                // At i≥1: x_int ≤ S+1 (from bx ≤ S+1 and b ≥ S), tmb ≤ 2S.
+                //   x*tmb/S ≤ (S+1)*2S/S = 2S+2 < p.
+                if i >= 1 {
+                    // Derive x_int ≤ S+1 from the invariant bx_val ≤ S+1 and b ≥ S
+                    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(
+                        (b_int * x_int) as int, s as int);
+                    let bx_rem = (b_int * x_int) % s;
+                    // b*x = bx_val*S + bx_rem, bx_val ≤ S+1
+                    // b*x ≤ (S+1)*S + S-1 < (S+2)*S
+                    assert(b_int * x_int < (s + 2) * s) by (nonlinear_arith)
+                        requires b_int * x_int == bx_val * s + bx_rem,
+                                 bx_val <= s + 1, bx_rem < s as int, s > 0;
+                    // x < (S+2)*S/b ≤ (S+2) since b ≥ S
+                    assert(x_int <= s + 1) by (nonlinear_arith)
+                        requires b_int * x_int < (s + 2) * s, b_int >= s, s > 0;
+                }
+
+                // In both cases: x_int * tmb_nat / s < p
+                assert(tmb_nat <= 2 * s);
+                // Prove 2*s < p (strictly): frac+1 ≤ n*32 - 31, so pow2(frac+1) < pow2(n*32)
+                assert(frac as nat + 1 < (n * 32) as nat) by (nonlinear_arith)
+                    requires frac as nat % 32 == 0, frac < n * 32, n > 0;
+                lemma_pow2_strict_monotone((frac as nat + 1) as nat, (n * 32) as nat);
+                assert(2 * s < p) by {
+                    lemma_pow2_add(frac as nat, 1);
+                    assert(pow2(1nat) == 2) by { lemma_pow2_one(); }
+                }
+
+                if i == 0 {
+                    assert(x_int == s);
+                    assert(x_int * tmb_nat / s == tmb_nat) by (nonlinear_arith)
+                        requires x_int == s, s > 0;
+                    assert(tmb_nat < p) by (nonlinear_arith) requires tmb_nat <= 2 * s, 2 * s < p;
+                } else {
+                    assert(x_int <= s + 1);
+                    assert(x_int * tmb_nat <= (s + 1) * (2 * s)) by (nonlinear_arith)
+                        requires x_int <= s + 1, tmb_nat <= 2 * s;
+                    assert(x_int * tmb_nat / s <= 2 * s + 2) by (nonlinear_arith)
+                        requires x_int * tmb_nat <= (s + 1) * (2 * s), s > 0;
+                    // 4*s = pow2(frac+2) < pow2(n*32) = p (since frac+2 < n*32)
+                    assert(frac as nat + 2 < (n * 32) as nat) by (nonlinear_arith)
+                        requires frac as nat % 32 == 0, frac < n * 32;
+                    lemma_pow2_strict_monotone((frac as nat + 2) as nat, (n * 32) as nat);
+                    assert(4 * s < p) by {
+                        lemma_pow2_add(frac as nat, 2);
+                        reveal_with_fuel(pow2, 3);
+                        assert(pow2(2nat) == 4nat);
+                    }
+                    assert(2 * s + 2 < p) by (nonlinear_arith) requires 4 * s < p, s >= 32;
+                }
+                vstd::arithmetic::div_mod::lemma_small_mod(
+                    x_int * tmb_nat / s, p);
+                assert(x_new_int == x_int * tmb_nat / s);
+
+                // --- Apply convergence lemma ---
+                if i == 0 {
+                    // First step: use lemma_first_step_error_bound
+                    // x_new_int = 2S - b (from the exec chain above)
+                    // The lemma gives: b * (2S-b) / S ≤ S
+                    lemma_first_step_error_bound(b_int, s);
+                    // x_new_int = tmb_nat = 2S - b = (2*s - b_int) as nat
+                    // b * x_new / S = b * (2S - b) / S ≤ S ≤ S + 1
+                    assert(b_int * x_new_int / s <= s + 1) by (nonlinear_arith)
+                        requires b_int * x_new_int / s <= s;
+                } else {
+                    // Subsequent step: use lemma_bx_bound_preserved
+                    // Preconditions: b*x/s ≤ s+1 (from invariant), b*x/s ≤ 2s (proved)
+                    lemma_bx_bound_preserved(b_int, x_int, s);
+                    assert(b_int * x_new_int / s <= s + 1);
+                }
+            }
+
+            x = x_new;
             i = i + 1;
         }
 
@@ -2283,6 +2492,7 @@ impl RuntimeFixedPointInterval {
             b@.same_format(two@),
             a@.frac == frac as nat,
             !b.sign, !two.sign,
+            limbs_to_nat(two@.limbs) == 2 * pow2(frac as nat),
             // b ∈ [S, 3S/2] for Newton convergence
             limbs_to_nat(b@.limbs) >= pow2(frac as nat),
             2 * limbs_to_nat(b@.limbs) <= 3 * pow2(frac as nat),
@@ -2918,6 +3128,7 @@ impl RuntimeFixedPointInterval {
 
         // Compute Newton reciprocal approximation
         let two = RuntimeFixedPoint::from_u32(2, n, frac);
+        // from_u32 ensures ltn(two@.limbs) == 2 * pow2(frac) ✓
         let approx = Self::recip_newton(&self.lo, &two, n, frac, iters);
 
         // The result is the Newton approximation as a point interval.
