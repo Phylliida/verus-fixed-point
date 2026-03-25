@@ -2083,11 +2083,19 @@ impl RuntimeFixedPointInterval {
             n <= 0x0FFF_FFFF, // ensure 4*n doesn't overflow
             frac < n * 32,
             frac as nat % 32 == 0, // limb-aligned frac for clean reduce
+            frac >= 5, // S ≥ 32 for convergence bounds
         ensures
             result.wf_spec(),
             result@.n == n as nat,
             result@.frac == frac as nat,
             !result.sign,
+            // Convergence: after ≥ 2 iterations, scaled error ≤ S/2.
+            // i.e., b * result / S ∈ [S/2, S], meaning result ≈ 1/b.
+            iters >= 2 ==> ({
+                let s = pow2(frac as nat);
+                let bx = limbs_to_nat(b@.limbs) * limbs_to_nat(result@.limbs) / s;
+                bx <= s && bx + s / 2 >= s
+            }),
     {
         // Build initial estimate x_0: start with "one" (= 2^frac in limb representation)
         // A smarter initial estimate would use the top limb of b, but "one" works.
@@ -2940,13 +2948,14 @@ impl RuntimeFixedPointInterval {
             self.wf_spec(), rhs.wf_spec(),
             self.lo@.same_format(rhs.lo@),
             !rhs.lo.sign, !rhs.hi.sign,
-            limbs_to_nat(rhs.lo@.limbs) > 0,
+            // b ∈ [S, 3S/2] for Newton convergence
+            limbs_to_nat(rhs.lo@.limbs) >= pow2(rhs.lo@.frac),
+            2 * limbs_to_nat(rhs.lo@.limbs) <= 3 * pow2(rhs.lo@.frac),
             self.lo@.n <= 0x0FFF_FFFF,
             self.lo@.frac < self.lo@.n * 32,
             self.frac_exec as nat % 32 == 0,
             self.frac_exec < self.lo.limbs.len() * 32,
             self.frac_exec <= 0x3FFF_FFFF,
-            FixedPoint::add_no_overflow(rhs.lo@, rhs.lo@),
         ensures
             result.exact@ == self.exact@.div_spec(rhs.exact@),
     {
