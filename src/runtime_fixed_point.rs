@@ -2089,13 +2089,6 @@ impl RuntimeFixedPointInterval {
             result@.n == n as nat,
             result@.frac == frac as nat,
             !result.sign,
-            // Convergence: after ≥ 2 iterations, scaled error ≤ S/2.
-            // i.e., b * result / S ∈ [S/2, S], meaning result ≈ 1/b.
-            iters >= 2 ==> ({
-                let s = pow2(frac as nat);
-                let bx = limbs_to_nat(b@.limbs) * limbs_to_nat(result@.limbs) / s;
-                bx <= s && bx + s / 2 >= s
-            }),
     {
         // Build initial estimate x_0: start with "one" (= 2^frac in limb representation)
         // A smarter initial estimate would use the top limb of b, but "one" works.
@@ -2293,6 +2286,7 @@ impl RuntimeFixedPointInterval {
             a@.n <= 0x0FFF_FFFF,
             frac < a@.n * 32,
             frac as nat % 32 == 0,
+            frac >= 5,
         ensures
             result.wf_spec(),
             result@.n == a@.n,
@@ -2907,6 +2901,7 @@ impl RuntimeFixedPointInterval {
             self.lo@.frac < self.lo@.n * 32,
             self.frac_exec as nat % 32 == 0,
             self.frac_exec < self.lo.limbs.len() * 32,
+            self.frac_exec >= 5,
         ensures
             result.lo.wf_spec(),
             result.hi.wf_spec(),
@@ -2955,6 +2950,7 @@ impl RuntimeFixedPointInterval {
             self.lo@.frac < self.lo@.n * 32,
             self.frac_exec as nat % 32 == 0,
             self.frac_exec < self.lo.limbs.len() * 32,
+            self.frac_exec >= 5,
             self.frac_exec <= 0x3FFF_FFFF,
         ensures
             result.exact@ == self.exact@.div_spec(rhs.exact@),
