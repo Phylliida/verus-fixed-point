@@ -207,4 +207,86 @@ pub proof fn lemma_newton_full_precision_convergence(frac_bits: nat)
     lemma_newton_iters_sufficient(frac_bits);
 }
 
+// ── Truncated Newton convergence for fixed-point arithmetic ──────
+//
+// In the exec Newton iteration, each step has TWO floor operations:
+//   1. bx = floor(b * x / S) where S = pow2(frac)
+//   2. x' = floor(x * (2S - bx) / S)
+//
+// The "scaled error": e = S - floor(b*x/S).
+// In exact arithmetic: e' = e²/S. With truncation: e' ≤ e²/S + 2.
+//
+// The truncation error of +2 per step means the iteration converges
+// to |e| ≤ 3 (not to 0). This gives ~3 ULP accuracy, which is
+// sufficient for interval arithmetic (widen by ±4 ULP to contain exact).
+
+/// The truncated scaled error: S - floor(b_int * x_int / S).
+pub open spec fn truncated_scaled_error(b_int: nat, x_int: nat, s: nat) -> int {
+    s as int - (b_int * x_int / s) as int
+}
+
+/// The truncated error bound: e_{k+1} ≤ e_k²/S + 2.
+pub open spec fn truncated_error_bound(e_0: nat, s: nat, k: nat) -> nat
+    decreases k,
+{
+    if k == 0 { e_0 }
+    else {
+        let prev = truncated_error_bound(e_0, s, (k - 1) as nat);
+        if s > 0 { prev * prev / s + 2 } else { 0 }
+    }
+}
+
+/// **Key stability lemma**: once e ≤ S/2 and S ≥ 8, the bound S/2 is preserved.
+/// e ≤ S/2 implies e²/S ≤ S/4, so e²/S + 2 ≤ S/4 + 2 ≤ S/2 (when S ≥ 8).
+pub proof fn lemma_truncated_half_stable(e: nat, s: nat)
+    requires
+        e <= s / 2,
+        s >= 8,
+    ensures
+        e * e / s + 2 <= s / 2,
+{
+    // e ≤ S/2 implies e² ≤ S²/4
+    // e²/S ≤ S/4 (integer division)
+    // e²/S + 2 ≤ S/4 + 2
+    // S/4 + 2 ≤ S/2 when S ≥ 8 (since S/4 + 2 ≤ S/2 iff 2 ≤ S/4 iff S ≥ 8)
+    assert(e * e <= (s / 2) * (s / 2)) by (nonlinear_arith)
+        requires e <= s / 2;
+    assert((s / 2) * (s / 2) <= s * s / 4) by (nonlinear_arith)
+        requires s >= 8;
+    // integer division: e*e/s ≤ s/4
+    // since e*e ≤ s²/4, and s > 0: e*e/s ≤ s/4
+    assert(e * e / s <= s / 4) by (nonlinear_arith)
+        requires e * e <= s * s / 4, s >= 8;
+    assert(s / 4 + 2 <= s / 2) by (nonlinear_arith)
+        requires s >= 8;
+}
+
+/// **Fixpoint lemma**: once e ≤ 3 and S ≥ 12, e stays ≤ 3.
+/// 3²/S + 2 = 9/S + 2 ≤ 2 + 0 = 2 < 3 for S ≥ 10.
+pub proof fn lemma_truncated_fixpoint_3(e: nat, s: nat)
+    requires
+        e <= 3,
+        s >= 12,
+    ensures
+        e * e / s + 2 <= 3,
+{
+    assert(e * e <= 9) by (nonlinear_arith) requires e <= 3nat;
+    assert(9nat / s == 0) by (nonlinear_arith) requires s >= 12;
+    assert(e * e / s <= 0) by (nonlinear_arith) requires e * e <= 9, s >= 12;
+}
+
+/// **Non-increase lemma**: for 4 ≤ e ≤ S/2 and S ≥ 16, the error doesn't grow.
+/// e²/S + 2 ≤ e when e(S-e) ≥ 2S. For e ≥ 4 and S-e ≥ S/2: e(S-e) ≥ 2S.
+pub proof fn lemma_truncated_error_nonincreasing(e: nat, s: nat)
+    requires
+        4 <= e,
+        e <= s / 2,
+        s >= 16,
+    ensures
+        e * e / s + 2 <= e,
+{
+    assert(e * e / s + 2 <= e) by (nonlinear_arith)
+        requires e >= 4, e <= s / 2, s >= 16;
+}
+
 } // verus!
