@@ -3597,27 +3597,75 @@ impl RuntimeModularIntMultiLimb {
             let sum_val = limbs_to_nat(sum@);
             let diff_val = limbs_to_nat(diff@);
 
-            // From add_limbs: sum_val + carry * base_n == a_val + b_val
-            // From sub_limbs: diff_val + p_val == sum_val + borrow * base_n
-            // From wf: a_val < p_val, b_val < p_val, p_val > 1
-            // So: a_val + b_val < 2 * p_val
+            // Known from ensures (as nats → cast to ints for reasoning):
+            // sum_val + carry * base_n == a_val + b_val  [add_limbs]
+            // diff_val + p_val == sum_val + borrow * base_n  [sub_limbs]
 
-            // add_mod spec: model.value == (a_val + b_val) % p_val
-            // Case carry >= borrow: result = diff_val
-            //   diff_val = sum_val - p_val + borrow * base_n
-            //   a+b = sum_val + carry * base_n
-            //   diff_val = a+b - carry*base_n - p_val + borrow*base_n
-            //            = a+b - p_val + (borrow - carry)*base_n
-            //   Since carry >= borrow: (borrow - carry) ≤ 0.
-            //   If carry == borrow: diff_val = a+b - p_val (and a+b >= p)
-            //   This equals (a+b) % p when a+b < 2p ✓
+            lemma_pow2_positive((n * 32) as nat);
+            lemma_limbs_to_nat_upper_bound(self.p_limbs@);
+            // p_val < base_n (p fits in n limbs)
+            lemma_limbs_to_nat_upper_bound(diff@);
+            // diff_val < base_n
+            lemma_limbs_to_nat_upper_bound(sum@);
+            // sum_val < base_n
 
-            // Case carry < borrow: result = sum_val
-            //   carry = 0, borrow = 1 (since carry and borrow are 0 or 1)
-            //   sum_val = a+b (no carry). borrow = 1 means sum < p.
-            //   So sum_val = a+b < p. (a+b)%p = a+b = sum_val ✓
+            assert(a_val + b_val < 2 * p_val) by (nonlinear_arith)
+                requires a_val < p_val, b_val < p_val;
 
-            // The full proof connects these facts via lemma_fundamental_div_mod_converse
+            if carry >= borrow {
+                // Show: carry == borrow (c=1,br=0 is impossible because it would make diff < 0)
+                // From sub_limbs: diff_val + p_val == sum_val + borrow * base_n
+                // From add_limbs: sum_val + carry * base_n == a_val + b_val
+                // Combine: diff_val = a_val + b_val - carry*base_n + borrow*base_n - p_val
+                // If carry=1,borrow=0: diff_val = a+b - base_n - p. But a+b < 2p < 2*base_n.
+                // And diff_val >= 0 needs a+b >= base_n + p > base_n. But sum_val = a+b - base_n,
+                // and sum_val < base_n → a+b < 2*base_n. Also need a+b >= base_n + p.
+                // a+b < 2p and p < base_n → a+b < 2*base_n. If a+b < base_n + p: diff_val < 0. Contradiction.
+                // But a+b COULD be >= base_n + p... only if p > base_n/2 (unlikely for small primes, but possible).
+                // Actually, just derive diff_val from the two ensures directly:
+                assert(diff_val as int == sum_val as int + borrow as int * base_n as int - p_val as int) by (nonlinear_arith)
+                    requires diff_val + p_val == sum_val + borrow as nat * base_n;
+                assert(sum_val as int == a_val as int + b_val as int - carry as int * base_n as int) by (nonlinear_arith)
+                    requires sum_val + carry as nat * base_n == a_val + b_val;
+
+                // Prove carry == borrow (carry=1,borrow=0 is impossible).
+                // If carry=1,borrow=0: sum = a+b - B, diff + p = sum → diff = sum - p = a+b - B - p.
+                // Since a+b < 2p and p < B: a+b - B - p < 2p - B - p = p - B < 0. But diff ≥ 0. Contradiction.
+                assert(carry == borrow) by (nonlinear_arith)
+                    requires carry >= borrow, carry <= 1, borrow <= 1,
+                        // nat equations from ensures:
+                        sum_val + carry as nat * base_n == a_val + b_val,
+                        diff_val + p_val == sum_val + borrow as nat * base_n,
+                        // bounds:
+                        a_val + b_val < 2 * p_val,
+                        p_val < base_n,
+                        diff_val < base_n;
+
+                // Now diff_val = a+b - p
+                assert(diff_val == a_val + b_val - p_val) by (nonlinear_arith)
+                    requires diff_val as int == a_val as int + b_val as int - p_val as int + (borrow as int - carry as int) * base_n as int,
+                             carry == borrow;
+
+                assert(diff_val < p_val) by (nonlinear_arith)
+                    requires diff_val == a_val + b_val - p_val, a_val + b_val < 2 * p_val;
+
+                // (a+b) = 1*p + diff_val, 0 ≤ diff_val < p → (a+b)%p = diff_val
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(
+                    (a_val + b_val) as int, p_val as int, 1int, diff_val as int);
+            } else {
+                // carry < borrow → carry=0, borrow=1
+                assert(carry == 0 && borrow == 1) by (nonlinear_arith)
+                    requires carry < borrow, carry <= 1, borrow <= 1;
+                // sum_val = a+b (no carry)
+                assert(sum_val == a_val + b_val) by (nonlinear_arith)
+                    requires sum_val + carry as nat * base_n == a_val + b_val, carry == 0;
+                // From sub borrow=1: diff+p = sum+base_n → sum < p (since diff < base_n and p < base_n)
+                assert(sum_val < p_val) by (nonlinear_arith)
+                    requires diff_val + p_val == sum_val + 1 * base_n,
+                             diff_val < base_n, p_val < base_n, borrow == 1;
+                // a+b = sum < p, so (a+b)%p = a+b
+                vstd::arithmetic::div_mod::lemma_small_mod(a_val + b_val, p_val);
+            }
         }
 
         RuntimeModularIntMultiLimb {
@@ -3638,19 +3686,49 @@ impl RuntimeModularIntMultiLimb {
         let n = self.limbs.len();
         let is_zero = is_all_zero(&self.limbs);
 
-        let result_limbs = if is_zero {
-            zero_vec(n)
+        if is_zero {
+            let result_limbs = zero_vec(n);
+            proof {
+                lemma_limbs_to_nat_all_zeros(n as nat);
+                // is_zero → ltn(limbs) == 0 → neg_mod = 0
+                // result_limbs are all zero → ltn = 0 ✓
+            }
+            RuntimeModularIntMultiLimb {
+                limbs: result_limbs,
+                p_limbs: self.p_limbs.clone(),
+                model: Ghost(self.model@.neg_mod()),
+            }
         } else {
-            let (diff, _borrow) = sub_limbs(&self.p_limbs, &self.limbs, n);
-            diff
-        };
-
-        let ghost model = self.model@.neg_mod();
-
-        RuntimeModularIntMultiLimb {
-            limbs: result_limbs,
-            p_limbs: self.p_limbs.clone(),
-            model: Ghost(model),
+            // a > 0, compute p - a
+            let (diff, borrow) = sub_limbs(&self.p_limbs, &self.limbs, n);
+            proof {
+                let a_val = limbs_to_nat(self.limbs@);
+                let p_val = limbs_to_nat(self.p_limbs@);
+                let diff_val = limbs_to_nat(diff@);
+                let base_n = pow2((n * 32) as nat);
+                // sub_limbs: diff_val + a_val == p_val + borrow * base_n
+                // a_val < p_val (from wf) → p - a > 0, so no borrow needed
+                // borrow = 0, diff_val = p_val - a_val
+                lemma_limbs_to_nat_upper_bound(diff@);
+                assert(borrow == 0) by (nonlinear_arith)
+                    requires diff_val + a_val == p_val + borrow as nat * base_n,
+                             a_val < p_val, diff_val < base_n, borrow <= 1,
+                             base_n > 0;
+                assert(diff_val == (p_val - a_val) as nat) by (nonlinear_arith)
+                    requires diff_val + a_val == p_val + borrow as nat * base_n,
+                             borrow == 0;
+                // neg_mod spec: if value == 0 { 0 } else { (modulus - value) as nat }
+                // Since !is_zero: a_val != 0 (from is_all_zero). neg_mod = p - a ✓
+                // Also need: diff_val < p_val (for wf)
+                assert(diff_val < p_val) by (nonlinear_arith)
+                    requires diff_val == (p_val - a_val) as nat, a_val > 0nat;
+                lemma_pow2_positive((n * 32) as nat);
+            }
+            RuntimeModularIntMultiLimb {
+                limbs: diff,
+                p_limbs: self.p_limbs.clone(),
+                model: Ghost(self.model@.neg_mod()),
+            }
         }
     }
 
