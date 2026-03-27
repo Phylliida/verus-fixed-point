@@ -3272,4 +3272,244 @@ impl RuntimeFixedPointInterval {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  RuntimeFixedPointExact: Growing-format exact fixed-point arithmetic
+// ═══════════════════════════════════════════════════════════════════
+//
+// Wraps RuntimeFixedPoint with a Ghost<Rational> that tracks the exact
+// mathematical value through all operations. The ghost value IS the
+// rf_view for RuntimeFieldOps — set by Rational spec functions directly,
+// giving structural == with the trait's expected postconditions.
+//
+// Operations:
+// - add/sub: exact, same format required (no overflow)
+// - neg: exact
+// - mul: exact, format WIDENS (N→2N, F→2F) — no reduce
+// - comparison: via cross-scaled limb comparison
+//
+// The user calls `reduce()` manually when they want to shrink the format,
+// accepting precision loss. This is outside the ring operations.
+
+/// Exact fixed-point value with ghost Rational tracking.
+/// The ghost `exact` is the mathematical value, maintained by Rational operations.
+/// The `rfp` is the exec representation, eqv to `exact` but possibly different Rational struct.
+pub struct RuntimeFixedPointExact {
+    pub rfp: RuntimeFixedPoint,
+    pub exact: Ghost<Rational>,
+}
+
+impl RuntimeFixedPointExact {
+    /// Well-formedness: rfp is wf, and the ghost exact is eqv to the rfp's view.
+    pub open spec fn wf_spec(&self) -> bool {
+        &&& self.rfp.wf_spec()
+        &&& self.exact@.eqv_spec(self.rfp@.view())
+    }
+
+    /// The spec-level view: the ghost Rational.
+    pub open spec fn view_rational(&self) -> Rational {
+        self.exact@
+    }
+
+    /// Format info (ghost).
+    pub open spec fn n_spec(&self) -> nat { self.rfp@.n }
+    pub open spec fn frac_spec(&self) -> nat { self.rfp@.frac }
+
+    /// Same format check.
+    pub open spec fn same_format(&self, other: &Self) -> bool {
+        self.rfp@.same_format(other.rfp@)
+    }
+
+    // ─── Construction ──────────────────────────────────────
+
+    /// Construct from a RuntimeFixedPoint. Ghost exact = rfp.view().
+    pub fn from_rfp(rfp: RuntimeFixedPoint) -> (result: Self)
+        requires rfp.wf_spec(),
+        ensures result.wf_spec(), result.exact@ == rfp@.view(),
+    {
+        let ghost exact = rfp@.view();
+        proof { Rational::lemma_eqv_reflexive(exact); }
+        RuntimeFixedPointExact { rfp, exact: Ghost(exact) }
+    }
+
+    /// Construct zero.
+    pub fn zero(n: usize, frac: usize) -> (result: Self)
+        requires n > 0, frac <= n * 32,
+        ensures
+            result.wf_spec(),
+            result.exact@ == Rational::from_frac_spec(0, pow2(frac as nat) as int),
+    {
+        let rfp = RuntimeFixedPoint::from_zero(n, frac);
+        let ghost exact = rfp@.view();
+        proof { Rational::lemma_eqv_reflexive(exact); }
+        RuntimeFixedPointExact { rfp, exact: Ghost(exact) }
+    }
+
+    /// Construct one (= 1.0 in fixed-point).
+    pub fn one(n: usize, frac: usize) -> (result: Self)
+        requires n > 0, frac <= n * 32, frac as nat % 32 == 0, frac / 32 < n,
+        ensures
+            result.wf_spec(),
+    {
+        let rfp = RuntimeFixedPoint::from_u32(1, n, frac);
+        let ghost exact = rfp@.view();
+        proof { Rational::lemma_eqv_reflexive(exact); }
+        RuntimeFixedPointExact { rfp, exact: Ghost(exact) }
+    }
+
+    // ─── Ring operations ───────────────────────────────────
+
+    /// Exact negation.
+    pub fn neg(&self) -> (result: Self)
+        requires self.wf_spec(),
+        ensures
+            result.wf_spec(),
+            result.exact@ == self.exact@.neg_spec(),
+            result.rfp@ == self.rfp@.neg_spec(),
+    {
+        let rfp = RuntimeFixedPointInterval::neg_rfp(&self.rfp);
+        let ghost exact = self.exact@.neg_spec();
+        proof {
+            FixedPoint::lemma_neg_wf(self.rfp@);
+            FixedPoint::lemma_neg_view(self.rfp@);
+            // Chain: exact = neg(self.exact@) eqv neg(self.view()) [by neg congruence]
+            //        neg(self.view()) eqv neg_spec().view() = rfp@.view() [by neg_view, symmetric]
+            Rational::lemma_eqv_neg_congruence(self.exact@, self.rfp@.view());
+            // Now: exact eqv self.rfp@.view().neg_spec()
+            // And: self.rfp@.neg_spec().view() eqv self.rfp@.view().neg_spec() [neg_view]
+            // rfp@ == self.rfp@.neg_spec() [from neg_rfp ensures]
+            // So rfp@.view() eqv self.rfp@.view().neg_spec()
+            // By symmetry + transitivity: exact eqv rfp@.view()
+            Rational::lemma_eqv_symmetric(
+                self.rfp@.neg_spec().view(),
+                self.rfp@.view().neg_spec(),
+            );
+            Rational::lemma_eqv_transitive(
+                exact,
+                self.rfp@.view().neg_spec(),
+                rfp@.view(),
+            );
+        }
+        RuntimeFixedPointExact { rfp, exact: Ghost(exact) }
+    }
+
+    /// Exact addition (same format, no overflow).
+    pub fn add(&self, rhs: &Self) -> (result: Self)
+        requires
+            self.wf_spec(), rhs.wf_spec(),
+            self.same_format(rhs),
+            FixedPoint::add_no_overflow(self.rfp@, rhs.rfp@),
+        ensures
+            result.wf_spec(),
+            result.exact@ == self.exact@.add_spec(rhs.exact@),
+    {
+        let rfp = RuntimeFixedPointInterval::add_rfp(&self.rfp, &rhs.rfp);
+        let ghost exact = self.exact@.add_spec(rhs.exact@);
+        proof {
+            FixedPoint::lemma_add_wf(self.rfp@, rhs.rfp@);
+            FixedPoint::lemma_add_view(self.rfp@, rhs.rfp@);
+            // Step 1: exact eqv a.view().add_spec(b.view()) [by add congruence on eqv inputs]
+            Rational::lemma_eqv_add_congruence(
+                self.exact@, self.rfp@.view(),
+                rhs.exact@, rhs.rfp@.view(),
+            );
+            // Step 2: add_spec(a,b).view() eqv a.view().add_spec(b.view()) [by add_view lemma]
+            // rfp@ == add_spec(self.rfp@, rhs.rfp@) [from add_rfp]
+            // So rfp@.view() eqv self.rfp@.view().add_spec(rhs.rfp@.view())
+            // Step 3: transitivity: exact eqv a.view()+b.view() eqv rfp@.view()
+            Rational::lemma_eqv_symmetric(
+                self.rfp@.add_spec(rhs.rfp@).view(),
+                self.rfp@.view().add_spec(rhs.rfp@.view()),
+            );
+            Rational::lemma_eqv_transitive(
+                exact,
+                self.rfp@.view().add_spec(rhs.rfp@.view()),
+                rfp@.view(),
+            );
+        }
+        RuntimeFixedPointExact { rfp, exact: Ghost(exact) }
+    }
+
+    /// Exact subtraction (same format, no overflow).
+    pub fn sub(&self, rhs: &Self) -> (result: Self)
+        requires
+            self.wf_spec(), rhs.wf_spec(),
+            self.same_format(rhs),
+            FixedPoint::add_no_overflow(self.rfp@, rhs.rfp@.neg_spec()),
+        ensures
+            result.wf_spec(),
+            result.exact@ == self.exact@.sub_spec(rhs.exact@),
+    {
+        let neg_rhs = rhs.neg();
+        proof {
+            FixedPoint::lemma_neg_same_format(rhs.rfp@);
+            FixedPoint::lemma_neg_wf(rhs.rfp@);
+            // neg_rhs is constructed by neg(), which calls neg_rfp(&rhs.rfp)
+            // neg_rfp ensures result@ == a@.neg_spec()
+            // neg() packages this into RuntimeFixedPointExact { rfp: neg_result, ... }
+            // So neg_rhs.rfp.wf_spec() and neg_rhs.rfp@.same_format(rhs.rfp@)
+            // The add_no_overflow connection:
+            // neg_rhs.rfp@.neg_spec() is the double-neg, but we need
+            // add_no_overflow(self.rfp@, neg_rhs.rfp@) which is the sub's precondition
+            // neg_rhs.rfp@ has same signed_value as rhs.rfp@.neg_spec()
+            // from neg_rfp: neg_rhs.rfp@.signed_value() == -rhs.rfp@.signed_value()
+            // which is rhs.rfp@.neg_spec().signed_value()
+            assert(neg_rhs.rfp@.n == rhs.rfp@.n);
+            assert(neg_rhs.rfp@.frac == rhs.rfp@.frac);
+            // So add_no_overflow(self.rfp@, neg_rhs.rfp@) ==
+            //    add_no_overflow(self.rfp@, rhs.rfp@.neg_spec()) (from sub's precondition)
+        }
+        self.add(&neg_rhs)
+    }
+
+    /// Exact multiplication (format widens: N→2N, F→2F).
+    pub fn mul(&self, rhs: &Self) -> (result: Self)
+        requires
+            self.wf_spec(), rhs.wf_spec(),
+            self.same_format(rhs),
+            self.rfp@.n <= 0x1FFF_FFFF,
+        ensures
+            result.wf_spec(),
+            result.exact@ == self.exact@.mul_spec(rhs.exact@),
+    {
+        let rfp = RuntimeFixedPointInterval::mul_rfp(&self.rfp, &rhs.rfp);
+        let ghost exact = self.exact@.mul_spec(rhs.exact@);
+        proof {
+            FixedPoint::lemma_mul_view(self.rfp@, rhs.rfp@);
+            // Step 1: exact eqv a.view().mul(b.view()) [by mul congruence]
+            Rational::lemma_eqv_mul_congruence(
+                self.exact@, self.rfp@.view(),
+                rhs.exact@, rhs.rfp@.view(),
+            );
+            // Step 2: mul_spec(a,b).view() eqv a.view().mul(b.view()) [by mul_view]
+            // rfp@ == mul_spec(self.rfp@, rhs.rfp@) [from mul_rfp]
+            // Step 3: transitivity
+            Rational::lemma_eqv_symmetric(
+                self.rfp@.mul_spec(rhs.rfp@).view(),
+                self.rfp@.view().mul_spec(rhs.rfp@.view()),
+            );
+            Rational::lemma_eqv_transitive(
+                exact,
+                self.rfp@.view().mul_spec(rhs.rfp@.view()),
+                rfp@.view(),
+            );
+        }
+        RuntimeFixedPointExact { rfp, exact: Ghost(exact) }
+    }
+
+    /// Copy (deep clone).
+    pub fn copy(&self) -> (result: Self)
+        requires self.wf_spec(),
+        ensures result.wf_spec(), result.exact@ == self.exact@,
+    {
+        let rfp = RuntimeFixedPointInterval::neg_rfp(
+            &RuntimeFixedPointInterval::neg_rfp(&self.rfp)
+        ); // double-neg = copy
+        proof {
+            FixedPoint::lemma_neg_wf(self.rfp@);
+            FixedPoint::lemma_neg_wf(self.rfp@.neg_spec());
+        }
+        RuntimeFixedPointExact { rfp, exact: Ghost(self.exact@) }
+    }
+}
+
 } // verus!
