@@ -3780,7 +3780,7 @@ impl RuntimeModularIntMultiLimb {
         requires
             self.wf_spec(), rhs.wf_spec(),
             self.same_modulus(rhs),
-            self.limbs@.len() <= 0x1FFF_FFFF, // for Karatsuba size limit
+            self.limbs@.len() <= 0x0FFF_FFFF, // 2*n must fit Karatsuba limit
         ensures
             result.wf_spec(),
             result.model@ == self.model@.mul_mod(rhs.model@),
