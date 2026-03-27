@@ -3641,10 +3641,14 @@ impl RuntimeModularIntMultiLimb {
                         p_val < base_n,
                         diff_val < base_n;
 
-                // Now diff_val = a+b - p
-                assert(diff_val == a_val + b_val - p_val) by (nonlinear_arith)
-                    requires diff_val as int == a_val as int + b_val as int - p_val as int + (borrow as int - carry as int) * base_n as int,
+                // Since carry == borrow: diff + p = sum + carry*B and sum + carry*B = a+b
+                // So diff + p = a + b, i.e., diff = a + b - p
+                assert(diff_val + p_val == a_val + b_val) by (nonlinear_arith)
+                    requires sum_val + carry as nat * base_n == a_val + b_val,
+                             diff_val + p_val == sum_val + borrow as nat * base_n,
                              carry == borrow;
+                assert(diff_val == a_val + b_val - p_val) by (nonlinear_arith)
+                    requires diff_val + p_val == a_val + b_val;
 
                 assert(diff_val < p_val) by (nonlinear_arith)
                     requires diff_val == a_val + b_val - p_val, a_val + b_val < 2 * p_val;
