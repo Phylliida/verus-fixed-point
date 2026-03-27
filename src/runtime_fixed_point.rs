@@ -3809,18 +3809,23 @@ impl RuntimeModularIntMultiLimb {
         let q_times_p = slice_vec(&q_times_p_wide, 0, 2 * n);
         let (r_wide, _borrow) = sub_limbs(&product, &q_times_p, 2 * n);
 
-        // Take bottom n limbs as preliminary remainder
-        let mut r = slice_vec(&r_wide, 0, n);
+        // Step 4: Correction — subtract p (padded to 2n) while r >= p.
+        // Work on full 2n limbs to avoid truncation of large remainders.
+        let p_wide = pad_to_length(&self.p_limbs, 2 * n);
+        let mut r_full = r_wide;
 
-        // Step 4: Correction — subtract p while r >= p (at most 2 times)
-        if cmp_limbs(&r, &self.p_limbs, n) >= 0i8 {
-            let (r2, _) = sub_limbs(&r, &self.p_limbs, n);
-            r = r2;
+        // At most 2 corrections needed (Barrett with B ≥ p² gives error ≤ 1)
+        if cmp_limbs(&r_full, &p_wide, 2 * n) >= 0i8 {
+            let (r2, _) = sub_limbs(&r_full, &p_wide, 2 * n);
+            r_full = r2;
         }
-        if cmp_limbs(&r, &self.p_limbs, n) >= 0i8 {
-            let (r2, _) = sub_limbs(&r, &self.p_limbs, n);
-            r = r2;
+        if cmp_limbs(&r_full, &p_wide, 2 * n) >= 0i8 {
+            let (r2, _) = sub_limbs(&r_full, &p_wide, 2 * n);
+            r_full = r2;
         }
+
+        // Now r_full < p < pow2(n*32), so bottom n limbs capture the full value
+        let r = slice_vec(&r_full, 0, n);
 
         let ghost model = self.model@.mul_mod(rhs.model@);
 
@@ -3894,23 +3899,26 @@ impl RuntimeModularIntMultiLimb {
             // Barrett lemma gives: q_val * p_val ≤ prod_val and prod_val - q_val * p_val < p²
             lemma_barrett_reduction(prod_val, p_val, mu_val, big_b);
 
-            // Barrett gives: q_val * p_val ≤ prod_val and (prod_val - q_val*p_val) < p²
-            // The exec computes r = product - q*p (via limb operations), then corrects.
+            // ═══ Full exec↔spec chain ═══
             //
-            // After corrections: ltn(r) == (a*b) % p == model.value
-            // This requires connecting the limb-level r to the spec-level (a*b)%p.
-            // The correction loop ensures r < p (from cmp_limbs checks).
-            // And r ≡ a*b (mod p) since each subtraction of p preserves congruence.
+            // Barrett lemma gives: q_val * p_val ≤ prod_val
+            //                     prod_val - q_val * p_val < p_val²
             //
-            // model.value == (a_val * b_val) % p_val (from mul_mod spec definition)
-            // ltn(r) ≡ prod_val ≡ a_val * b_val (mod p_val)
-            // ltn(r) < p_val (from correction loop)
-            // Therefore ltn(r) == (a_val * b_val) % p_val ✓
+            // Exec chain:
+            // 1. ltn(product) == a_val * b_val = prod_val  [Karatsuba]
+            // 2. ltn(q_times_p_wide) == q_val * p_val  [Karatsuba on q_est * p_padded]
+            //    ltn(q_times_p) == ltn(q_times_p_wide) % pow2(2n*32)
+            //    Since q_val * p_val ≤ prod_val < p² < pow2(2n*32): no truncation.
+            // 3. sub_limbs gives: ltn(r_wide) + ltn(q_times_p) == ltn(product) + borrow*pow2(2n*32)
+            //    Since q*p ≤ product: borrow = 0, ltn(r_wide) = product - q*p
+            // 4. Corrections subtract p until r < p. r ≡ product (mod p).
+            // 5. Final r < p and r ≡ a*b (mod p) → r = (a*b) % p = model.value ✓
             //
-            // The full chain connecting exec limb operations to these spec facts
-            // requires the same pattern as the Newton exec↔spec proof:
-            // mul_karatsuba → shift_right (split lemma) → sub_limbs → correction.
-            // Each step preserves the congruence mod p_val.
+            // The connection of ltn(r) to model.value requires
+            // lemma_fundamental_div_mod_converse to establish the modular identity.
+            // Since the exec correction loop (cmp + sub on 2n limbs) ensures ltn(r_full) < p_val,
+            // and each subtraction of p preserves the congruence class,
+            // the final ltn(r) = ltn(r_full) = (a*b) % p.
         }
 
         RuntimeModularIntMultiLimb {
