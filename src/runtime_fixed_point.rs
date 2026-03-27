@@ -3699,6 +3699,7 @@ impl RuntimeModularIntMultiLimb {
             result.wf_spec(),
             result.model@ == self.model@.neg_mod(),
             result.p_limbs@ == self.p_limbs@,
+            result.mu_limbs@ == self.mu_limbs@,
     {
         let n = self.limbs.len();
         let is_zero = is_all_zero(&self.limbs);
@@ -3789,31 +3790,24 @@ impl RuntimeModularIntMultiLimb {
         let n = self.limbs.len();
 
         // Step 1: product = a * b (2n limbs via Karatsuba)
-        let product = mul_karatsuba(
-            &self.limbs, &rhs.limbs, n);
+        let product = mul_karatsuba(&self.limbs, &rhs.limbs, n);
+        // product has 2n limbs
 
         // Step 2: q_est = floor(product * mu / B^(2n))
-        // product has 2n limbs, mu has n+1 limbs.
-        // product * mu has 3n+1 limbs.
-        // We only need the top n+1 limbs (floor of / B^(2n) = shift right by 2n limbs).
-        let prod_mu = mul_karatsuba(
-            &product, &self.mu_limbs, 2 * n);
-        // prod_mu has 2*(2n) = 4n limbs (padded). We want limbs [2n..3n+1].
-        // Actually mul_karatsuba pads both inputs to the same size.
-        // Let's just take the top portion: shift right by 2n limbs.
-        let q_est = Self::shift_right_limbs(&prod_mu, prod_mu.len(), 2 * n);
+        // Pad mu (n+1 limbs) to 2n limbs for Karatsuba
+        let mu_padded = pad_to_length(&self.mu_limbs, 2 * n);
+        let prod_mu = mul_karatsuba(&product, &mu_padded, 2 * n);
+        // prod_mu has 4n limbs. Shift right by 2n to get q_est (2n limbs).
+        let q_est = RuntimeFixedPointInterval::shift_right_limbs(&prod_mu, 4 * n, 2 * n);
+        // q_est has 2n limbs — the approximate quotient
 
         // Step 3: r = product - q_est * p
-        // q_est has (prod_mu.len() - 2n) limbs. q_est * p has ≤ (q_est.len() + n) limbs.
-        // But we only need the bottom 2n limbs of the result (the rest should cancel).
-        // For simplicity: compute q_est * p, pad both to 2n limbs, subtract.
-        let q_times_p = mul_karatsuba(
-            &pad_to_length(&q_est, n), &self.p_limbs, n);
-        // q_times_p has 2n limbs. product has 2n limbs.
-        let (r_wide, _borrow) = sub_limbs(
-            &pad_to_length(&product, 2 * n),
-            &pad_to_length(&q_times_p, 2 * n),
-            2 * n);
+        // Pad p to 2n for Karatsuba. q_est * p gives 4n limbs, take bottom 2n.
+        let p_padded = pad_to_length(&self.p_limbs, 2 * n);
+        let q_times_p_wide = mul_karatsuba(&q_est, &p_padded, 2 * n);
+        // Take bottom 2n limbs of q*p and product, subtract
+        let q_times_p = slice_vec(&q_times_p_wide, 0, 2 * n);
+        let (r_wide, _borrow) = sub_limbs(&product, &q_times_p, 2 * n);
 
         // Take bottom n limbs as preliminary remainder
         let mut r = slice_vec(&r_wide, 0, n);
