@@ -3809,22 +3809,66 @@ impl RuntimeModularIntMultiLimb {
         let q_times_p = slice_vec(&q_times_p_wide, 0, 2 * n);
         let (r_wide, _borrow) = sub_limbs(&product, &q_times_p, 2 * n);
 
-        // Step 4: Correction — subtract p (padded to 2n) while r >= p.
-        // Work on full 2n limbs to avoid truncation of large remainders.
+        // Step 4: Correction loop — subtract p until r < p.
         let p_wide = pad_to_length(&self.p_limbs, 2 * n);
         let mut r_full = r_wide;
 
-        // At most 2 corrections needed (Barrett with B ≥ p² gives error ≤ 1)
-        if cmp_limbs(&r_full, &p_wide, 2 * n) >= 0i8 {
-            let (r2, _) = sub_limbs(&r_full, &p_wide, 2 * n);
-            r_full = r2;
-        }
-        if cmp_limbs(&r_full, &p_wide, 2 * n) >= 0i8 {
-            let (r2, _) = sub_limbs(&r_full, &p_wide, 2 * n);
+        // At most p iterations (practically ≤ 2 from Barrett quality).
+        // Each iteration subtracts p, preserving r ≡ a*b (mod p).
+        let ghost rw_val = limbs_to_nat(r_wide@);
+
+        while cmp_limbs(&r_full, &p_wide, 2 * n) >= 0i8
+            invariant
+                r_full@.len() == 2 * n,
+                p_wide@.len() == 2 * n,
+                limbs_to_nat(p_wide@) == limbs_to_nat(self.p_limbs@),
+                limbs_to_nat(self.p_limbs@) > 0,
+                n > 0,
+                n <= 0x0FFF_FFFF,
+                // Congruence: r_full ≡ r_wide (mod p)
+                limbs_to_nat(r_full@) % limbs_to_nat(self.p_limbs@)
+                    == rw_val % limbs_to_nat(self.p_limbs@),
+            decreases limbs_to_nat(r_full@),
+        {
+            let (r2, _borrow) = sub_limbs(&r_full, &p_wide, 2 * n);
+            proof {
+                let rv = limbs_to_nat(r_full@);
+                let pv = limbs_to_nat(p_wide@);
+                let r2v = limbs_to_nat(r2@);
+                assert(rv >= pv); // from cmp
+
+                lemma_limbs_to_nat_upper_bound(r2@);
+                // borrow = 0 since rv >= pv
+                assert(_borrow == 0) by (nonlinear_arith)
+                    requires r2v + pv == rv + _borrow as nat * pow2((2 * n * 32) as nat),
+                             rv >= pv, r2v < pow2((2 * n * 32) as nat), _borrow <= 1,
+                             pow2((2 * n * 32) as nat) > 0;
+                // r2v = rv - pv
+                assert(r2v == rv - pv) by (nonlinear_arith)
+                    requires r2v + pv == rv;
+                assert(r2v < rv) by (nonlinear_arith)
+                    requires r2v == rv - pv, pv > 0;
+
+                // Congruence: (rv - pv) % pv == rv % pv
+                // rv = (rv/pv)*pv + rv%pv. rv-pv = (rv/pv - 1)*pv + rv%pv.
+                // So (rv-pv)%pv = rv%pv.
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(rv as int, pv as int);
+                let q_rv = rv / pv;
+                let rem_rv = rv % pv;
+                // rv = q_rv * pv + rem_rv, 0 ≤ rem_rv < pv
+                // rv - pv = (q_rv - 1)*pv + rem_rv (since rv >= pv, q_rv ≥ 1)
+                assert(q_rv >= 1) by (nonlinear_arith)
+                    requires rv >= pv, rv == q_rv * pv + rem_rv, rem_rv < pv, pv > 0;
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(
+                    (rv - pv) as int, pv as int, (q_rv - 1) as int, rem_rv as int);
+                // (rv - pv) % pv == rem_rv == rv % pv ✓
+            }
+            assert(limbs_to_nat(r2@) < limbs_to_nat(r_full@));
             r_full = r2;
         }
 
-        // Now r_full < p < pow2(n*32), so bottom n limbs capture the full value
+        // Post-loop: r_full < p_wide, so ltn(r_full) < ltn(p_wide) = p_val
+        // Since p < pow2(n*32): r_full fits in bottom n limbs
         let r = slice_vec(&r_full, 0, n);
 
         let ghost model = self.model@.mul_mod(rhs.model@);
@@ -3899,26 +3943,80 @@ impl RuntimeModularIntMultiLimb {
             // Barrett lemma gives: q_val * p_val ≤ prod_val and prod_val - q_val * p_val < p²
             lemma_barrett_reduction(prod_val, p_val, mu_val, big_b);
 
-            // ═══ Full exec↔spec chain ═══
-            //
-            // Barrett lemma gives: q_val * p_val ≤ prod_val
-            //                     prod_val - q_val * p_val < p_val²
-            //
-            // Exec chain:
-            // 1. ltn(product) == a_val * b_val = prod_val  [Karatsuba]
-            // 2. ltn(q_times_p_wide) == q_val * p_val  [Karatsuba on q_est * p_padded]
-            //    ltn(q_times_p) == ltn(q_times_p_wide) % pow2(2n*32)
-            //    Since q_val * p_val ≤ prod_val < p² < pow2(2n*32): no truncation.
-            // 3. sub_limbs gives: ltn(r_wide) + ltn(q_times_p) == ltn(product) + borrow*pow2(2n*32)
-            //    Since q*p ≤ product: borrow = 0, ltn(r_wide) = product - q*p
-            // 4. Corrections subtract p until r < p. r ≡ product (mod p).
-            // 5. Final r < p and r ≡ a*b (mod p) → r = (a*b) % p = model.value ✓
-            //
-            // The connection of ltn(r) to model.value requires
-            // lemma_fundamental_div_mod_converse to establish the modular identity.
-            // Since the exec correction loop (cmp + sub on 2n limbs) ensures ltn(r_full) < p_val,
-            // and each subtraction of p preserves the congruence class,
-            // the final ltn(r) = ltn(r_full) = (a*b) % p.
+            // ═══ Exec↔Spec chain: connect ltn(r) to (a*b) % p ═══
+
+            // Step A: ltn(q_times_p_wide) == q_val * p_val
+            let qtp_wide_val = limbs_to_nat(q_times_p_wide@);
+            assert(limbs_to_nat(p_padded@) == p_val); // pad preserves ltn
+            assert(qtp_wide_val == q_val * p_val); // Karatsuba ensures
+
+            // Step B: q*p < big_b = pow2(2n*32), so slice to 2n limbs is exact
+            assert(q_val * p_val <= prod_val); // from Barrett
+            assert(q_val * p_val < big_b) by (nonlinear_arith)
+                requires q_val * p_val <= prod_val, prod_val < p_val * p_val,
+                         p_val * p_val <= big_b;
+            // slice: ltn(q_times_p) == ltn(q_times_p_wide) % pow2(2n*32) == q*p
+            lemma_limbs_to_nat_split(q_times_p_wide@, (2 * n) as nat);
+            lemma_limbs_to_nat_upper_bound(q_times_p_wide@.subrange(0, (2 * n) as int));
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(
+                qtp_wide_val as int, big_b as int,
+                limbs_to_nat(q_times_p_wide@.subrange((2 * n) as int, (4 * n) as int)) as int,
+                limbs_to_nat(q_times_p_wide@.subrange(0, (2 * n) as int)) as int);
+            vstd::arithmetic::div_mod::lemma_small_mod(q_val * p_val, big_b);
+            let qtp_val = limbs_to_nat(q_times_p@);
+            assert(qtp_val == q_val * p_val);
+
+            // Step C: sub_limbs gives r_wide = product - q*p (no borrow since q*p ≤ product)
+            let rw_val = limbs_to_nat(r_wide@);
+            // sub ensures: rw_val + qtp_val == prod_val + _borrow * big_b
+            // Barrett: q*p ≤ product, so no borrow needed
+            lemma_limbs_to_nat_upper_bound(r_wide@);
+            assert(_borrow == 0) by (nonlinear_arith)
+                requires rw_val + qtp_val == prod_val + _borrow as nat * big_b,
+                         qtp_val <= prod_val, rw_val < big_b, _borrow <= 1;
+            assert(rw_val + qtp_val == prod_val) by (nonlinear_arith)
+                requires rw_val + qtp_val == prod_val + _borrow as nat * big_b, _borrow == 0;
+            assert(rw_val == prod_val - qtp_val) by (nonlinear_arith)
+                requires rw_val + qtp_val == prod_val;
+            assert(rw_val == prod_val - q_val * p_val);
+
+            // Step D: Connect r_full to (a*b) % p
+            let rf_val = limbs_to_nat(r_full@);
+            assert(rf_val < p_val); // from loop cmp returning < 0
+
+            // Loop invariant gives: rf_val % p == rw_val % p
+            // rw_val = prod - q*p. Show rw_val % p == (a*b) % p:
+            //   rw_val + q*p == prod == a*b
+            //   By lemma_mod_add_right: (rw_val + (q*p)%p) % p == (rw_val + q*p) % p
+            //   q*p % p == 0, so rw_val % p == (a*b) % p
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(
+                (q_val * p_val) as int, p_val as int);
+            assert((q_val * p_val) % p_val == 0) by (nonlinear_arith)
+                requires q_val * p_val == (q_val * p_val / p_val) * p_val
+                    + (q_val * p_val) % p_val;
+            crate::fixed_point::modular::lemma_mod_add_right(rw_val, q_val * p_val, p_val);
+            assert(rw_val + q_val * p_val == prod_val);
+            // rw_val % p == (rw_val + q*p) % p == prod_val % p == (a*b) % p
+
+            // rf_val % p == rw_val % p (loop invariant) == (a*b) % p
+            // rf_val < p → rf_val % p == rf_val (small_mod)
+            vstd::arithmetic::div_mod::lemma_small_mod(rf_val, p_val);
+            assert(rf_val == (a_val * b_val) % p_val);
+
+            // Step E: slice r_full to n limbs is exact (rf_val < p < pow2(n*32))
+            lemma_limbs_to_nat_split(r_full@, n as nat);
+            let r_lo = limbs_to_nat(r_full@.subrange(0, n as int));
+            let r_hi = limbs_to_nat(r_full@.subrange(n as int, (2 * n) as int));
+            lemma_limbs_to_nat_upper_bound(r_full@.subrange(0, n as int));
+            assert(r_hi == 0) by (nonlinear_arith)
+                requires rf_val == r_lo + r_hi * p_bound,
+                         rf_val < p_val, p_val < p_bound,
+                         r_lo < p_bound, r_hi >= 0nat, p_bound > 0;
+            let r_val = limbs_to_nat(r@);
+            assert(r@ =~= r_full@.subrange(0, n as int));
+            assert(r_val == rf_val);
+            assert(r_val == (a_val * b_val) % p_val);
+            assert(r_val < p_val);
         }
 
         RuntimeModularIntMultiLimb {
