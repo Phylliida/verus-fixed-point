@@ -377,4 +377,73 @@ impl RuntimeModularInt {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  Scaled modular arithmetic for fixed-point
+// ═══════════════════════════════════════════════════════════════════
+//
+// For fixed-point with scale S = pow2(frac), we define:
+//   a ⊗ b = a * b * S⁻¹ mod p     (scaled multiplication)
+//   one   = S mod p                  (identity for ⊗)
+//   recip(a) = a⁻¹ * S² mod p       (field inverse under ⊗)
+//
+// This forms a field (it's just Z/pZ with a rescaled multiplication).
+// All axioms follow from standard Z/pZ ring axioms + S being invertible mod p.
+
+/// Spec-level scaled modular multiplication: a * b * scale_inv mod p.
+pub open spec fn scaled_mul_mod(a: ModularInt, b: ModularInt, scale_inv: nat) -> ModularInt
+    recommends a.same_modulus(b), scale_inv < a.modulus,
+{
+    ModularInt {
+        value: (a.value * b.value % a.modulus * scale_inv) % a.modulus,
+        modulus: a.modulus,
+    }
+}
+
+/// **Scaled multiplication is commutative.**
+/// Follows directly from commutativity of nat multiplication.
+pub proof fn lemma_scaled_mul_commutative(a: ModularInt, b: ModularInt, scale_inv: nat)
+    requires
+        a.wf_spec(), b.wf_spec(),
+        a.same_modulus(b),
+        scale_inv < a.modulus,
+    ensures
+        scaled_mul_mod(a, b, scale_inv) == scaled_mul_mod(b, a, scale_inv),
+{
+    assert(a.value * b.value == b.value * a.value) by (nonlinear_arith);
+}
+
+/// **Scaled multiplication identity is S mod p.**
+/// a ⊗ S = a * S * S⁻¹ mod p = a mod p = a (when a < p).
+pub proof fn lemma_scaled_mul_identity(a: ModularInt, scale: nat, scale_inv: nat)
+    requires
+        a.wf_spec(),
+        scale < a.modulus,
+        scale_inv < a.modulus,
+        // S * S⁻¹ ≡ 1 (mod p)
+        (scale * scale_inv) % a.modulus == 1,
+    ensures ({
+        let s_mod = ModularInt { value: scale, modulus: a.modulus };
+        scaled_mul_mod(a, s_mod, scale_inv).value == a.value
+    })
+{
+    let p = a.modulus;
+    // Goal: (a.value * scale % p * scale_inv) % p == a.value
+    //
+    // Step 1: (x%p * y)%p == (x*y)%p [lemma_mod_mul_left]
+    lemma_mod_mul_left(a.value * scale, scale_inv, p);
+    // => (a*scale % p * si) % p == (a*scale*si) % p
+    //
+    // Step 2: a*scale*si == a*(scale*si) [nat mul associativity]
+    assert(a.value * scale * scale_inv == a.value * (scale * scale_inv)) by (nonlinear_arith);
+    // => (a*(scale*si)) % p
+    //
+    // Step 3: (a * (b%p)) % p == (a*b) % p [lemma_mod_mul_right]
+    lemma_mod_mul_right(a.value, scale * scale_inv, p);
+    // => (a * ((scale*si) % p)) % p == (a*(scale*si)) % p
+    // Since (scale*si) % p == 1: (a * 1) % p == (a*(scale*si)) % p
+    //
+    // Step 4: a * 1 == a, and a % p == a [lemma_small_mod since a < p]
+    vstd::arithmetic::div_mod::lemma_small_mod(a.value, p);
+}
+
 } // verus!
