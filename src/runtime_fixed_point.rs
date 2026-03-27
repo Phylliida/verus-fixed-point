@@ -3724,8 +3724,9 @@ impl RuntimeModularIntMultiLimb {
                 // neg_mod spec: if value == 0 { 0 } else { (modulus - value) as nat }
                 // Since !is_zero: a_val != 0 (from is_all_zero). neg_mod = p - a ✓
                 // Also need: diff_val < p_val (for wf)
+                // diff + a = p and a > 0 → diff < p
                 assert(diff_val < p_val) by (nonlinear_arith)
-                    requires diff_val == (p_val - a_val) as nat, a_val > 0nat;
+                    requires diff_val + a_val == p_val, a_val > 0nat;
                 lemma_pow2_positive((n * 32) as nat);
             }
             RuntimeModularIntMultiLimb {
