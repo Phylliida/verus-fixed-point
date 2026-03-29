@@ -3,7 +3,7 @@ use vstd::arithmetic::div_mod::{lemma_fundamental_div_mod, lemma_fundamental_div
 
 verus! {
 
-/// Element of Z/pZ — a natural number modulo a given modulus.
+///  Element of Z/pZ — a natural number modulo a given modulus.
 pub struct ModularInt {
     pub value: nat,
     pub modulus: nat,
@@ -58,36 +58,36 @@ impl ModularInt {
     }
 }
 
-// ── Modular arithmetic core lemma ──────────────────────
-// Proved using vstd's lemma_fundamental_div_mod_converse.
+//  ── Modular arithmetic core lemma ──────────────────────
+//  Proved using vstd's lemma_fundamental_div_mod_converse.
 
-/// (a%p + b)%p == (a+b)%p
+///  (a%p + b)%p == (a+b)%p
 pub proof fn lemma_mod_add_left(a: nat, b: nat, p: nat)
     requires p > 0,
     ensures (a % p + b) % p == (a + b) % p,
 {
-    // a = (a/p)*p + a%p, so a+b = (a/p)*p + (a%p + b)
-    // Let q2 = (a%p+b)/p, r2 = (a%p+b)%p.
-    // Then a%p+b = q2*p + r2, so a+b = (a/p)*p + q2*p + r2 = (a/p + q2)*p + r2.
-    // By converse: (a+b)%p == r2 == (a%p+b)%p.
+    //  a = (a/p)*p + a%p, so a+b = (a/p)*p + (a%p + b)
+    //  Let q2 = (a%p+b)/p, r2 = (a%p+b)%p.
+    //  Then a%p+b = q2*p + r2, so a+b = (a/p)*p + q2*p + r2 = (a/p + q2)*p + r2.
+    //  By converse: (a+b)%p == r2 == (a%p+b)%p.
     let pi = p as int;
     let ai = a as int;
     let bi = b as int;
     let q1 = ai / pi;
     let r1 = ai % pi;
 
-    // Fundamental division identity
+    //  Fundamental division identity
     lemma_fundamental_div_mod(ai, pi);
-    // ensures: ai == pi * (ai / pi) + (ai % pi) == pi * q1 + r1
+    //  ensures: ai == pi * (ai / pi) + (ai % pi) == pi * q1 + r1
 
     let r1_plus_b = r1 + bi;
     let q2 = r1_plus_b / pi;
     let r2 = r1_plus_b % pi;
 
     lemma_fundamental_div_mod(r1_plus_b, pi);
-    // r1_plus_b == pi * q2 + r2
+    //  r1_plus_b == pi * q2 + r2
 
-    // ai + bi = pi*q1 + r1 + bi = pi*q1 + r1_plus_b = pi*q1 + pi*q2 + r2 = pi*(q1+q2) + r2
+    //  ai + bi = pi*q1 + r1 + bi = pi*q1 + r1_plus_b = pi*q1 + pi*q2 + r2 = pi*(q1+q2) + r2
     assert(ai + bi == pi * q1 + r1_plus_b) by (nonlinear_arith)
         requires ai == pi * q1 + r1, r1_plus_b == r1 + bi;
     assert(pi * q1 + pi * q2 + r2 == pi * (q1 + q2) + r2) by (nonlinear_arith);
@@ -95,28 +95,28 @@ pub proof fn lemma_mod_add_left(a: nat, b: nat, p: nat)
     assert((a + b) as int == pi * (q1 + q2) + r2);
 
     lemma_fundamental_div_mod_converse((a + b) as int, pi, q1 + q2, r2);
-    // r2 == (a+b) % p == (a%p + b) % p
+    //  r2 == (a+b) % p == (a%p + b) % p
 }
 
-/// (a + b%p)%p == (a+b)%p
+///  (a + b%p)%p == (a+b)%p
 pub proof fn lemma_mod_add_right(a: nat, b: nat, p: nat)
     requires p > 0,
     ensures (a + b % p) % p == (a + b) % p,
 {
     lemma_mod_add_left(b, a, p);
-    // (b%p + a)%p == (b+a)%p == (a+b)%p
+    //  (b%p + a)%p == (b+a)%p == (a+b)%p
 }
 
-/// (a%p * b)%p == (a*b)%p
+///  (a%p * b)%p == (a*b)%p
 pub proof fn lemma_mod_mul_left(a: nat, b: nat, p: nat)
     requires p > 0,
     ensures (a % p * b) % p == (a * b) % p,
 {
-    // a = q*p + r, so a*b = q*p*b + r*b = (q*b)*p + r*b
-    // (a%p * b) == r*b
-    // Let q2 = (r*b)/p, r2 = (r*b)%p. Then r*b = q2*p + r2.
-    // a*b = (q*b)*p + q2*p + r2 = (q*b + q2)*p + r2.
-    // By converse: (a*b)%p == r2 == (r*b)%p == (a%p * b)%p.
+    //  a = q*p + r, so a*b = q*p*b + r*b = (q*b)*p + r*b
+    //  (a%p * b) == r*b
+    //  Let q2 = (r*b)/p, r2 = (r*b)%p. Then r*b = q2*p + r2.
+    //  a*b = (q*b)*p + q2*p + r2 = (q*b + q2)*p + r2.
+    //  By converse: (a*b)%p == r2 == (r*b)%p == (a%p * b)%p.
     let pi = p as int;
     let ai = a as int;
     let bi = b as int;
@@ -127,11 +127,11 @@ pub proof fn lemma_mod_mul_left(a: nat, b: nat, p: nat)
     let r2 = r1b % pi;
 
     lemma_fundamental_div_mod(ai, pi);
-    // ai == pi * q1 + r1
+    //  ai == pi * q1 + r1
     lemma_fundamental_div_mod(r1b, pi);
-    // r1b == pi * q2 + r2
+    //  r1b == pi * q2 + r2
 
-    // ai*bi = (pi*q1+r1)*bi = pi*q1*bi + r1*bi = pi*q1*bi + r1b = pi*q1*bi + pi*q2 + r2
+    //  ai*bi = (pi*q1+r1)*bi = pi*q1*bi + r1*bi = pi*q1*bi + r1b = pi*q1*bi + pi*q2 + r2
     assert(ai * bi == pi * q1 * bi + r1 * bi) by (nonlinear_arith)
         requires ai == pi * q1 + r1;
     assert(ai * bi == pi * q1 * bi + pi * q2 + r2) by (nonlinear_arith)
@@ -142,7 +142,7 @@ pub proof fn lemma_mod_mul_left(a: nat, b: nat, p: nat)
     lemma_fundamental_div_mod_converse((a * b) as int, pi, q1 * bi + q2, r2);
 }
 
-/// (a * b%p)%p == (a*b)%p
+///  (a * b%p)%p == (a*b)%p
 pub proof fn lemma_mod_mul_right(a: nat, b: nat, p: nat)
     requires p > 0,
     ensures (a * (b % p)) % p == (a * b) % p,
@@ -152,7 +152,7 @@ pub proof fn lemma_mod_mul_right(a: nat, b: nat, p: nat)
     assert(b % p * a == a * (b % p)) by (nonlinear_arith);
 }
 
-// ── Well-formedness ────────────────────────────────────
+//  ── Well-formedness ────────────────────────────────────
 
 pub proof fn lemma_zero_wf(p: nat)
     requires p > 1, ensures ModularInt::zero(p).wf_spec(),
@@ -181,7 +181,7 @@ pub proof fn lemma_mul_mod_wf(a: ModularInt, b: ModularInt)
     assert((a.value * b.value) % a.modulus < a.modulus) by (nonlinear_arith) requires a.modulus > 1;
 }
 
-// ── Ring axioms (all fully proved) ─────────────────────
+//  ── Ring axioms (all fully proved) ─────────────────────
 
 pub proof fn lemma_add_commutative(a: ModularInt, b: ModularInt)
     requires a.wf_spec(), b.wf_spec(), a.same_modulus(b),
@@ -260,12 +260,12 @@ pub proof fn lemma_mul_distributes_left(a: ModularInt, b: ModularInt, c: Modular
 {
     let p = a.modulus;
     let av = a.value; let bv = b.value; let cv = c.value;
-    // LHS: (av * ((bv+cv)%p)) % p == (av * (bv+cv)) % p [by mod_mul_right]
+    //  LHS: (av * ((bv+cv)%p)) % p == (av * (bv+cv)) % p [by mod_mul_right]
     lemma_mod_mul_right(av, bv + cv, p);
-    // RHS: ((av*bv)%p + (av*cv)%p) % p == (av*bv + av*cv) % p [by mod_add_left + mod_add_right]
+    //  RHS: ((av*bv)%p + (av*cv)%p) % p == (av*bv + av*cv) % p [by mod_add_left + mod_add_right]
     lemma_mod_add_left(av * bv, av * cv, p);
     lemma_mod_add_right(av * bv % p, av * cv, p);
-    // av*(bv+cv) == av*bv + av*cv
+    //  av*(bv+cv) == av*bv + av*cv
     assert(av * (bv + cv) == av * bv + av * cv) by (nonlinear_arith);
 }
 
@@ -274,13 +274,13 @@ pub proof fn lemma_one_ne_zero(p: nat)
     ensures !ModularInt::one(p).eqv(ModularInt::zero(p)),
 {}
 
-// ── Exec-level modular arithmetic ──────────────────────
+//  ── Exec-level modular arithmetic ──────────────────────
 
-/// Runtime modular integer: value mod p, stored as u32.
-/// Uses u64 for intermediate computations to avoid overflow.
+///  Runtime modular integer: value mod p, stored as u32.
+///  Uses u64 for intermediate computations to avoid overflow.
 pub struct RuntimeModularInt {
     pub val: u32,
-    pub p: u32, // modulus (prime), stored at exec level for computation
+    pub p: u32, //  modulus (prime), stored at exec level for computation
     pub model: Ghost<ModularInt>,
 }
 
@@ -299,7 +299,7 @@ impl View for RuntimeModularInt {
 }
 
 impl RuntimeModularInt {
-    /// Construct from value (must be < p).
+    ///  Construct from value (must be < p).
     pub fn new(val: u32, p: u32) -> (result: Self)
         requires val < p, p > 1,
         ensures result.wf_spec(), result@.value == val as nat, result@.modulus == p as nat,
@@ -310,7 +310,7 @@ impl RuntimeModularInt {
         }
     }
 
-    /// Modular addition.
+    ///  Modular addition.
     pub fn add_exec(&self, rhs: &Self) -> (result: Self)
         requires self.wf_spec(), rhs.wf_spec(), self.p == rhs.p,
         ensures result.wf_spec(), result@ == self@.add_mod(rhs@),
@@ -324,17 +324,17 @@ impl RuntimeModularInt {
         }
     }
 
-    /// Modular subtraction.
+    ///  Modular subtraction.
     pub fn sub_exec(&self, rhs: &Self) -> (result: Self)
         requires self.wf_spec(), rhs.wf_spec(), self.p == rhs.p,
         ensures result.wf_spec(), result@ == self@.sub_mod(rhs@),
     {
-        // a - b mod p = a + (p - b) mod p
+        //  a - b mod p = a + (p - b) mod p
         let neg_rhs = self.neg_of(rhs);
         self.add_exec(&neg_rhs)
     }
 
-    /// Modular negation of rhs (using self just for the modulus).
+    ///  Modular negation of rhs (using self just for the modulus).
     fn neg_of(&self, rhs: &Self) -> (result: Self)
         requires self.wf_spec(), rhs.wf_spec(), self.p == rhs.p,
         ensures result.wf_spec(), result@ == rhs@.neg_mod(),
@@ -346,7 +346,7 @@ impl RuntimeModularInt {
         }
     }
 
-    /// Modular multiplication.
+    ///  Modular multiplication.
     pub fn mul_exec(&self, rhs: &Self) -> (result: Self)
         requires self.wf_spec(), rhs.wf_spec(), self.p == rhs.p,
         ensures result.wf_spec(), result@ == self@.mul_mod(rhs@),
@@ -368,7 +368,7 @@ impl RuntimeModularInt {
         }
     }
 
-    /// Copy.
+    ///  Copy.
     pub fn copy_exec(&self) -> (result: Self)
         requires self.wf_spec(),
         ensures result.wf_spec(), result@ == self@,
@@ -377,19 +377,19 @@ impl RuntimeModularInt {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  Scaled modular arithmetic for fixed-point
-// ═══════════════════════════════════════════════════════════════════
+//  ═══════════════════════════════════════════════════════════════════
+//   Scaled modular arithmetic for fixed-point
+//  ═══════════════════════════════════════════════════════════════════
 //
-// For fixed-point with scale S = pow2(frac), we define:
-//   a ⊗ b = a * b * S⁻¹ mod p     (scaled multiplication)
-//   one   = S mod p                  (identity for ⊗)
-//   recip(a) = a⁻¹ * S² mod p       (field inverse under ⊗)
+//  For fixed-point with scale S = pow2(frac), we define:
+//    a ⊗ b = a * b * S⁻¹ mod p     (scaled multiplication)
+//    one   = S mod p                  (identity for ⊗)
+//    recip(a) = a⁻¹ * S² mod p       (field inverse under ⊗)
 //
-// This forms a field (it's just Z/pZ with a rescaled multiplication).
-// All axioms follow from standard Z/pZ ring axioms + S being invertible mod p.
+//  This forms a field (it's just Z/pZ with a rescaled multiplication).
+//  All axioms follow from standard Z/pZ ring axioms + S being invertible mod p.
 
-/// Spec-level scaled modular multiplication: a * b * scale_inv mod p.
+///  Spec-level scaled modular multiplication: a * b * scale_inv mod p.
 pub open spec fn scaled_mul_mod(a: ModularInt, b: ModularInt, scale_inv: nat) -> ModularInt
     recommends a.same_modulus(b), scale_inv < a.modulus,
 {
@@ -399,8 +399,8 @@ pub open spec fn scaled_mul_mod(a: ModularInt, b: ModularInt, scale_inv: nat) ->
     }
 }
 
-/// **Scaled multiplication is commutative.**
-/// Follows directly from commutativity of nat multiplication.
+///  **Scaled multiplication is commutative.**
+///  Follows directly from commutativity of nat multiplication.
 pub proof fn lemma_scaled_mul_commutative(a: ModularInt, b: ModularInt, scale_inv: nat)
     requires
         a.wf_spec(), b.wf_spec(),
@@ -412,14 +412,14 @@ pub proof fn lemma_scaled_mul_commutative(a: ModularInt, b: ModularInt, scale_in
     assert(a.value * b.value == b.value * a.value) by (nonlinear_arith);
 }
 
-/// **Scaled multiplication identity is S mod p.**
-/// a ⊗ S = a * S * S⁻¹ mod p = a mod p = a (when a < p).
+///  **Scaled multiplication identity is S mod p.**
+///  a ⊗ S = a * S * S⁻¹ mod p = a mod p = a (when a < p).
 pub proof fn lemma_scaled_mul_identity(a: ModularInt, scale: nat, scale_inv: nat)
     requires
         a.wf_spec(),
         scale < a.modulus,
         scale_inv < a.modulus,
-        // S * S⁻¹ ≡ 1 (mod p)
+        //  S * S⁻¹ ≡ 1 (mod p)
         (scale * scale_inv) % a.modulus == 1,
     ensures ({
         let s_mod = ModularInt { value: scale, modulus: a.modulus };
@@ -427,87 +427,87 @@ pub proof fn lemma_scaled_mul_identity(a: ModularInt, scale: nat, scale_inv: nat
     })
 {
     let p = a.modulus;
-    // Goal: (a.value * scale % p * scale_inv) % p == a.value
+    //  Goal: (a.value * scale % p * scale_inv) % p == a.value
     //
-    // Step 1: (x%p * y)%p == (x*y)%p [lemma_mod_mul_left]
+    //  Step 1: (x%p * y)%p == (x*y)%p [lemma_mod_mul_left]
     lemma_mod_mul_left(a.value * scale, scale_inv, p);
-    // => (a*scale % p * si) % p == (a*scale*si) % p
+    //  => (a*scale % p * si) % p == (a*scale*si) % p
     //
-    // Step 2: a*scale*si == a*(scale*si) [nat mul associativity]
+    //  Step 2: a*scale*si == a*(scale*si) [nat mul associativity]
     assert(a.value * scale * scale_inv == a.value * (scale * scale_inv)) by (nonlinear_arith);
-    // => (a*(scale*si)) % p
+    //  => (a*(scale*si)) % p
     //
-    // Step 3: (a * (b%p)) % p == (a*b) % p [lemma_mod_mul_right]
+    //  Step 3: (a * (b%p)) % p == (a*b) % p [lemma_mod_mul_right]
     lemma_mod_mul_right(a.value, scale * scale_inv, p);
-    // => (a * ((scale*si) % p)) % p == (a*(scale*si)) % p
-    // Since (scale*si) % p == 1: (a * 1) % p == (a*(scale*si)) % p
+    //  => (a * ((scale*si) % p)) % p == (a*(scale*si)) % p
+    //  Since (scale*si) % p == 1: (a * 1) % p == (a*(scale*si)) % p
     //
-    // Step 4: a * 1 == a, and a % p == a [lemma_small_mod since a < p]
+    //  Step 4: a * 1 == a, and a % p == a [lemma_small_mod since a < p]
     vstd::arithmetic::div_mod::lemma_small_mod(a.value, p);
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  Barrett reduction correctness
-// ═══════════════════════════════════════════════════════════════════
+//  ═══════════════════════════════════════════════════════════════════
+//   Barrett reduction correctness
+//  ═══════════════════════════════════════════════════════════════════
 //
-// Barrett's theorem: given mu = floor(B/p) where B = base^(2n),
-// for any x < B: q = floor(x * mu / B) satisfies x/p - 2 < q ≤ x/p.
-// Therefore r = x - q*p satisfies 0 ≤ r < 3p.
-// After at most 2 subtractions of p: r = x % p.
+//  Barrett's theorem: given mu = floor(B/p) where B = base^(2n),
+//  for any x < B: q = floor(x * mu / B) satisfies x/p - 2 < q ≤ x/p.
+//  Therefore r = x - q*p satisfies 0 ≤ r < 3p.
+//  After at most 2 subtractions of p: r = x % p.
 
-/// Barrett reduction: x - floor(x * mu / B) * p < 3 * p.
-/// This is the core correctness lemma for Barrett modular reduction.
+///  Barrett reduction: x - floor(x * mu / B) * p < 3 * p.
+///  This is the core correctness lemma for Barrett modular reduction.
 ///
-/// Given: x < p² (product of two values < p), mu = floor(B/p), B = pow2(2n*32).
-/// Then: r = x - floor(x * mu / B) * p satisfies 0 ≤ r < 3*p.
-/// After at most 2 corrections (subtracting p): r = x % p.
+///  Given: x < p² (product of two values < p), mu = floor(B/p), B = pow2(2n*32).
+///  Then: r = x - floor(x * mu / B) * p satisfies 0 ≤ r < 3*p.
+///  After at most 2 corrections (subtracting p): r = x % p.
 pub proof fn lemma_barrett_reduction(x: nat, p: nat, mu: nat, big_b: nat)
     requires
         p > 0,
         big_b > 0,
-        mu == big_b / p,           // Barrett constant
-        x < p * p,                 // product of two values < p
-        p * p <= big_b,            // B ≥ p² (ensures mu ≥ p)
+        mu == big_b / p,           //  Barrett constant
+        x < p * p,                 //  product of two values < p
+        p * p <= big_b,            //  B ≥ p² (ensures mu ≥ p)
     ensures
-        // q doesn't overshoot: q*p ≤ x, so r = x - q*p ≥ 0
+        //  q doesn't overshoot: q*p ≤ x, so r = x - q*p ≥ 0
         (x * mu / big_b) * p <= x,
-        // Remainder r = x - q*p is bounded (r < p² suffices for correction loop)
+        //  Remainder r = x - q*p is bounded (r < p² suffices for correction loop)
         x - (x * mu / big_b) * p < p * p,
-        // Note: r ≡ x (mod p) follows trivially since r = x - q*p.
+        //  Note: r ≡ x (mod p) follows trivially since r = x - q*p.
 {
     let q = x * mu / big_b;
 
-    // Key: mu = floor(B/p). So mu*p ≤ B < (mu+1)*p.
-    // Therefore: x*mu / B ≤ x*mu/B ≤ x/p (exact division would be x/p)
-    // And: x*mu / B ≥ x*(B/p - 1) / B = x/p - x/B
+    //  Key: mu = floor(B/p). So mu*p ≤ B < (mu+1)*p.
+    //  Therefore: x*mu / B ≤ x*mu/B ≤ x/p (exact division would be x/p)
+    //  And: x*mu / B ≥ x*(B/p - 1) / B = x/p - x/B
 
-    // From mu = B/p (integer division): mu * p ≤ B and B < (mu + 1) * p
+    //  From mu = B/p (integer division): mu * p ≤ B and B < (mu + 1) * p
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod(big_b as int, p as int);
     let b_rem = big_b % p;
-    // B = mu * p + b_rem, 0 ≤ b_rem < p
+    //  B = mu * p + b_rem, 0 ≤ b_rem < p
 
-    // x * mu: since mu ≤ B/p and x < p²:
-    // x * mu ≤ p² * (B/p) = p * B
-    // q = x * mu / B ≤ p * B / B = p
-    // So q ≤ p (the quotient is bounded)
+    //  x * mu: since mu ≤ B/p and x < p²:
+    //  x * mu ≤ p² * (B/p) = p * B
+    //  q = x * mu / B ≤ p * B / B = p
+    //  So q ≤ p (the quotient is bounded)
 
-    // Lower bound on q: q = floor(x * mu / B) ≥ (x * mu - B + 1) / B
-    // x * mu = x * (B - b_rem) / p ... this gets complex.
+    //  Lower bound on q: q = floor(x * mu / B) ≥ (x * mu - B + 1) / B
+    //  x * mu = x * (B - b_rem) / p ... this gets complex.
 
-    // Simpler approach: show q*p ≤ x (q doesn't overshoot)
-    // q = floor(x * mu / B). q * B ≤ x * mu.
-    // x * mu = x * floor(B/p). Since floor(B/p) ≤ B/p: x * mu ≤ x * B / p.
-    // q * B ≤ x * B / p. So q ≤ x / p. So q * p ≤ x. ✓
+    //  Simpler approach: show q*p ≤ x (q doesn't overshoot)
+    //  q = floor(x * mu / B). q * B ≤ x * mu.
+    //  x * mu = x * floor(B/p). Since floor(B/p) ≤ B/p: x * mu ≤ x * B / p.
+    //  q * B ≤ x * B / p. So q ≤ x / p. So q * p ≤ x. ✓
 
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod((x * mu) as int, big_b as int);
     let qr = (x * mu) % big_b;
-    // x * mu = q * B + qr, 0 ≤ qr < B
+    //  x * mu = q * B + qr, 0 ≤ qr < B
 
-    // q * B ≤ x * mu
-    // mu ≤ B/p (from mu = floor(B/p)): mu * p ≤ B
-    // x * mu * p ≤ x * B (multiplying mu*p ≤ B by x)
-    // q * B * p ≤ x * mu * p ≤ x * B (since q*B ≤ x*mu)
-    // q * p ≤ x ✓
+    //  q * B ≤ x * mu
+    //  mu ≤ B/p (from mu = floor(B/p)): mu * p ≤ B
+    //  x * mu * p ≤ x * B (multiplying mu*p ≤ B by x)
+    //  q * B * p ≤ x * mu * p ≤ x * B (since q*B ≤ x*mu)
+    //  q * p ≤ x ✓
     assert(mu * p <= big_b) by (nonlinear_arith)
         requires big_b == mu * p + b_rem, b_rem >= 0nat;
     assert(x * mu * p <= x * big_b) by (nonlinear_arith)
@@ -521,84 +521,84 @@ pub proof fn lemma_barrett_reduction(x: nat, p: nat, mu: nat, big_b: nat)
 
     let r: nat = (x - q * p) as nat;
 
-    // Upper bound on r: r = x - q*p.
-    // q ≥ x*mu/B - 1 (floor subtracts at most 1 from the real quotient)
-    // q ≥ x*(B-p+1)/(p*B) - 1 (substituting mu ≥ (B-p+1)/p... actually mu = floor(B/p) ≥ (B-p+1)/p)
-    // This is getting complex. Let me use a direct bound.
+    //  Upper bound on r: r = x - q*p.
+    //  q ≥ x*mu/B - 1 (floor subtracts at most 1 from the real quotient)
+    //  q ≥ x*(B-p+1)/(p*B) - 1 (substituting mu ≥ (B-p+1)/p... actually mu = floor(B/p) ≥ (B-p+1)/p)
+    //  This is getting complex. Let me use a direct bound.
 
-    // From q = floor(x*mu/B): q ≥ (x*mu - B + 1) / B (for integer division)
-    // But simpler: x/p - q ≤ x/p - (x*mu/B - 1) = x/p - x*mu/B + 1
-    //   = x*(1/p - mu/B) + 1 = x*(B - mu*p)/(p*B) + 1 = x*b_rem/(p*B) + 1
-    // Since b_rem < p and x < p²: x*b_rem/(p*B) < p²*p/(p*B) = p²/B ≤ 1 (since p² ≤ B)
-    // So x/p - q < 2. Therefore r = x - q*p < 2*p... wait, let me be more careful.
+    //  From q = floor(x*mu/B): q ≥ (x*mu - B + 1) / B (for integer division)
+    //  But simpler: x/p - q ≤ x/p - (x*mu/B - 1) = x/p - x*mu/B + 1
+    //    = x*(1/p - mu/B) + 1 = x*(B - mu*p)/(p*B) + 1 = x*b_rem/(p*B) + 1
+    //  Since b_rem < p and x < p²: x*b_rem/(p*B) < p²*p/(p*B) = p²/B ≤ 1 (since p² ≤ B)
+    //  So x/p - q < 2. Therefore r = x - q*p < 2*p... wait, let me be more careful.
 
-    // x/p - q: the "real quotient" minus the estimated quotient.
-    // q = floor(x * mu / B). And the real quotient x/p has floor = floor(x/p).
-    // We want: floor(x/p) - q ≤ 2 (Barrett's guarantee).
+    //  x/p - q: the "real quotient" minus the estimated quotient.
+    //  q = floor(x * mu / B). And the real quotient x/p has floor = floor(x/p).
+    //  We want: floor(x/p) - q ≤ 2 (Barrett's guarantee).
 
-    // Direct: r = x - q*p. x = floor(x/p)*p + x%p. So r = (floor(x/p) - q)*p + x%p.
-    // Need r < 3p: (floor(x/p) - q)*p + x%p < 3p. Since x%p < p: need (floor(x/p) - q) ≤ 2.
+    //  Direct: r = x - q*p. x = floor(x/p)*p + x%p. So r = (floor(x/p) - q)*p + x%p.
+    //  Need r < 3p: (floor(x/p) - q)*p + x%p < 3p. Since x%p < p: need (floor(x/p) - q) ≤ 2.
 
-    // Proof that floor(x/p) - q ≤ 2:
-    // q = floor(x*mu/B) ≥ floor(x*(B-p+1)/B/p)... this is hard without reals.
+    //  Proof that floor(x/p) - q ≤ 2:
+    //  q = floor(x*mu/B) ≥ floor(x*(B-p+1)/B/p)... this is hard without reals.
 
-    // Alternative: direct bound via the inequalities we have.
-    // x*mu ≥ x*(big_b - p + 1)/p ... hmm mu = floor(B/p) ≥ (B-p+1)/p when p divides into B.
-    // Actually mu ≥ (B - p + 1) / p is NOT always true for integer division.
-    // The correct bound: mu = floor(B/p). So mu ≥ (B - (p-1)) / p = (B - p + 1) / p.
-    // Wait: floor(B/p) ≥ (B - (p-1))/p? For B = q*p + r with 0 ≤ r < p:
-    // floor(B/p) = q. And (B - p + 1)/p = (q*p + r - p + 1)/p = q + (r - p + 1)/p.
-    // Since r < p: r - p + 1 ≤ 0. So (B-p+1)/p ≤ q = floor(B/p). ✓
+    //  Alternative: direct bound via the inequalities we have.
+    //  x*mu ≥ x*(big_b - p + 1)/p ... hmm mu = floor(B/p) ≥ (B-p+1)/p when p divides into B.
+    //  Actually mu ≥ (B - p + 1) / p is NOT always true for integer division.
+    //  The correct bound: mu = floor(B/p). So mu ≥ (B - (p-1)) / p = (B - p + 1) / p.
+    //  Wait: floor(B/p) ≥ (B - (p-1))/p? For B = q*p + r with 0 ≤ r < p:
+    //  floor(B/p) = q. And (B - p + 1)/p = (q*p + r - p + 1)/p = q + (r - p + 1)/p.
+    //  Since r < p: r - p + 1 ≤ 0. So (B-p+1)/p ≤ q = floor(B/p). ✓
 
-    // So mu*p ≥ B - p + 1, i.e., B - mu*p ≤ p - 1, i.e., b_rem ≤ p - 1. (trivially true since b_rem < p)
+    //  So mu*p ≥ B - p + 1, i.e., B - mu*p ≤ p - 1, i.e., b_rem ≤ p - 1. (trivially true since b_rem < p)
 
-    // Now: x * mu ≥ x * (B - (p-1)) / p. Hmm, can't use this directly with integers.
+    //  Now: x * mu ≥ x * (B - (p-1)) / p. Hmm, can't use this directly with integers.
 
-    // Let me just use the direct bound: r < 3*p.
-    // r = x - q*p. We showed q*p ≤ x, so r ≥ 0.
-    // We need r < 3*p.
-    // r = x - q*p ≤ x (trivially).
-    // x < p*p (precondition) and q ≥ ... we need a lower bound on q.
+    //  Let me just use the direct bound: r < 3*p.
+    //  r = x - q*p. We showed q*p ≤ x, so r ≥ 0.
+    //  We need r < 3*p.
+    //  r = x - q*p ≤ x (trivially).
+    //  x < p*p (precondition) and q ≥ ... we need a lower bound on q.
 
-    // q = floor(x*mu/B). x*mu = x * floor(B/p).
-    // x*mu ≥ x*(B/p - 1) ... NO, floor(B/p) ≥ B/p - 1 is wrong for integers.
-    // Actually floor(B/p) = (B - b_rem)/p where b_rem = B%p.
-    // x*mu = x*(B - b_rem)/p. And q = floor(x*mu/B) = floor(x*(B-b_rem)/(p*B)).
+    //  q = floor(x*mu/B). x*mu = x * floor(B/p).
+    //  x*mu ≥ x*(B/p - 1) ... NO, floor(B/p) ≥ B/p - 1 is wrong for integers.
+    //  Actually floor(B/p) = (B - b_rem)/p where b_rem = B%p.
+    //  x*mu = x*(B - b_rem)/p. And q = floor(x*mu/B) = floor(x*(B-b_rem)/(p*B)).
 
-    // x*(B-b_rem) = x*mu*p (from B = mu*p + b_rem: mu*p = B - b_rem).
-    // Wait: mu*p = B - b_rem. So x*mu = x*(B - b_rem)/p. Hmm, that's not integer.
+    //  x*(B-b_rem) = x*mu*p (from B = mu*p + b_rem: mu*p = B - b_rem).
+    //  Wait: mu*p = B - b_rem. So x*mu = x*(B - b_rem)/p. Hmm, that's not integer.
 
-    // Let me just use: q*B ≤ x*mu = x*mu ≤ x*B/p (from mu ≤ B/p).
-    // And q*B ≥ x*mu - B + 1 (property of floor).
-    // x*mu ≥ x*(B - b_rem)/p ... but x*mu IS x*floor(B/p) = x*(B-b_rem)/p only when p divides x*(B-b_rem).
+    //  Let me just use: q*B ≤ x*mu = x*mu ≤ x*B/p (from mu ≤ B/p).
+    //  And q*B ≥ x*mu - B + 1 (property of floor).
+    //  x*mu ≥ x*(B - b_rem)/p ... but x*mu IS x*floor(B/p) = x*(B-b_rem)/p only when p divides x*(B-b_rem).
 
-    // OK this algebraic approach is getting nowhere. Let me use a simpler computational approach.
-    // Since x < p² ≤ B: x < B. And mu ≤ B/p. So x*mu < B²/p.
-    // q = floor(x*mu/B) < B/p = mu + 1 (approximately).
-    // So q ≤ mu ≤ B/p.
-    // r = x - q*p. The maximum r: when q is minimized.
-    // The minimum q: q ≥ 0 (trivially). r ≤ x < p² ≤ B.
-    // But we need r < 3p specifically.
+    //  OK this algebraic approach is getting nowhere. Let me use a simpler computational approach.
+    //  Since x < p² ≤ B: x < B. And mu ≤ B/p. So x*mu < B²/p.
+    //  q = floor(x*mu/B) < B/p = mu + 1 (approximately).
+    //  So q ≤ mu ≤ B/p.
+    //  r = x - q*p. The maximum r: when q is minimized.
+    //  The minimum q: q ≥ 0 (trivially). r ≤ x < p² ≤ B.
+    //  But we need r < 3p specifically.
 
-    // Let me just prove r < 3p by showing q ≥ x/p - 2.
-    // Then r = x - q*p ≤ x - (x/p - 2)*p = x - x + 2p ... wait, x/p*p ≤ x (floor).
+    //  Let me just prove r < 3p by showing q ≥ x/p - 2.
+    //  Then r = x - q*p ≤ x - (x/p - 2)*p = x - x + 2p ... wait, x/p*p ≤ x (floor).
 
-    // I think the cleanest proof uses the identity:
-    //   r = x mod p + (floor(x/p) - q) * p
-    // And showing floor(x/p) - q ≤ 2.
+    //  I think the cleanest proof uses the identity:
+    //    r = x mod p + (floor(x/p) - q) * p
+    //  And showing floor(x/p) - q ≤ 2.
 
-    // For now, let me just prove the weaker bound r < p*p (trivially true)
-    // and the modular equivalence r % p == x % p.
+    //  For now, let me just prove the weaker bound r < p*p (trivially true)
+    //  and the modular equivalence r % p == x % p.
 
-    // r = x - q*p ≡ x (mod p) ✓ (since q*p ≡ 0 mod p)
-    // r % p == x % p
+    //  r = x - q*p ≡ x (mod p) ✓ (since q*p ≡ 0 mod p)
+    //  r % p == x % p
 
-    // r < p² (weaker than Barrett's tight r < 3p, but sufficient for correction loop)
+    //  r < p² (weaker than Barrett's tight r < 3p, but sufficient for correction loop)
     assert(r + q * p == x) by (nonlinear_arith)
         requires q * p <= x, r as int == x as int - (q * p) as int;
     assert(r < p * p) by (nonlinear_arith)
         requires r + q * p == x, x < p * p;
-    // Note: r ≡ x (mod p) trivially since r = x - q*p.
+    //  Note: r ≡ x (mod p) trivially since r = x - q*p.
 }
 
-} // verus!
+} //  verus!

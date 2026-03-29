@@ -3,10 +3,10 @@ use super::modular::*;
 
 verus! {
 
-// ── Root of unity ──────────────────────────────────────
+//  ── Root of unity ──────────────────────────────────────
 
-/// omega is a primitive n-th root of unity mod p:
-/// omega^n == 1 and omega^k != 1 for 0 < k < n.
+///  omega is a primitive n-th root of unity mod p:
+///  omega^n == 1 and omega^k != 1 for 0 < k < n.
 pub open spec fn is_primitive_root(omega: ModularInt, n: nat) -> bool {
     &&& omega.wf_spec()
     &&& n > 0
@@ -14,7 +14,7 @@ pub open spec fn is_primitive_root(omega: ModularInt, n: nat) -> bool {
     &&& forall|k: nat| 0 < k < n ==> !omega.pow_mod(k).eqv(ModularInt::one(omega.modulus))
 }
 
-/// omega and omega_inv are inverses: omega * omega_inv == 1 (mod p).
+///  omega and omega_inv are inverses: omega * omega_inv == 1 (mod p).
 pub open spec fn is_inverse(omega: ModularInt, omega_inv: ModularInt) -> bool {
     &&& omega.wf_spec()
     &&& omega_inv.wf_spec()
@@ -22,10 +22,10 @@ pub open spec fn is_inverse(omega: ModularInt, omega_inv: ModularInt) -> bool {
     &&& omega.mul_mod(omega_inv).eqv(ModularInt::one(omega.modulus))
 }
 
-// ── NTT evaluation (DFT matrix definition) ─────────────
+//  ── NTT evaluation (DFT matrix definition) ─────────────
 
-/// Evaluate the polynomial a at point omega^k:
-/// sum_{j=0}^{n-1} a[j] * omega^(j*k) mod p
+///  Evaluate the polynomial a at point omega^k:
+///  sum_{j=0}^{n-1} a[j] * omega^(j*k) mod p
 pub open spec fn ntt_eval_at(
     a: Seq<ModularInt>, omega: ModularInt, n: nat, k: nat,
 ) -> ModularInt
@@ -39,16 +39,16 @@ pub open spec fn ntt_eval_at(
     }
 }
 
-/// Forward NTT: evaluate polynomial at all n roots of unity.
-/// result[k] = sum_{j=0}^{n-1} a[j] * omega^(j*k) for k = 0..n-1
+///  Forward NTT: evaluate polynomial at all n roots of unity.
+///  result[k] = sum_{j=0}^{n-1} a[j] * omega^(j*k) for k = 0..n-1
 pub open spec fn ntt_forward_spec(
     a: Seq<ModularInt>, omega: ModularInt, n: nat,
 ) -> Seq<ModularInt> {
     Seq::new(n, |k: int| ntt_eval_at(a, omega, n, k as nat))
 }
 
-/// Inverse NTT: same as forward but with omega_inv and scaled by n_inv.
-/// result[j] = n_inv * sum_{k=0}^{n-1} A[k] * omega_inv^(j*k)
+///  Inverse NTT: same as forward but with omega_inv and scaled by n_inv.
+///  result[j] = n_inv * sum_{k=0}^{n-1} A[k] * omega_inv^(j*k)
 pub open spec fn ntt_inverse_spec(
     a: Seq<ModularInt>, omega_inv: ModularInt, n_inv: ModularInt, n: nat,
 ) -> Seq<ModularInt> {
@@ -57,17 +57,17 @@ pub open spec fn ntt_inverse_spec(
     )
 }
 
-// ── Pointwise multiplication (convolution theorem) ─────
+//  ── Pointwise multiplication (convolution theorem) ─────
 
-/// Pointwise (Hadamard) product of two sequences.
+///  Pointwise (Hadamard) product of two sequences.
 pub open spec fn pointwise_mul(
     a: Seq<ModularInt>, b: Seq<ModularInt>, n: nat,
 ) -> Seq<ModularInt> {
     Seq::new(n, |k: int| a[k].mul_mod(b[k]))
 }
 
-/// Polynomial product (linear convolution):
-/// c[k] = sum_{j=0}^{k} a[j] * b[k-j]
+///  Polynomial product (linear convolution):
+///  c[k] = sum_{j=0}^{k} a[j] * b[k-j]
 pub open spec fn poly_mul_coeff(
     a: Seq<ModularInt>, b: Seq<ModularInt>, k: nat,
 ) -> ModularInt
@@ -85,47 +85,47 @@ pub open spec fn poly_mul_coeff(
     }
 }
 
-// ── Basic properties ───────────────────────────────────
+//  ── Basic properties ───────────────────────────────────
 
-/// ntt_eval_at of an empty polynomial is zero.
+///  ntt_eval_at of an empty polynomial is zero.
 pub proof fn lemma_ntt_eval_at_zero(omega: ModularInt, k: nat)
     ensures ntt_eval_at(Seq::empty(), omega, 0, k).eqv(ModularInt::zero(omega.modulus)),
 {}
 
-/// ntt_eval_at of a single coefficient a[0] is just a[0] (since omega^0 == 1).
+///  ntt_eval_at of a single coefficient a[0] is just a[0] (since omega^0 == 1).
 pub proof fn lemma_ntt_eval_at_single(a: ModularInt, omega: ModularInt, k: nat)
     requires a.wf_spec(), omega.wf_spec(), a.same_modulus(omega),
     ensures ntt_eval_at(seq![a], omega, 1, k).eqv(a),
 {
-    // ntt_eval_at(seq![a], omega, 1, k)
-    //   = a.mul_mod(omega.pow_mod(0)).add_mod(ntt_eval_at(seq![a], omega, 0, k))
-    //   = a.mul_mod(one).add_mod(zero)
-    //   = a
-    // ntt_eval_at(seq![a], omega, 1, k)
-    //   = a.mul_mod(omega.pow_mod(0*k)).add_mod(zero)
-    //   = a.mul_mod(one).add_mod(zero) eqv a
+    //  ntt_eval_at(seq![a], omega, 1, k)
+    //    = a.mul_mod(omega.pow_mod(0)).add_mod(ntt_eval_at(seq![a], omega, 0, k))
+    //    = a.mul_mod(one).add_mod(zero)
+    //    = a
+    //  ntt_eval_at(seq![a], omega, 1, k)
+    //    = a.mul_mod(omega.pow_mod(0*k)).add_mod(zero)
+    //    = a.mul_mod(one).add_mod(zero) eqv a
     let p = omega.modulus;
-    // Unfold: ntt_eval_at(seq![a], omega, 1, k)
-    //   == seq![a][0].mul_mod(omega.pow_mod(0*k)).add_mod(ntt_eval_at(seq![a], omega, 0, k))
-    //   == a.mul_mod(omega.pow_mod(0)).add_mod(zero(p))
+    //  Unfold: ntt_eval_at(seq![a], omega, 1, k)
+    //    == seq![a][0].mul_mod(omega.pow_mod(0*k)).add_mod(ntt_eval_at(seq![a], omega, 0, k))
+    //    == a.mul_mod(omega.pow_mod(0)).add_mod(zero(p))
     assert(0 * k == 0) by (nonlinear_arith);
 
-    // pow_mod(0) == one
+    //  pow_mod(0) == one
     let one = ModularInt::one(p);
     assert(omega.pow_mod(0) == one);
 
-    // a.mul_mod(one).value == a.value
+    //  a.mul_mod(one).value == a.value
     lemma_mul_one_right(a);
     let x = a.mul_mod(one);
     assert(x.eqv(a));
     assert(x.value == a.value);
 
-    // x.add_mod(zero).value == x.value == a.value
+    //  x.add_mod(zero).value == x.value == a.value
     let z = ModularInt::zero(p);
     lemma_add_zero_right(x);
     assert(x.add_mod(z).value == x.value);
 
-    // Help Z3 unfold ntt_eval_at for n=1 and n=0
+    //  Help Z3 unfold ntt_eval_at for n=1 and n=0
     reveal_with_fuel(ntt_eval_at, 2);
 
     let result = ntt_eval_at(seq![a], omega, 1, k);
@@ -133,7 +133,7 @@ pub proof fn lemma_ntt_eval_at_single(a: ModularInt, omega: ModularInt, k: nat)
     assert(result.modulus == a.modulus);
 }
 
-/// NTT of a zero-padded polynomial extends the evaluation consistently.
+///  NTT of a zero-padded polynomial extends the evaluation consistently.
 pub proof fn lemma_ntt_eval_at_extend(
     a: Seq<ModularInt>, omega: ModularInt, n: nat, k: nat,
 )
@@ -148,42 +148,42 @@ pub proof fn lemma_ntt_eval_at_extend(
             == a[(n - 1) as int].mul_mod(omega.pow_mod(((n - 1) * k) as nat))
                 .add_mod(ntt_eval_at(a, omega, (n - 1) as nat, k)),
 {
-    // Direct from definition
+    //  Direct from definition
 }
 
-/// Forward NTT produces n elements.
+///  Forward NTT produces n elements.
 pub proof fn lemma_ntt_forward_len(
     a: Seq<ModularInt>, omega: ModularInt, n: nat,
 )
     ensures ntt_forward_spec(a, omega, n).len() == n,
 {}
 
-/// Inverse NTT produces n elements.
+///  Inverse NTT produces n elements.
 pub proof fn lemma_ntt_inverse_len(
     a: Seq<ModularInt>, omega_inv: ModularInt, n_inv: ModularInt, n: nat,
 )
     ensures ntt_inverse_spec(a, omega_inv, n_inv, n).len() == n,
 {}
 
-// ── Convolution theorem statement ──────────────────────
+//  ── Convolution theorem statement ──────────────────────
 
-/// The convolution theorem: pointwise multiplication in NTT domain
-/// corresponds to polynomial multiplication in coefficient domain.
+///  The convolution theorem: pointwise multiplication in NTT domain
+///  corresponds to polynomial multiplication in coefficient domain.
 ///
-/// ntt_forward(a, omega, n) * ntt_forward(b, omega, n) [pointwise]
-/// == ntt_forward(a conv b, omega, n)
+///  ntt_forward(a, omega, n) * ntt_forward(b, omega, n) [pointwise]
+///  == ntt_forward(a conv b, omega, n)
 ///
-/// where (a conv b)[k] = sum_{j=0}^{k} a[j] * b[k-j] (cyclic convolution mod n)
+///  where (a conv b)[k] = sum_{j=0}^{k} a[j] * b[k-j] (cyclic convolution mod n)
 ///
-/// This is stated here but the full proof is deferred — it requires
-/// the orthogonality relation for roots of unity:
-///   sum_{k=0}^{n-1} omega^(j*k) == n if j==0, 0 otherwise.
+///  This is stated here but the full proof is deferred — it requires
+///  the orthogonality relation for roots of unity:
+///    sum_{k=0}^{n-1} omega^(j*k) == n if j==0, 0 otherwise.
 pub open spec fn cyclic_conv_coeff(
     a: Seq<ModularInt>, b: Seq<ModularInt>, n: nat, k: nat,
 ) -> ModularInt
     decreases n,
 {
-    // c[k] = sum_{j=0}^{n-1} a[j] * b[(k-j) mod n]
+    //  c[k] = sum_{j=0}^{n-1} a[j] * b[(k-j) mod n]
     if n == 0 {
         ModularInt::zero(a[0].modulus)
     } else {
@@ -194,37 +194,37 @@ pub open spec fn cyclic_conv_coeff(
     }
 }
 
-// ── NTT correctness specs ──────────────────────────────
+//  ── NTT correctness specs ──────────────────────────────
 
-/// Bit-reversal of an index: reverse the lowest log_n bits of i.
+///  Bit-reversal of an index: reverse the lowest log_n bits of i.
 pub open spec fn bit_reverse(i: nat, log_n: nat) -> nat
     decreases log_n,
 {
     if log_n == 0 { 0 }
     else {
-        // Take lowest bit of i, place it at position (log_n - 1)
+        //  Take lowest bit of i, place it at position (log_n - 1)
         (i % 2) * pow2_nat((log_n - 1) as nat)
             + bit_reverse(i / 2, (log_n - 1) as nat)
     }
 }
 
-/// Bit-reversal permutation of a sequence.
+///  Bit-reversal permutation of a sequence.
 pub open spec fn bit_reverse_seq(a: Seq<ModularInt>, n: nat, log_n: nat) -> Seq<ModularInt> {
     Seq::new(n, |i: int| a[bit_reverse(i as nat, log_n) as int])
 }
 
-/// The NTT butterfly identity at the spec level:
-/// After one butterfly stage at stride m with twiddle omega_m:
-///   result[j]     = data[j] + omega_m^k * data[j + m/2]
-///   result[j+m/2] = data[j] - omega_m^k * data[j + m/2]
-/// This is the fundamental operation that makes NTT correct.
+///  The NTT butterfly identity at the spec level:
+///  After one butterfly stage at stride m with twiddle omega_m:
+///    result[j]     = data[j] + omega_m^k * data[j + m/2]
+///    result[j+m/2] = data[j] - omega_m^k * data[j + m/2]
+///  This is the fundamental operation that makes NTT correct.
 pub open spec fn butterfly_identity(
     u: ModularInt, v: ModularInt, w: ModularInt,
 ) -> (ModularInt, ModularInt) {
     (u.add_mod(w.mul_mod(v)), u.sub_mod(w.mul_mod(v)))
 }
 
-/// Verify: butterfly_identity matches butterfly_op semantically.
+///  Verify: butterfly_identity matches butterfly_op semantically.
 pub proof fn lemma_butterfly_identity_correct(u: ModularInt, v: ModularInt, w: ModularInt)
     requires u.wf_spec(), v.wf_spec(), w.wf_spec(),
              u.same_modulus(v), v.same_modulus(w),
@@ -236,12 +236,12 @@ pub proof fn lemma_butterfly_identity_correct(u: ModularInt, v: ModularInt, w: M
     }),
 {}
 
-/// The convolution theorem connection:
-/// NTT transforms cyclic convolution into pointwise multiplication.
-/// Formally: NTT(a * b) == NTT(a) ⊙ NTT(b) (pointwise)
-/// where * is cyclic convolution and ⊙ is Hadamard product.
+///  The convolution theorem connection:
+///  NTT transforms cyclic convolution into pointwise multiplication.
+///  Formally: NTT(a * b) == NTT(a) ⊙ NTT(b) (pointwise)
+///  where * is cyclic convolution and ⊙ is Hadamard product.
 ///
-/// This is the key correctness property for NTT-based multiplication.
+///  This is the key correctness property for NTT-based multiplication.
 pub open spec fn ntt_convolution_correct(
     a: Seq<ModularInt>, b: Seq<ModularInt>,
     omega: ModularInt, n: nat,
@@ -249,7 +249,7 @@ pub open spec fn ntt_convolution_correct(
     let ntt_a = ntt_forward_spec(a, omega, n);
     let ntt_b = ntt_forward_spec(b, omega, n);
     let ntt_ab = pointwise_mul(ntt_a, ntt_b, n);
-    // ntt_ab should equal NTT of the cyclic convolution of a and b
+    //  ntt_ab should equal NTT of the cyclic convolution of a and b
     forall|k: nat| k < n ==>
         ntt_ab[k as int].eqv(
             ntt_eval_at(
@@ -259,9 +259,9 @@ pub open spec fn ntt_convolution_correct(
         )
 }
 
-// ── Exec NTT: Cooley-Tukey butterfly ───────────────────
+//  ── Exec NTT: Cooley-Tukey butterfly ───────────────────
 
-/// Single butterfly operation: given u and t, compute (u+t, u-t).
+///  Single butterfly operation: given u and t, compute (u+t, u-t).
 pub fn butterfly_op(
     u: &RuntimeModularInt, t: &RuntimeModularInt,
 ) -> (result: (RuntimeModularInt, RuntimeModularInt))
@@ -274,7 +274,7 @@ pub fn butterfly_op(
     (sum, diff)
 }
 
-/// Exec-level bit-reversal permutation on a Vec of RuntimeModularInt.
+///  Exec-level bit-reversal permutation on a Vec of RuntimeModularInt.
 pub fn bit_reverse_permutation(data: &mut Vec<RuntimeModularInt>, n: usize, log_n: usize)
     requires
         old(data)@.len() == n,
@@ -284,10 +284,10 @@ pub fn bit_reverse_permutation(data: &mut Vec<RuntimeModularInt>, n: usize, log_
     ensures
         data@.len() == n,
         forall|i: int| 0 <= i < n as int ==> data@[i].wf_spec() && data@[i].p == old(data)@[0].p,
-        // The permutation is correct (indices bit-reversed)
-        // Full spec: data[i] == old(data)[bit_reverse(i, log_n)]
+        //  The permutation is correct (indices bit-reversed)
+        //  Full spec: data[i] == old(data)[bit_reverse(i, log_n)]
 {
-    // Simple O(n²) bit-reversal for correctness (optimized version later)
+    //  Simple O(n²) bit-reversal for correctness (optimized version later)
     let ghost p0 = old(data)@[0].p;
     let mut i: usize = 0;
     while i < n
@@ -298,19 +298,19 @@ pub fn bit_reverse_permutation(data: &mut Vec<RuntimeModularInt>, n: usize, log_
             forall|k: int| 0 <= k < n as int ==> data@[k].wf_spec() && data@[k].p == p0,
         decreases n - i,
     {
-        // Compute bit-reverse of i
+        //  Compute bit-reverse of i
         let mut rev: usize = 0;
         let mut bits: usize = i;
         let mut s: usize = 0;
         while s < log_n
             invariant
                 s <= log_n,
-                rev < n, // maintained by construction
+                rev < n, //  maintained by construction
                 data@.len() == n,
                 forall|k: int| 0 <= k < n as int ==> data@[k].wf_spec() && data@[k].p == p0,
             decreases log_n - s,
         {
-            if rev < n / 2 { // guard overflow
+            if rev < n / 2 { //  guard overflow
                 rev = rev * 2 + bits % 2;
             }
             bits = bits / 2;
@@ -327,7 +327,7 @@ pub fn bit_reverse_permutation(data: &mut Vec<RuntimeModularInt>, n: usize, log_
     }
 }
 
-/// Helper: 2^k as nat (for NTT size constraints).
+///  Helper: 2^k as nat (for NTT size constraints).
 pub open spec fn pow2_nat(k: nat) -> nat
     decreases k,
 {
@@ -335,9 +335,9 @@ pub open spec fn pow2_nat(k: nat) -> nat
     else { 2 * pow2_nat((k - 1) as nat) }
 }
 
-/// Exec-level forward NTT using iterative Cooley-Tukey butterfly.
-/// Transforms data in-place. n must be a power of 2.
-/// omega is a primitive n-th root of unity mod p.
+///  Exec-level forward NTT using iterative Cooley-Tukey butterfly.
+///  Transforms data in-place. n must be a power of 2.
+///  omega is a primitive n-th root of unity mod p.
 pub fn ntt_butterfly_exec(
     data: &mut Vec<RuntimeModularInt>,
     omega: &RuntimeModularInt,
@@ -348,7 +348,7 @@ pub fn ntt_butterfly_exec(
         old(data)@.len() == n,
         n == pow2_nat(log_n as nat),
         n > 1,
-        n < 0x7FFF_FFFF, // prevent overflow in n+1
+        n < 0x7FFF_FFFF, //  prevent overflow in n+1
         log_n > 0,
         omega.wf_spec(),
         forall|i: int| 0 <= i < n as int ==> old(data)@[i].wf_spec() && old(data)@[i].p == omega.p,
@@ -356,10 +356,10 @@ pub fn ntt_butterfly_exec(
         data@.len() == n,
         forall|i: int| 0 <= i < n as int ==> data@[i].wf_spec() && data@[i].p == omega.p,
 {
-    // Step 1: Bit-reversal permutation
+    //  Step 1: Bit-reversal permutation
     bit_reverse_permutation(data, n, log_n);
 
-    // Step 2: Butterfly stages
+    //  Step 2: Butterfly stages
     let mut m: usize = 2;
     let mut stage: usize = 0;
 
@@ -369,14 +369,14 @@ pub fn ntt_butterfly_exec(
             data@.len() == n,
             n > 1,
             m >= 2,
-            m <= n + 1, // loose upper bound
+            m <= n + 1, //  loose upper bound
             forall|i: int| 0 <= i < n as int ==> data@[i].wf_spec() && data@[i].p == omega.p,
             omega.wf_spec(),
             omega.p > 1,
         decreases log_n - stage,
     {
         let half_m = m / 2;
-        // half_m >= 1 since m >= 2
+        //  half_m >= 1 since m >= 2
 
         let mut group: usize = 0;
         while group <= n && n - group >= m
@@ -403,9 +403,9 @@ pub fn ntt_butterfly_exec(
                     omega.wf_spec(), omega.p > 1,
                 decreases half_m - k,
             {
-                // Bounds: k < half_m = m/2, n - group >= m
-                // group + k < group + m/2 < group + m <= n ✓
-                // group + k + half_m < group + m <= n ✓
+                //  Bounds: k < half_m = m/2, n - group >= m
+                //  group + k < group + m/2 < group + m <= n ✓
+                //  group + k + half_m < group + m <= n ✓
                 proof {
                     assert(k < half_m);
                     assert(half_m + half_m <= m) by (nonlinear_arith)
@@ -429,23 +429,23 @@ pub fn ntt_butterfly_exec(
                 k = k + 1;
             }
 
-            // Advance group. group + m <= n, so group' = group + m <= n
+            //  Advance group. group + m <= n, so group' = group + m <= n
             group = group + m;
         }
 
         stage = stage + 1;
-        // m doubles. Guard: if m > n, next iteration won't enter inner loop anyway
+        //  m doubles. Guard: if m > n, next iteration won't enter inner loop anyway
         if m <= n / 2 {
             m = m * 2;
         } else {
-            m = n; // sentinel: ensures inner loop condition n - group >= m won't hold when group > 0
+            m = n; //  sentinel: ensures inner loop condition n - group >= m won't hold when group > 0
         }
     }
 }
 
-// ── NTT-based multiplication pipeline ──────────────────
+//  ── NTT-based multiplication pipeline ──────────────────
 
-/// Convert u32 limbs to ModularInt coefficients (each limb becomes one coefficient).
+///  Convert u32 limbs to ModularInt coefficients (each limb becomes one coefficient).
 pub fn limbs_to_modular(limbs: &Vec<u32>, p: u32, n_padded: usize) -> (result: Vec<RuntimeModularInt>)
     requires
         n_padded >= limbs@.len(),
@@ -476,9 +476,9 @@ pub fn limbs_to_modular(limbs: &Vec<u32>, p: u32, n_padded: usize) -> (result: V
     out
 }
 
-/// Carry propagation: convert ModularInt coefficients back to u32 limbs.
-/// Each coefficient may be larger than the limb base after INTT;
-/// we propagate carries to get valid u32 limbs.
+///  Carry propagation: convert ModularInt coefficients back to u32 limbs.
+///  Each coefficient may be larger than the limb base after INTT;
+///  we propagate carries to get valid u32 limbs.
 pub fn carry_propagate(coeffs: &Vec<RuntimeModularInt>, n: usize) -> (result: Vec<u32>)
     requires
         coeffs@.len() == n,
@@ -499,21 +499,21 @@ pub fn carry_propagate(coeffs: &Vec<RuntimeModularInt>, n: usize) -> (result: Ve
         decreases n - i,
     {
         let c_val = coeffs[i].val as u64;
-        // c_val <= 0xFFFF_FFFF, carry <= 0xFFFF_FFFF, sum fits in u64
+        //  c_val <= 0xFFFF_FFFF, carry <= 0xFFFF_FFFF, sum fits in u64
         let val: u64 = c_val + carry;
         let digit = (val % 0x1_0000_0000u64) as u32;
         carry = val / 0x1_0000_0000u64;
         out.push(digit);
         i = i + 1;
     }
-    // Carry should be 0 for correct multiplication
-    // (ensured by choosing p large enough)
+    //  Carry should be 0 for correct multiplication
+    //  (ensured by choosing p large enough)
     out
 }
 
-/// NTT-based multiplication: a * b via transform → pointwise mul → inverse transform → carry.
-/// Requires: n_padded is a power of 2, >= 2 * max(a.len(), b.len()).
-/// p is an NTT-friendly prime with primitive n_padded-th root of unity omega.
+///  NTT-based multiplication: a * b via transform → pointwise mul → inverse transform → carry.
+///  Requires: n_padded is a power of 2, >= 2 * max(a.len(), b.len()).
+///  p is an NTT-friendly prime with primitive n_padded-th root of unity omega.
 pub fn mul_ntt(
     a: &Vec<u32>, b: &Vec<u32>,
     p: u32, omega: &RuntimeModularInt, omega_inv: &RuntimeModularInt, n_inv: &RuntimeModularInt,
@@ -535,15 +535,15 @@ pub fn mul_ntt(
     ensures
         result@.len() == n_padded,
 {
-    // Step 1: Convert limbs to ModularInt coefficients, zero-padded to n_padded
+    //  Step 1: Convert limbs to ModularInt coefficients, zero-padded to n_padded
     let mut a_mod = limbs_to_modular(a, p, n_padded);
     let mut b_mod = limbs_to_modular(b, p, n_padded);
 
-    // Step 2: Forward NTT on both
+    //  Step 2: Forward NTT on both
     ntt_butterfly_exec(&mut a_mod, omega, n_padded, log_n);
     ntt_butterfly_exec(&mut b_mod, omega, n_padded, log_n);
 
-    // Step 3: Pointwise multiplication
+    //  Step 3: Pointwise multiplication
     let mut c_mod: Vec<RuntimeModularInt> = Vec::new();
     let mut i: usize = 0;
     while i < n_padded
@@ -562,10 +562,10 @@ pub fn mul_ntt(
         i = i + 1;
     }
 
-    // Step 4: Inverse NTT
+    //  Step 4: Inverse NTT
     ntt_butterfly_exec(&mut c_mod, omega_inv, n_padded, log_n);
 
-    // Step 5: Scale by n_inv (multiply each coefficient by 1/n mod p)
+    //  Step 5: Scale by n_inv (multiply each coefficient by 1/n mod p)
     let mut scaled: Vec<RuntimeModularInt> = Vec::new();
     let mut j: usize = 0;
     while j < n_padded
@@ -583,8 +583,8 @@ pub fn mul_ntt(
         j = j + 1;
     }
 
-    // Step 6: Carry propagation to get u32 limbs
+    //  Step 6: Carry propagation to get u32 limbs
     carry_propagate(&scaled, n_padded)
 }
 
-} // verus!
+} //  verus!

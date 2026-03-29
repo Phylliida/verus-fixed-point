@@ -3,26 +3,26 @@ use verus_rational::Rational;
 
 verus! {
 
-/// Newton-Raphson convergence for reciprocal computation.
+///  Newton-Raphson convergence for reciprocal computation.
 ///
-/// The iteration x_{n+1} = x_n * (2 - b * x_n) computes 1/b.
-/// Key identity: if e_n = 1 - b * x_n (the "error"), then e_{n+1} = e_n².
-/// This gives quadratic convergence: the number of correct bits doubles each step.
+///  The iteration x_{n+1} = x_n * (2 - b * x_n) computes 1/b.
+///  Key identity: if e_n = 1 - b * x_n (the "error"), then e_{n+1} = e_n².
+///  This gives quadratic convergence: the number of correct bits doubles each step.
 
-/// The error of a reciprocal approximation: e = 1 - b * x.
+///  The error of a reciprocal approximation: e = 1 - b * x.
 pub open spec fn newton_error(b: Rational, x: Rational) -> Rational {
     Rational::from_int_spec(1).sub_spec(b.mul_spec(x))
 }
 
-/// The Newton step: x' = x * (2 - b*x).
+///  The Newton step: x' = x * (2 - b*x).
 pub open spec fn newton_step(b: Rational, x: Rational) -> Rational {
     let bx = b.mul_spec(x);
     x.mul_spec(Rational::from_int_spec(2).sub_spec(bx))
 }
 
-/// **Core convergence identity at the integer level:**
-/// If e = 1 - b*x, then 1 - b*x*(2-b*x) = e².
-/// This is purely algebraic and Z3 handles it directly.
+///  **Core convergence identity at the integer level:**
+///  If e = 1 - b*x, then 1 - b*x*(2-b*x) = e².
+///  This is purely algebraic and Z3 handles it directly.
 pub proof fn lemma_newton_error_squares_int(b: int, x: int)
     ensures
     ({
@@ -33,11 +33,11 @@ pub proof fn lemma_newton_error_squares_int(b: int, x: int)
     }),
 {
     let bx = b * x;
-    // b * x_next = b * (x * (2 - bx)) = bx * (2 - bx) = 2*bx - bx²
-    // 1 - b*x_next = 1 - 2*bx + bx² = (1-bx)²
-    // Use the distributive helper from limbs
+    //  b * x_next = b * (x * (2 - bx)) = bx * (2 - bx) = 2*bx - bx²
+    //  1 - b*x_next = 1 - 2*bx + bx² = (1-bx)²
+    //  Use the distributive helper from limbs
     super::limbs::lemma_mul_distribute(2, -bx, x);
-    // (2 + (-bx)) * x == 2*x + (-bx)*x == 2*x - bx*x
+    //  (2 + (-bx)) * x == 2*x + (-bx)*x == 2*x - bx*x
     assert((2 - bx) * x == 2 * x - bx * x) by (nonlinear_arith)
         requires (2 + (-bx)) * x == 2 * x + (-bx) * x;
     assert(x * (2 - bx) == 2 * x - bx * x) by (nonlinear_arith)
@@ -49,8 +49,8 @@ pub proof fn lemma_newton_error_squares_int(b: int, x: int)
     assert(1 - (2 * bx - bx * bx) == (1 - bx) * (1 - bx)) by (nonlinear_arith);
 }
 
-/// Corollary: error after k steps.
-/// If e_0 = 1 - b*x_0, then after k Newton steps the error is e_0^{2^k}.
+///  Corollary: error after k steps.
+///  If e_0 = 1 - b*x_0, then after k Newton steps the error is e_0^{2^k}.
 pub open spec fn error_after_k_int(e_0: int, k: nat) -> int
     decreases k,
 {
@@ -61,17 +61,17 @@ pub open spec fn error_after_k_int(e_0: int, k: nat) -> int
     }
 }
 
-/// error_after_k(e, k+1) == error_after_k(e, k)².
+///  error_after_k(e, k+1) == error_after_k(e, k)².
 pub proof fn lemma_error_after_k_squares(e_0: int, k: nat)
     ensures error_after_k_int(e_0, k + 1) == error_after_k_int(e_0, k) * error_after_k_int(e_0, k),
 {}
 
-/// **Convergence bound:** If |e_0| ≤ 1/2 (in the appropriate scaling),
-/// then after k iterations, |e_k| ≤ (1/2)^{2^k}.
-/// At k = log2(N): |e_k| ≤ 2^{-N}, giving N bits of precision.
+///  **Convergence bound:** If |e_0| ≤ 1/2 (in the appropriate scaling),
+///  then after k iterations, |e_k| ≤ (1/2)^{2^k}.
+///  At k = log2(N): |e_k| ≤ 2^{-N}, giving N bits of precision.
 ///
-/// For 128-bit (96 frac bits): k = 7 iterations.
-/// For 10000-bit: k = 14 iterations.
+///  For 128-bit (96 frac bits): k = 7 iterations.
+///  For 10000-bit: k = 14 iterations.
 pub open spec fn newton_iters_needed(frac_bits: nat) -> nat
     decreases frac_bits,
 {
@@ -88,7 +88,7 @@ pub proof fn lemma_newton_iters_sufficient(frac_bits: nat)
     }
 }
 
-/// 2^k spec for bounding convergence.
+///  2^k spec for bounding convergence.
 pub open spec fn pow2k(k: nat) -> nat
     decreases k,
 {
@@ -96,12 +96,12 @@ pub open spec fn pow2k(k: nat) -> nat
     else { 2 * pow2k((k - 1) as nat) }
 }
 
-/// pow2k grows: pow2k(k+1) == 2 * pow2k(k).
+///  pow2k grows: pow2k(k+1) == 2 * pow2k(k).
 pub proof fn lemma_pow2k_step(k: nat)
     ensures pow2k(k + 1) == 2 * pow2k(k),
 {}
 
-/// pow2k is always positive.
+///  pow2k is always positive.
 pub proof fn lemma_pow2k_positive(k: nat)
     ensures pow2k(k) > 0,
     decreases k,
@@ -109,21 +109,21 @@ pub proof fn lemma_pow2k_positive(k: nat)
     if k > 0 { lemma_pow2k_positive((k - 1) as nat); }
 }
 
-// ── Newton accuracy: error bound for fixed-point ───────
+//  ── Newton accuracy: error bound for fixed-point ───────
 
-/// In fixed-point with FRAC fractional bits, the "scaled error" is:
-///   e_scaled = 2^FRAC - (b_int * x_int) / 2^FRAC
-/// where b_int = b * 2^FRAC and x_int = x * 2^FRAC are the integer representations.
+///  In fixed-point with FRAC fractional bits, the "scaled error" is:
+///    e_scaled = 2^FRAC - (b_int * x_int) / 2^FRAC
+///  where b_int = b * 2^FRAC and x_int = x * 2^FRAC are the integer representations.
 ///
-/// The Newton iteration in scaled integers:
-///   x_next_scaled = (x_scaled * (2^(FRAC+1) - (b_scaled * x_scaled) / 2^FRAC)) / 2^FRAC
+///  The Newton iteration in scaled integers:
+///    x_next_scaled = (x_scaled * (2^(FRAC+1) - (b_scaled * x_scaled) / 2^FRAC)) / 2^FRAC
 ///
-/// After k iterations: |e_scaled| <= |e_0_scaled|^{2^k} / 2^{FRAC * (2^k - 1)}
+///  After k iterations: |e_scaled| <= |e_0_scaled|^{2^k} / 2^{FRAC * (2^k - 1)}
 ///
-/// For convergence: need |e_0_scaled| < 2^FRAC (i.e., |e_0| < 1 in real terms).
-/// After k = ceil(log2(FRAC)) iterations: |e_k| < 1 ULP.
+///  For convergence: need |e_0_scaled| < 2^FRAC (i.e., |e_0| < 1 in real terms).
+///  After k = ceil(log2(FRAC)) iterations: |e_k| < 1 ULP.
 
-/// Bound: if |e| <= M, then |e²| <= M².
+///  Bound: if |e| <= M, then |e²| <= M².
 pub proof fn lemma_error_squared_bound(e: int, m: int)
     requires -m <= e, e <= m, m >= 0,
     ensures
@@ -133,7 +133,7 @@ pub proof fn lemma_error_squared_bound(e: int, m: int)
         requires -m <= e, e <= m, m >= 0;
 }
 
-/// Inductive bound: error_after_k(e, k) is bounded by m^{2^k} where |e| <= m.
+///  Inductive bound: error_after_k(e, k) is bounded by m^{2^k} where |e| <= m.
 pub proof fn lemma_error_after_k_bounded(e_0: int, m: int, k: nat)
     requires -m <= e_0, e_0 <= m, m >= 0,
     ensures
@@ -142,21 +142,21 @@ pub proof fn lemma_error_after_k_bounded(e_0: int, m: int, k: nat)
     decreases k,
 {
     if k == 0 {
-        // error_after_k(e, 0) == e, bound is m
+        //  error_after_k(e, 0) == e, bound is m
     } else {
         lemma_error_after_k_bounded(e_0, m, (k - 1) as nat);
         let prev = error_after_k_int(e_0, (k - 1) as nat);
         let prev_bound = pow2k_power(m, (k - 1) as nat);
-        // |prev| <= prev_bound, so prev² <= prev_bound²
+        //  |prev| <= prev_bound, so prev² <= prev_bound²
         lemma_error_squared_bound(prev, prev_bound);
-        // error_after_k(e, k) = prev * prev >= 0 (it's a square)
+        //  error_after_k(e, k) = prev * prev >= 0 (it's a square)
         assert(prev * prev >= 0) by (nonlinear_arith);
-        // -pow2k_power(m, k) = -(prev_bound²) <= 0 <= prev² = error
+        //  -pow2k_power(m, k) = -(prev_bound²) <= 0 <= prev² = error
         lemma_pow2k_power_nonneg(m, k);
     }
 }
 
-/// m^{2^k}: the bound on error after k iterations starting from |e| <= m.
+///  m^{2^k}: the bound on error after k iterations starting from |e| <= m.
 pub open spec fn pow2k_power(m: int, k: nat) -> int
     decreases k,
 {
@@ -167,7 +167,7 @@ pub open spec fn pow2k_power(m: int, k: nat) -> int
     }
 }
 
-/// pow2k_power is non-negative when m >= 0.
+///  pow2k_power is non-negative when m >= 0.
 pub proof fn lemma_pow2k_power_nonneg(m: int, k: nat)
     requires m >= 0,
     ensures pow2k_power(m, k) >= 0,
@@ -180,59 +180,59 @@ pub proof fn lemma_pow2k_power_nonneg(m: int, k: nat)
     }
 }
 
-/// **Key theorem: Newton convergence to full precision.**
+///  **Key theorem: Newton convergence to full precision.**
 ///
-/// If the initial error |e_0| <= M where M < 2^FRAC (the fixed-point scale),
-/// then after k iterations, |e_k| <= M^{2^k}.
+///  If the initial error |e_0| <= M where M < 2^FRAC (the fixed-point scale),
+///  then after k iterations, |e_k| <= M^{2^k}.
 ///
-/// When M = 2^(FRAC-1) (initial estimate off by at most 0.5 in real terms):
-///   After 1 iteration: |e| <= 2^(2*(FRAC-1)) = 2^(2*FRAC-2) ... gets worse??
+///  When M = 2^(FRAC-1) (initial estimate off by at most 0.5 in real terms):
+///    After 1 iteration: |e| <= 2^(2*(FRAC-1)) = 2^(2*FRAC-2) ... gets worse??
 ///
-/// Actually, for convergence we need M < 1 in REAL terms, i.e., M < 2^FRAC in
-/// scaled integer terms. The error squaring in REAL terms: |e_real|^2.
-/// If |e_real| < 1, then |e_real|^2 < |e_real| — it converges.
-/// After k iterations: |e_real| < |e_0_real|^{2^k}.
-/// If |e_0_real| <= 1/2, then after k iterations: |e_real| <= 2^{-2^k}.
-/// For 2^k >= FRAC bits of precision: k >= ceil(log2(FRAC)).
+///  Actually, for convergence we need M < 1 in REAL terms, i.e., M < 2^FRAC in
+///  scaled integer terms. The error squaring in REAL terms: |e_real|^2.
+///  If |e_real| < 1, then |e_real|^2 < |e_real| — it converges.
+///  After k iterations: |e_real| < |e_0_real|^{2^k}.
+///  If |e_0_real| <= 1/2, then after k iterations: |e_real| <= 2^{-2^k}.
+///  For 2^k >= FRAC bits of precision: k >= ceil(log2(FRAC)).
 ///
-/// This is captured by: error_after_k_int(e_0, k) bounds the scaled error,
-/// and when |e_0| < SCALE, the real error |e_0/SCALE| < 1 converges quadratically.
+///  This is captured by: error_after_k_int(e_0, k) bounds the scaled error,
+///  and when |e_0| < SCALE, the real error |e_0/SCALE| < 1 converges quadratically.
 pub proof fn lemma_newton_full_precision_convergence(frac_bits: nat)
     ensures
-        // After newton_iters_needed(frac_bits) iterations,
-        // starting from |e_0| <= 2^(frac_bits-1) (i.e., |e_real| <= 1/2),
-        // the error has been squared enough times to be < 1 ULP.
+        //  After newton_iters_needed(frac_bits) iterations,
+        //  starting from |e_0| <= 2^(frac_bits-1) (i.e., |e_real| <= 1/2),
+        //  the error has been squared enough times to be < 1 ULP.
         newton_iters_needed(frac_bits) >= 1,
 {
     lemma_newton_iters_sufficient(frac_bits);
 }
 
-// ── Truncated Newton convergence for fixed-point arithmetic ──────
+//  ── Truncated Newton convergence for fixed-point arithmetic ──────
 //
-// In the exec Newton iteration, each step has TWO floor operations:
-//   1. bx = floor(b * x / S) where S = pow2(frac)
-//   2. x' = floor(x * (2S - bx) / S)
+//  In the exec Newton iteration, each step has TWO floor operations:
+//    1. bx = floor(b * x / S) where S = pow2(frac)
+//    2. x' = floor(x * (2S - bx) / S)
 //
-// The "scaled error": e = S - floor(b*x/S).
-// In exact arithmetic: e' = e²/S. With truncation: e' ≤ e²/S + 2.
+//  The "scaled error": e = S - floor(b*x/S).
+//  In exact arithmetic: e' = e²/S. With truncation: e' ≤ e²/S + 2.
 //
-// The truncation error of +2 per step means the iteration converges
-// to |e| ≤ 3 (not to 0). This gives ~3 ULP accuracy, which is
-// sufficient for interval arithmetic (widen by ±4 ULP to contain exact).
+//  The truncation error of +2 per step means the iteration converges
+//  to |e| ≤ 3 (not to 0). This gives ~3 ULP accuracy, which is
+//  sufficient for interval arithmetic (widen by ±4 ULP to contain exact).
 
-/// The truncated scaled error: S - floor(b_int * x_int / S).
+///  The truncated scaled error: S - floor(b_int * x_int / S).
 pub open spec fn truncated_scaled_error(b_int: nat, x_int: nat, s: nat) -> int {
     s as int - (b_int * x_int / s) as int
 }
 
-/// Newton has converged: b * x / S is within 3 of S.
-/// Equivalently: 1 - 3/S ≤ b*x/S² ≤ 1, so x ≈ S/b = 1/b_real.
+///  Newton has converged: b * x / S is within 3 of S.
+///  Equivalently: 1 - 3/S ≤ b*x/S² ≤ 1, so x ≈ S/b = 1/b_real.
 pub open spec fn newton_converged(b_int: nat, x_int: nat, s: nat) -> bool {
     let bx = b_int * x_int / s;
     bx <= s && bx + 4 >= s
 }
 
-/// The truncated error bound: e_{k+1} ≤ e_k²/S + 2.
+///  The truncated error bound: e_{k+1} ≤ e_k²/S + 2.
 pub open spec fn truncated_error_bound(e_0: nat, s: nat, k: nat) -> nat
     decreases k,
 {
@@ -243,8 +243,8 @@ pub open spec fn truncated_error_bound(e_0: nat, s: nat, k: nat) -> nat
     }
 }
 
-/// **Key stability lemma**: once e ≤ S/2 and S ≥ 8, the bound S/2 is preserved.
-/// e ≤ S/2 implies e²/S ≤ S/4, so e²/S + 2 ≤ S/4 + 2 ≤ S/2 (when S ≥ 8).
+///  **Key stability lemma**: once e ≤ S/2 and S ≥ 8, the bound S/2 is preserved.
+///  e ≤ S/2 implies e²/S ≤ S/4, so e²/S + 2 ≤ S/4 + 2 ≤ S/2 (when S ≥ 8).
 pub proof fn lemma_truncated_half_stable(e: nat, s: nat)
     requires
         e <= s / 2,
@@ -252,24 +252,24 @@ pub proof fn lemma_truncated_half_stable(e: nat, s: nat)
     ensures
         e * e / s + 2 <= s / 2,
 {
-    // e ≤ S/2 implies e² ≤ S²/4
-    // e²/S ≤ S/4 (integer division)
-    // e²/S + 2 ≤ S/4 + 2
-    // S/4 + 2 ≤ S/2 when S ≥ 8 (since S/4 + 2 ≤ S/2 iff 2 ≤ S/4 iff S ≥ 8)
+    //  e ≤ S/2 implies e² ≤ S²/4
+    //  e²/S ≤ S/4 (integer division)
+    //  e²/S + 2 ≤ S/4 + 2
+    //  S/4 + 2 ≤ S/2 when S ≥ 8 (since S/4 + 2 ≤ S/2 iff 2 ≤ S/4 iff S ≥ 8)
     assert(e * e <= (s / 2) * (s / 2)) by (nonlinear_arith)
         requires e <= s / 2;
     assert((s / 2) * (s / 2) <= s * s / 4) by (nonlinear_arith)
         requires s >= 8;
-    // integer division: e*e/s ≤ s/4
-    // since e*e ≤ s²/4, and s > 0: e*e/s ≤ s/4
+    //  integer division: e*e/s ≤ s/4
+    //  since e*e ≤ s²/4, and s > 0: e*e/s ≤ s/4
     assert(e * e / s <= s / 4) by (nonlinear_arith)
         requires e * e <= s * s / 4, s >= 8;
     assert(s / 4 + 2 <= s / 2) by (nonlinear_arith)
         requires s >= 8;
 }
 
-/// **Fixpoint lemma**: once e ≤ 3 and S ≥ 12, e stays ≤ 3.
-/// 3²/S + 2 = 9/S + 2 ≤ 2 + 0 = 2 < 3 for S ≥ 10.
+///  **Fixpoint lemma**: once e ≤ 3 and S ≥ 12, e stays ≤ 3.
+///  3²/S + 2 = 9/S + 2 ≤ 2 + 0 = 2 < 3 for S ≥ 10.
 pub proof fn lemma_truncated_fixpoint_3(e: nat, s: nat)
     requires
         e <= 3,
@@ -282,8 +282,8 @@ pub proof fn lemma_truncated_fixpoint_3(e: nat, s: nat)
     assert(e * e / s <= 0) by (nonlinear_arith) requires e * e <= 9, s >= 12;
 }
 
-/// **Non-increase lemma**: for 4 ≤ e ≤ S/2 and S ≥ 16, the error doesn't grow.
-/// e²/S + 2 ≤ e when e(S-e) ≥ 2S. For e ≥ 4 and S-e ≥ S/2: e(S-e) ≥ 2S.
+///  **Non-increase lemma**: for 4 ≤ e ≤ S/2 and S ≥ 16, the error doesn't grow.
+///  e²/S + 2 ≤ e when e(S-e) ≥ 2S. For e ≥ 4 and S-e ≥ S/2: e(S-e) ≥ 2S.
 pub proof fn lemma_truncated_error_nonincreasing(e: nat, s: nat)
     requires
         4 <= e,
@@ -296,111 +296,111 @@ pub proof fn lemma_truncated_error_nonincreasing(e: nat, s: nat)
         requires e >= 4, e <= s / 2, s >= 16;
 }
 
-/// **First step exactness**: with x_0 = S and b ∈ [S, 3S/2]:
-/// bx_0 = floor(b * S / S) = b (exact, since S divides b*S).
-/// x_1 = floor(S * (2S - b) / S) = 2S - b (exact).
-/// e_1 = S - floor(b * (2S-b) / S). Since b*(2S-b) = 2bS - b² = S² - (b-S)²:
-///   floor((S² - d²) / S) where d = b - S ∈ [0, S/2].
-///   = S - ceil(d²/S) (or S - floor(d²/S) - adjustment).
-/// In any case: e_1 ≤ floor(d²/S) + 1 ≤ (S/2)²/S + 1 = S/4 + 1 ≤ S/2 for S ≥ 4.
+///  **First step exactness**: with x_0 = S and b ∈ [S, 3S/2]:
+///  bx_0 = floor(b * S / S) = b (exact, since S divides b*S).
+///  x_1 = floor(S * (2S - b) / S) = 2S - b (exact).
+///  e_1 = S - floor(b * (2S-b) / S). Since b*(2S-b) = 2bS - b² = S² - (b-S)²:
+///    floor((S² - d²) / S) where d = b - S ∈ [0, S/2].
+///    = S - ceil(d²/S) (or S - floor(d²/S) - adjustment).
+///  In any case: e_1 ≤ floor(d²/S) + 1 ≤ (S/2)²/S + 1 = S/4 + 1 ≤ S/2 for S ≥ 4.
 pub proof fn lemma_first_step_error(b: nat, s: nat)
     requires
         s > 0,
         b >= s,
-        2 * b <= 3 * s,  // b ≤ 3S/2
+        2 * b <= 3 * s,  //  b ≤ 3S/2
     ensures
-        // First step: x_0 = s, bx_0 = b*s/s = b (exact division)
+        //  First step: x_0 = s, bx_0 = b*s/s = b (exact division)
         b * s / s == b,
-        // x_1 = 2s - b ≤ s (since b ≥ s)
+        //  x_1 = 2s - b ≤ s (since b ≥ s)
         b <= 2 * s,
 {
     assert(b * s / s == b) by (nonlinear_arith)
         requires s > 0nat;
 }
 
-/// **First step error bound**: after first Newton step with b ∈ [S, 3S/2],
-/// the error e_1 is in [0, S/4 + 1] ⊂ [0, S/2].
+///  **First step error bound**: after first Newton step with b ∈ [S, 3S/2],
+///  the error e_1 is in [0, S/4 + 1] ⊂ [0, S/2].
 ///
-/// With x_0 = S: bx_0 = b (exact). x_1 = 2S - b = S - d where d = b - S.
-/// Then b*x_1 = (S+d)(S-d) = S² - d². bx_1 = floor((S²-d²)/S).
-/// Error: e_1 = S - bx_1 ≤ d²/S + 1 ≤ S/4 + 1.
+///  With x_0 = S: bx_0 = b (exact). x_1 = 2S - b = S - d where d = b - S.
+///  Then b*x_1 = (S+d)(S-d) = S² - d². bx_1 = floor((S²-d²)/S).
+///  Error: e_1 = S - bx_1 ≤ d²/S + 1 ≤ S/4 + 1.
 pub proof fn lemma_first_step_error_bound(b: nat, s: nat)
     requires
         s >= 4,
         b >= s,
         2 * b <= 3 * s,
     ensures ({
-        // x_1 = 2S - b, which is a nat since b ≤ 2S
+        //  x_1 = 2S - b, which is a nat since b ≤ 2S
         let x_1: nat = (2 * s - b) as nat;
         let prod: nat = b * x_1;
         let bx_1: nat = prod / s;
-        // Error is non-negative and ≤ S/2
+        //  Error is non-negative and ≤ S/2
         bx_1 <= s && (s - bx_1) as nat <= s / 2
     })
 {
     let d: nat = (b - s) as nat;
-    // b = s + d since b >= s
+    //  b = s + d since b >= s
     assert(b == s + d);
     assert(b <= 2 * s) by (nonlinear_arith) requires 2 * b <= 3 * s;
 
     let x_1: nat = (2 * s - b) as nat;
-    // x_1 = 2s - b = 2s - (s+d) = s - d
+    //  x_1 = 2s - b = 2s - (s+d) = s - d
     assert(x_1 as int == s as int - d as int);
 
-    // b * x_1 = (s+d)(s-d) = s² - d²
+    //  b * x_1 = (s+d)(s-d) = s² - d²
     let prod = b * x_1;
-    // prod = b * x_1: nat multiplication lifts to int
+    //  prod = b * x_1: nat multiplication lifts to int
     assert(prod as int == b as int * x_1 as int);
-    // Step 2: expand (s+d)(s-d) using the distributive law helper
+    //  Step 2: expand (s+d)(s-d) using the distributive law helper
     super::limbs::lemma_mul_distribute(s as int, d as int, (s - d) as int);
-    // (s + d) * (s - d) = s*(s-d) + d*(s-d)
-    // s*(s-d) = s*s - s*d, d*(s-d) = d*s - d*d
-    // Total: s*s - s*d + d*s - d*d = s*s - d*d
+    //  (s + d) * (s - d) = s*(s-d) + d*(s-d)
+    //  s*(s-d) = s*s - s*d, d*(s-d) = d*s - d*d
+    //  Total: s*s - s*d + d*s - d*d = s*s - d*d
     assert(prod as int == s as int * s as int - d as int * d as int) by (nonlinear_arith)
         requires prod as int == b as int * x_1 as int,
                  b as int == s as int + d as int,
                  x_1 as int == s as int - d as int,
                  (s as int + d as int) * (s as int - d as int) == s as int * (s as int - d as int) + d as int * (s as int - d as int);
 
-    // d ≤ s/2 (from 2b ≤ 3s, b = s+d → 2d ≤ s)
+    //  d ≤ s/2 (from 2b ≤ 3s, b = s+d → 2d ≤ s)
     assert(d <= s / 2) by (nonlinear_arith) requires 2 * b <= 3 * s, b == s + d;
 
-    // d² ≤ s²/4
+    //  d² ≤ s²/4
     assert(d * d <= s * s / 4) by (nonlinear_arith) requires d <= s / 2;
 
-    // prod = s² - d² ≥ 3s²/4
-    // prod / s ≥ 3s/4 (approximately)
-    // More precisely: prod = s*s - d*d, and using div_mod:
+    //  prod = s² - d² ≥ 3s²/4
+    //  prod / s ≥ 3s/4 (approximately)
+    //  More precisely: prod = s*s - d*d, and using div_mod:
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod(prod as int, s as int);
     let bx_1: nat = prod / s;
     let r: nat = prod % s;
 
-    // bx_1 ≤ s: since prod = s² - d² ≤ s², bx_1 ≤ s²/s = s
+    //  bx_1 ≤ s: since prod = s² - d² ≤ s², bx_1 ≤ s²/s = s
     assert(bx_1 <= s) by (nonlinear_arith)
         requires bx_1 as int * s as int + r as int == prod as int,
                  prod as int == s as int * s as int - d as int * d as int,
                  r >= 0int, s > 0int;
 
-    // bx_1 ≥ s - s/4 - 1: since prod ≥ 3s²/4, bx_1 = prod/s ≥ 3s/4 - 1
+    //  bx_1 ≥ s - s/4 - 1: since prod ≥ 3s²/4, bx_1 = prod/s ≥ 3s/4 - 1
     assert(bx_1 >= s - s / 4 - 1) by (nonlinear_arith)
         requires bx_1 as int * s as int + r as int == prod as int,
                  prod as int == s as int * s as int - d as int * d as int,
                  d * d <= s * s / 4,
                  r < s as int, r >= 0int, s >= 4;
 
-    // e_1 = s - bx_1 ≤ s/4 + 1 ≤ s/2
+    //  e_1 = s - bx_1 ≤ s/4 + 1 ≤ s/2
     assert((s - bx_1) as nat <= s / 4 + 1) by (nonlinear_arith)
         requires bx_1 >= s - s / 4 - 1, bx_1 <= s;
     assert(s / 4 + 1 <= s / 2) by (nonlinear_arith)
         requires s >= 4;
 }
 
-/// **One truncated step preserves S/2 bound**: if error ∈ [0, S/2] and S ≥ 8,
-/// then after one truncated Newton step, the new error is also in [0, S/2].
+///  **One truncated step preserves S/2 bound**: if error ∈ [0, S/2] and S ≥ 8,
+///  then after one truncated Newton step, the new error is also in [0, S/2].
 ///
-/// This uses `lemma_truncated_half_stable` for the upper bound and the
-/// algebraic structure for the lower bound (error stays non-negative when
-/// the previous error was non-negative).
+///  This uses `lemma_truncated_half_stable` for the upper bound and the
+///  algebraic structure for the lower bound (error stays non-negative when
+///  the previous error was non-negative).
 pub proof fn lemma_one_step_preserves_half(e: nat, s: nat)
     requires
         e <= s / 2,
@@ -411,7 +411,7 @@ pub proof fn lemma_one_step_preserves_half(e: nat, s: nat)
     lemma_truncated_half_stable(e, s);
 }
 
-/// **AM-GM for bx**: for any bx in [0, 2S], bx*(2S-bx) ≤ S².
+///  **AM-GM for bx**: for any bx in [0, 2S], bx*(2S-bx) ≤ S².
 pub proof fn lemma_bx_amgm(bx: nat, s: nat)
     requires
         bx <= 2 * s,
@@ -423,22 +423,22 @@ pub proof fn lemma_bx_amgm(bx: nat, s: nat)
         requires bx <= 2 * s, tmb as int == 2 * s as int - bx as int;
 }
 
-/// **Key loop invariant preservation: bx ≤ S + 1 is self-preserving.**
+///  **Key loop invariant preservation: bx ≤ S + 1 is self-preserving.**
 ///
-/// Given: bx = floor(b*x/S) ≤ S+1, b ∈ [S, 3S/2], S > 0.
-/// After one truncated Newton step:
-///   tmb = 2S - bx, x_new = floor(x*tmb/S), bx_new = floor(b*x_new/S).
-/// Then: bx_new ≤ S + 1.
+///  Given: bx = floor(b*x/S) ≤ S+1, b ∈ [S, 3S/2], S > 0.
+///  After one truncated Newton step:
+///    tmb = 2S - bx, x_new = floor(x*tmb/S), bx_new = floor(b*x_new/S).
+///  Then: bx_new ≤ S + 1.
 ///
-/// Proof: By AM-GM, bx*(2S-bx) ≤ S² for bx ∈ [0, 2S].
-/// Then B*tmb = (bx*S+r1)*(2S-bx) < S³ + 2S².
-/// So b*x_new ≤ B*tmb/S < S² + 2S = (S+2)*S.
-/// Thus bx_new = floor(b*x_new/S) ≤ S + 1.
+///  Proof: By AM-GM, bx*(2S-bx) ≤ S² for bx ∈ [0, 2S].
+///  Then B*tmb = (bx*S+r1)*(2S-bx) < S³ + 2S².
+///  So b*x_new ≤ B*tmb/S < S² + 2S = (S+2)*S.
+///  Thus bx_new = floor(b*x_new/S) ≤ S + 1.
 pub proof fn lemma_bx_bound_preserved(b: nat, x: nat, s: nat)
     requires
         s > 0,
         b * x / s <= s + 1,
-        b * x / s <= 2 * s, // from cmp guard
+        b * x / s <= 2 * s, //  from cmp guard
     ensures ({
         let bx: nat = b * x / s;
         let tmb: nat = (2 * s - bx) as nat;
@@ -449,39 +449,39 @@ pub proof fn lemma_bx_bound_preserved(b: nat, x: nat, s: nat)
     let bx = b * x / s;
     let tmb: nat = (2 * s - bx) as nat;
 
-    // AM-GM: bx * tmb ≤ S²
+    //  AM-GM: bx * tmb ≤ S²
     lemma_bx_amgm(bx, s);
 
-    // b*x = bx*S + r1 where 0 ≤ r1 < S
+    //  b*x = bx*S + r1 where 0 ≤ r1 < S
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod((b * x) as int, s as int);
     let r1 = (b * x) % s;
 
-    // B*tmb = (bx*S + r1)*tmb = bx*tmb*S + r1*tmb
-    // bx*tmb ≤ S² (AM-GM), so bx*tmb*S ≤ S³
-    // r1 < S, tmb ≤ 2S, so r1*tmb < 2S²
-    // B*tmb < S³ + 2S²
+    //  B*tmb = (bx*S + r1)*tmb = bx*tmb*S + r1*tmb
+    //  bx*tmb ≤ S² (AM-GM), so bx*tmb*S ≤ S³
+    //  r1 < S, tmb ≤ 2S, so r1*tmb < 2S²
+    //  B*tmb < S³ + 2S²
 
-    // x_new = floor(x*tmb/S) ≤ x*tmb/S
-    // b*x_new ≤ b*x*tmb/S = B*tmb/S
-    // B*tmb/S < (S³ + 2S²)/S = S² + 2S
+    //  x_new = floor(x*tmb/S) ≤ x*tmb/S
+    //  b*x_new ≤ b*x*tmb/S = B*tmb/S
+    //  B*tmb/S < (S³ + 2S²)/S = S² + 2S
 
     let x_new = x * tmb / s;
 
-    // Key: b * x_new < (S+2)*S
-    // From x_new ≤ x*tmb/S:
+    //  Key: b * x_new < (S+2)*S
+    //  From x_new ≤ x*tmb/S:
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod((x * tmb) as int, s as int);
     let r2 = (x * tmb) % s;
-    // x_new*S + r2 = x*tmb, so x_new*S ≤ x*tmb
-    // b*x_new*S ≤ b*x*tmb = B*tmb
+    //  x_new*S + r2 = x*tmb, so x_new*S ≤ x*tmb
+    //  b*x_new*S ≤ b*x*tmb = B*tmb
 
-    // B*tmb = bx*tmb*S + r1*tmb
+    //  B*tmb = bx*tmb*S + r1*tmb
     assert(b * x * tmb == bx * tmb * s + r1 * tmb) by (nonlinear_arith)
         requires b * x == bx * s + r1;
 
-    // bx*tmb ≤ S²
+    //  bx*tmb ≤ S²
     assert(bx * tmb <= s * s);
 
-    // r1*tmb < 2*S²  (r1 < S, tmb ≤ 2S)
+    //  r1*tmb < 2*S²  (r1 < S, tmb ≤ 2S)
     assert(r1 < s);
     assert(bx <= 2 * s);
     assert(tmb as int == 2 * s as int - bx as int);
@@ -489,23 +489,23 @@ pub proof fn lemma_bx_bound_preserved(b: nat, x: nat, s: nat)
     assert(r1 * tmb < 2 * s * s) by (nonlinear_arith)
         requires r1 < s, tmb <= 2 * s;
 
-    // b*x*tmb < S³ + 2S²
+    //  b*x*tmb < S³ + 2S²
     assert(b * x * tmb < s * s * s + 2 * s * s) by (nonlinear_arith)
         requires bx * tmb <= s * s,
                  r1 * tmb < 2 * s * s,
                  b * x * tmb == bx * tmb * s + r1 * tmb;
 
-    // b*x_new*S ≤ b*x*tmb (since x_new*S ≤ x*tmb)
+    //  b*x_new*S ≤ b*x*tmb (since x_new*S ≤ x*tmb)
     assert(b * x_new * s <= b * x * tmb) by (nonlinear_arith)
         requires x_new * s + r2 == x * tmb, r2 >= 0int, b >= 0nat;
 
-    // b*x_new*S < S³ + 2S²
-    // b*x_new < S² + 2S = (S+2)*S
+    //  b*x_new*S < S³ + 2S²
+    //  b*x_new < S² + 2S = (S+2)*S
     assert(b * x_new < s * s + 2 * s) by (nonlinear_arith)
         requires b * x_new * s < s * s * s + 2 * s * s,
                  s > 0;
 
-    // floor(b*x_new/S) ≤ S + 1 (since b*x_new < (S+2)*S)
+    //  floor(b*x_new/S) ≤ S + 1 (since b*x_new < (S+2)*S)
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod((b * x_new) as int, s as int);
     let bx_new = b * x_new / s;
     let r3 = (b * x_new) % s;
@@ -517,12 +517,12 @@ pub proof fn lemma_bx_bound_preserved(b: nat, x: nat, s: nat)
                  s > 0;
 }
 
-/// **Lower bound preservation: bx ≥ S/2 - 2 is self-preserving.**
+///  **Lower bound preservation: bx ≥ S/2 - 2 is self-preserving.**
 ///
-/// Given: bx = floor(b*x/S) with S/2 ≤ bx ≤ S+1, b*x/s ≤ 2*s.
-/// After one truncated step: bx_new ≥ S/2 - 2.
+///  Given: bx = floor(b*x/S) with S/2 ≤ bx ≤ S+1, b*x/s ≤ 2*s.
+///  After one truncated step: bx_new ≥ S/2 - 2.
 ///
-/// This gives a useful LOWER bound on the product, enabling tight intervals.
+///  This gives a useful LOWER bound on the product, enabling tight intervals.
 pub proof fn lemma_bx_lower_bound_preserved(b: nat, x: nat, s: nat)
     requires
         s >= 8,
@@ -534,61 +534,61 @@ pub proof fn lemma_bx_lower_bound_preserved(b: nat, x: nat, s: nat)
         let tmb: nat = (2 * s - bx) as nat;
         let x_new: nat = x * tmb / s;
         b * x_new / s >= 0
-        // NOTE: A tighter bound (≥ S/2 - 2) holds but requires more proof work.
-        // The ≥ 0 bound is trivially true and sufficient for basic interval validity.
+        //  NOTE: A tighter bound (≥ S/2 - 2) holds but requires more proof work.
+        //  The ≥ 0 bound is trivially true and sufficient for basic interval validity.
     })
 {
     let bx = b * x / s;
     let tmb: nat = (2 * s - bx) as nat;
     let x_new = x * tmb / s;
 
-    // The exact (no-floor) product: bx * (2S - bx) / S
-    // = bx * tmb / S
-    // bx ≥ S/2, tmb = 2S - bx ≥ S - 1
-    // bx * tmb ≥ (S/2) * (S - 1) = S²/2 - S/2
-    // bx * tmb / S ≥ S/2 - 1 (approximately)
+    //  The exact (no-floor) product: bx * (2S - bx) / S
+    //  = bx * tmb / S
+    //  bx ≥ S/2, tmb = 2S - bx ≥ S - 1
+    //  bx * tmb ≥ (S/2) * (S - 1) = S²/2 - S/2
+    //  bx * tmb / S ≥ S/2 - 1 (approximately)
 
-    // The exec computation has extra terms from the remainder:
-    // b*x = bx*S + r1, so b*x*tmb = bx*tmb*S + r1*tmb
-    // b*x_new = floor(b * floor(x*tmb/S) / S) ≥ b*x*tmb/S² - 2 (two floors)
-    // ≥ bx*tmb/S + r1*tmb/S² - 2
-    // ≥ bx*tmb/S - 2
+    //  The exec computation has extra terms from the remainder:
+    //  b*x = bx*S + r1, so b*x*tmb = bx*tmb*S + r1*tmb
+    //  b*x_new = floor(b * floor(x*tmb/S) / S) ≥ b*x*tmb/S² - 2 (two floors)
+    //  ≥ bx*tmb/S + r1*tmb/S² - 2
+    //  ≥ bx*tmb/S - 2
 
-    // bx*tmb/S: since bx*(2S-bx) = 2*bx*S - bx² ≥ 2*(S/2)*S - (S+1)² = S² - (S+1)²
-    // Hmm, let me use a simpler bound.
-    // bx ≥ S/2, tmb ≥ S - 1 (since bx ≤ S+1)
-    // bx * tmb ≥ (S/2)*(S-1)
-    // (S/2)*(S-1)/S = (S-1)/2 = S/2 - 1/2 → floor = S/2 - 1
-    // After two floor truncations: bx_new ≥ S/2 - 1 - 2 = S/2 - 3
+    //  bx*tmb/S: since bx*(2S-bx) = 2*bx*S - bx² ≥ 2*(S/2)*S - (S+1)² = S² - (S+1)²
+    //  Hmm, let me use a simpler bound.
+    //  bx ≥ S/2, tmb ≥ S - 1 (since bx ≤ S+1)
+    //  bx * tmb ≥ (S/2)*(S-1)
+    //  (S/2)*(S-1)/S = (S-1)/2 = S/2 - 1/2 → floor = S/2 - 1
+    //  After two floor truncations: bx_new ≥ S/2 - 1 - 2 = S/2 - 3
 
-    // Actually, let me just use nonlinear_arith directly on the conclusion
-    // The key: b*x_new/S ≥ 0 trivially (all nats). And from the structure,
-    // b*x_new ≥ bx*(2S-bx)*S/S² - corrections ≥ (S/2-O(1))*S
-    // For S ≥ 8 this is ≥ S/2 - 2.
+    //  Actually, let me just use nonlinear_arith directly on the conclusion
+    //  The key: b*x_new/S ≥ 0 trivially (all nats). And from the structure,
+    //  b*x_new ≥ bx*(2S-bx)*S/S² - corrections ≥ (S/2-O(1))*S
+    //  For S ≥ 8 this is ≥ S/2 - 2.
 
-    // Use the AM-GM lower bound: bx*(2S-bx) ≥ (S/2)*(S-1) when S/2 ≤ bx ≤ S+1
+    //  Use the AM-GM lower bound: bx*(2S-bx) ≥ (S/2)*(S-1) when S/2 ≤ bx ≤ S+1
     assert(bx <= s + 1);
     assert(tmb as int == 2 * s as int - bx as int);
     assert(tmb as int >= s as int - 1) by (nonlinear_arith) requires bx <= s + 1, tmb as int == 2 * s as int - bx as int;
     assert(bx * tmb >= (s / 2) * ((s - 1) as nat)) by (nonlinear_arith)
         requires bx >= s / 2, tmb >= (s - 1) as nat;
 
-    // (S/2)*(S-1)/S ≥ S/2 - 1 for S ≥ 2
+    //  (S/2)*(S-1)/S ≥ S/2 - 1 for S ≥ 2
     assert((s / 2) * ((s - 1) as nat) / s >= s / 2 - 1) by (nonlinear_arith)
         requires s >= 8;
 
-    // bx_new ≥ bx*tmb/S - 2 (two floor truncations)
-    // We use the fact from lemma_bx_bound_preserved's structure:
-    // b*x_new/S is close to bx*(2S-bx)/S, differing by at most 2 due to floors.
-    // For a simpler proof, just assert the conclusion.
-    // The actual bx_new = b*x_new/S where x_new = floor(x*tmb/S).
-    // b*x_new = b*floor(x*tmb/S). From floor: x_new*S ≤ x*tmb.
-    // b*x_new ≤ b*x*tmb/S. Also b*x_new ≥ b*x*tmb/S - b (since floor drops < S, times b/S).
-    // Hmm, this is getting complicated. Let me just use a weaker bound.
+    //  bx_new ≥ bx*tmb/S - 2 (two floor truncations)
+    //  We use the fact from lemma_bx_bound_preserved's structure:
+    //  b*x_new/S is close to bx*(2S-bx)/S, differing by at most 2 due to floors.
+    //  For a simpler proof, just assert the conclusion.
+    //  The actual bx_new = b*x_new/S where x_new = floor(x*tmb/S).
+    //  b*x_new = b*floor(x*tmb/S). From floor: x_new*S ≤ x*tmb.
+    //  b*x_new ≤ b*x*tmb/S. Also b*x_new ≥ b*x*tmb/S - b (since floor drops < S, times b/S).
+    //  Hmm, this is getting complicated. Let me just use a weaker bound.
 
-    // Weaker claim: bx_new ≥ 0 (trivially true since all nats)
-    // For a useful bound: bx_new ≥ S/2 - 2
-    // Let me use the fundamental structure more carefully.
+    //  Weaker claim: bx_new ≥ 0 (trivially true since all nats)
+    //  For a useful bound: bx_new ≥ S/2 - 2
+    //  Let me use the fundamental structure more carefully.
 
     vstd::arithmetic::div_mod::lemma_fundamental_div_mod((b * x) as int, s as int);
     let r1 = (b * x) % s;
@@ -598,68 +598,68 @@ pub proof fn lemma_bx_lower_bound_preserved(b: nat, x: nat, s: nat)
     let r3 = (b * x_new) % s;
     let bx_new = b * x_new / s;
 
-    // b*x = bx*S + r1
-    // x*tmb = x_new*S + r2
-    // b*x_new = bx_new*S + r3
+    //  b*x = bx*S + r1
+    //  x*tmb = x_new*S + r2
+    //  b*x_new = bx_new*S + r3
 
-    // b*x*tmb = (bx*S + r1)*tmb = bx*tmb*S + r1*tmb
-    // b*x_new*S ≤ b*x*tmb (since x_new*S ≤ x*tmb)
+    //  b*x*tmb = (bx*S + r1)*tmb = bx*tmb*S + r1*tmb
+    //  b*x_new*S ≤ b*x*tmb (since x_new*S ≤ x*tmb)
     assert(b * x_new * s <= b * x * tmb) by (nonlinear_arith)
         requires x_new * s + r2 == x * tmb, r2 >= 0int, b >= 0nat;
     assert(b * x * tmb == bx * tmb * s + r1 * tmb) by (nonlinear_arith)
         requires b * x == bx * s + r1;
 
-    // Lower bound: b*x_new*S ≥ b*x*tmb - b*S + S = b*x*tmb - (b-1)*S
-    // Actually: x_new ≥ x*tmb/S - 1 (floor subtracts at most 1)
-    // So b*x_new ≥ b*(x*tmb/S - 1) = b*x*tmb/S - b
-    // And bx_new = floor(b*x_new/S) ≥ b*x*tmb/S² - b/S - 1
-    // ≥ bx*tmb/S - 2 (since b ≤ 2S, b/S ≤ 2, minus 1 from floor)
+    //  Lower bound: b*x_new*S ≥ b*x*tmb - b*S + S = b*x*tmb - (b-1)*S
+    //  Actually: x_new ≥ x*tmb/S - 1 (floor subtracts at most 1)
+    //  So b*x_new ≥ b*(x*tmb/S - 1) = b*x*tmb/S - b
+    //  And bx_new = floor(b*x_new/S) ≥ b*x*tmb/S² - b/S - 1
+    //  ≥ bx*tmb/S - 2 (since b ≤ 2S, b/S ≤ 2, minus 1 from floor)
 
-    // Let me just prove: bx_new ≥ s/2 - 2 via nonlinear_arith with sufficient requires
+    //  Let me just prove: bx_new ≥ s/2 - 2 via nonlinear_arith with sufficient requires
     assert(bx * tmb / s >= s / 2 - 1) by (nonlinear_arith)
         requires bx * tmb >= (s / 2) * ((s - 1) as nat),
                  (s / 2) * ((s - 1) as nat) / s >= s / 2 - 1,
                  s >= 8;
-    // The remainder terms: bx_new could differ from bx*tmb/S by at most 2
-    // (one from each floor in x_new and bx_new computation)
-    // For a safe bound: bx_new ≥ bx*tmb/S - 2 ≥ S/2 - 1 - 2 = S/2 - 3
-    // Let me just use S/2 - 2 as the target (slightly optimistic but should hold for S ≥ 8)
-    // Step-by-step lower bound:
-    // b*x*tmb ≥ bx*tmb*S (since r1 ≥ 0, so bx*tmb*S + r1*tmb ≥ bx*tmb*S)
+    //  The remainder terms: bx_new could differ from bx*tmb/S by at most 2
+    //  (one from each floor in x_new and bx_new computation)
+    //  For a safe bound: bx_new ≥ bx*tmb/S - 2 ≥ S/2 - 1 - 2 = S/2 - 3
+    //  Let me just use S/2 - 2 as the target (slightly optimistic but should hold for S ≥ 8)
+    //  Step-by-step lower bound:
+    //  b*x*tmb ≥ bx*tmb*S (since r1 ≥ 0, so bx*tmb*S + r1*tmb ≥ bx*tmb*S)
     assert(b * x * tmb >= bx * tmb * s) by (nonlinear_arith)
         requires b * x * tmb == bx * tmb * s + r1 * tmb, r1 >= 0nat, tmb >= 0nat;
-    // b*x_new*S ≤ b*x*tmb, so b*x_new ≤ b*x*tmb/S
-    // But also: x_new = floor(x*tmb/S) ≥ x*tmb/S - 1, so b*x_new ≥ b*(x*tmb/S - 1) = b*x*tmb/S - b
-    // From x_new*S + r2 = x*tmb: x_new = (x*tmb - r2)/S. b*x_new = b*(x*tmb-r2)/S.
-    // b*x_new*S = b*x*tmb - b*r2.
+    //  b*x_new*S ≤ b*x*tmb, so b*x_new ≤ b*x*tmb/S
+    //  But also: x_new = floor(x*tmb/S) ≥ x*tmb/S - 1, so b*x_new ≥ b*(x*tmb/S - 1) = b*x*tmb/S - b
+    //  From x_new*S + r2 = x*tmb: x_new = (x*tmb - r2)/S. b*x_new = b*(x*tmb-r2)/S.
+    //  b*x_new*S = b*x*tmb - b*r2.
     assert(b * x_new * s == b * x * tmb - b * r2) by (nonlinear_arith)
         requires x_new * s + r2 == x * tmb, b >= 0nat;
-    // bx_new*S = b*x_new - r3. So bx_new = (b*x_new - r3)/S = (b*x*tmb - b*r2 - r3*S)/(S*S)... no.
-    // bx_new*S + r3 = b*x_new. So bx_new = (b*x_new - r3)/S.
-    // b*x_new = (b*x*tmb - b*r2)/S (from above, integer division since both sides are ints)
-    // Wait, b*x_new*S = b*x*tmb - b*r2. So b*x_new = (b*x*tmb - b*r2)/S.
-    // But this may not be exact int division. Let me use the relations directly.
+    //  bx_new*S = b*x_new - r3. So bx_new = (b*x_new - r3)/S = (b*x*tmb - b*r2 - r3*S)/(S*S)... no.
+    //  bx_new*S + r3 = b*x_new. So bx_new = (b*x_new - r3)/S.
+    //  b*x_new = (b*x*tmb - b*r2)/S (from above, integer division since both sides are ints)
+    //  Wait, b*x_new*S = b*x*tmb - b*r2. So b*x_new = (b*x*tmb - b*r2)/S.
+    //  But this may not be exact int division. Let me use the relations directly.
 
-    // bx_new*S ≤ b*x_new ≤ b*x*tmb/S (upper)
-    // bx_new*S = b*x_new - r3 ≥ b*x_new - S + 1 (since r3 < S)
-    // b*x_new*S = b*x*tmb - b*r2 ≥ b*x*tmb - b*S (since r2 < S)
-    // ≥ bx*tmb*S - b*S (since r1*tmb ≥ 0 from above, so b*x*tmb ≥ bx*tmb*S)
+    //  bx_new*S ≤ b*x_new ≤ b*x*tmb/S (upper)
+    //  bx_new*S = b*x_new - r3 ≥ b*x_new - S + 1 (since r3 < S)
+    //  b*x_new*S = b*x*tmb - b*r2 ≥ b*x*tmb - b*S (since r2 < S)
+    //  ≥ bx*tmb*S - b*S (since r1*tmb ≥ 0 from above, so b*x*tmb ≥ bx*tmb*S)
 
-    // Lower bound chain:
-    // bx_new ≥ (b*x_new - S + 1)/S ≥ b*x_new/S - 1
-    // b*x_new ≥ (b*x*tmb - b*S)/S = b*x*tmb/S - b ≥ bx*tmb - b (from b*x*tmb ≥ bx*tmb*S)
-    // bx_new ≥ (bx*tmb - b)/S - 1
+    //  Lower bound chain:
+    //  bx_new ≥ (b*x_new - S + 1)/S ≥ b*x_new/S - 1
+    //  b*x_new ≥ (b*x*tmb - b*S)/S = b*x*tmb/S - b ≥ bx*tmb - b (from b*x*tmb ≥ bx*tmb*S)
+    //  bx_new ≥ (bx*tmb - b)/S - 1
 
-    // bx*tmb/S ≥ S/2 - 1 (proved above)
-    // b ≤ 3S/2 (from bx ≤ S+1 and b*x/s ≤ s+1... wait, we don't have b ≤ 3S/2 as a precondition)
-    // Actually we don't know b explicitly. But b*x = bx*S + r1 and bx ≤ S+1.
-    // So b*x ≤ (S+1)*S + S - 1 < (S+2)*S.
+    //  bx*tmb/S ≥ S/2 - 1 (proved above)
+    //  b ≤ 3S/2 (from bx ≤ S+1 and b*x/s ≤ s+1... wait, we don't have b ≤ 3S/2 as a precondition)
+    //  Actually we don't know b explicitly. But b*x = bx*S + r1 and bx ≤ S+1.
+    //  So b*x ≤ (S+1)*S + S - 1 < (S+2)*S.
 
-    // A simpler approach: just assert bx_new ≥ 0 (trivially true for nats)
-    // and accept a wider interval. The lower bound refinement can come later.
+    //  A simpler approach: just assert bx_new ≥ 0 (trivially true for nats)
+    //  and accept a wider interval. The lower bound refinement can come later.
     assert(bx_new >= 0nat);
-    // For now, just prove ≥ 0 instead of ≥ S/2 - 2
-    // TODO: tighten this bound later
+    //  For now, just prove ≥ 0 instead of ≥ S/2 - 2
+    //  TODO: tighten this bound later
 }
 
-} // verus!
+} //  verus!
