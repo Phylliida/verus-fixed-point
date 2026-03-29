@@ -8,9 +8,9 @@ use super::view_lemmas::*;
 verus! {
 
 impl FixedPoint {
-    // ── Negation ───────────────────────────────────────
+    //  ── Negation ───────────────────────────────────────
 
-    /// Negate a FixedPoint. Same limbs, flipped sign (with canonical zero handling).
+    ///  Negate a FixedPoint. Same limbs, flipped sign (with canonical zero handling).
     pub open spec fn neg_spec(self) -> FixedPoint {
         FixedPoint {
             limbs: self.limbs,
@@ -20,34 +20,34 @@ impl FixedPoint {
         }
     }
 
-    /// Negation preserves well-formedness.
+    ///  Negation preserves well-formedness.
     pub proof fn lemma_neg_wf(a: FixedPoint)
         requires a.wf_spec(),
         ensures a.neg_spec().wf_spec(),
     {
         let result = a.neg_spec();
-        // limbs unchanged, n unchanged, frac unchanged
-        // canonical zero: if result.sign == true, then limbs_to_nat != 0
-        // (we only set sign to !a.sign when magnitude != 0)
+        //  limbs unchanged, n unchanged, frac unchanged
+        //  canonical zero: if result.sign == true, then limbs_to_nat != 0
+        //  (we only set sign to !a.sign when magnitude != 0)
     }
 
-    /// Negation preserves format.
+    ///  Negation preserves format.
     pub proof fn lemma_neg_same_format(a: FixedPoint)
         ensures a.neg_spec().same_format(a),
     {}
 
-    /// signed_value of negation is negated.
+    ///  signed_value of negation is negated.
     pub proof fn lemma_neg_signed_value(a: FixedPoint)
         requires a.wf_spec(),
         ensures a.neg_spec().signed_value() == -a.signed_value(),
     {
         let mag = limbs_to_nat(a.limbs);
         if mag == 0 {
-            // Both sides are 0
+            //  Both sides are 0
             assert(a.signed_value() == 0);
             assert(a.neg_spec().signed_value() == 0);
         } else {
-            // Sign flips
+            //  Sign flips
             if a.sign {
                 assert(a.signed_value() == -(mag as int));
                 assert(a.neg_spec().sign == false);
@@ -60,7 +60,7 @@ impl FixedPoint {
         }
     }
 
-    /// Negation view corresponds to Rational negation.
+    ///  Negation view corresponds to Rational negation.
     pub proof fn lemma_neg_view(a: FixedPoint)
         requires a.wf_spec(),
         ensures a.neg_spec().view().eqv_spec(a.view().neg_spec()),
@@ -74,36 +74,36 @@ impl FixedPoint {
         lemma_pow2_positive(a.frac);
         assert(d > 0);
 
-        // a.neg_spec().view() == from_frac_spec(-a.signed_value(), d)
-        // a.view().neg_spec() == from_frac_spec(a.signed_value(), d).neg_spec()
-        //                     == from_frac_spec(-a.signed_value(), d)  [by lemma_from_frac_neg]
+        //  a.neg_spec().view() == from_frac_spec(-a.signed_value(), d)
+        //  a.view().neg_spec() == from_frac_spec(a.signed_value(), d).neg_spec()
+        //                      == from_frac_spec(-a.signed_value(), d)  [by lemma_from_frac_neg]
         lemma_from_frac_neg(a.signed_value(), d);
         Rational::lemma_eqv_reflexive(a.neg_spec().view());
     }
 
-    /// Double negation roundtrip.
+    ///  Double negation roundtrip.
     pub proof fn lemma_neg_involution(a: FixedPoint)
         requires a.wf_spec(),
         ensures a.neg_spec().neg_spec() == a,
     {
         let mag = limbs_to_nat(a.limbs);
         if mag == 0 {
-            // Both neg_specs leave sign as false, limbs unchanged
+            //  Both neg_specs leave sign as false, limbs unchanged
         } else {
-            // First neg flips sign, second flips back
+            //  First neg flips sign, second flips back
         }
     }
 
-    // ── Addition ───────────────────────────────────────
+    //  ── Addition ───────────────────────────────────────
 
-    /// No-overflow condition for addition.
+    ///  No-overflow condition for addition.
     pub open spec fn add_no_overflow(a: FixedPoint, b: FixedPoint) -> bool {
         let sv = a.signed_value() + b.signed_value();
         let mag: nat = if sv >= 0 { sv as nat } else { (-sv) as nat };
         mag < pow2((a.n * 32) as nat)
     }
 
-    /// Addition of two same-format FixedPoints.
+    ///  Addition of two same-format FixedPoints.
     pub open spec fn add_spec(self, rhs: FixedPoint) -> FixedPoint {
         let sv = self.signed_value() + rhs.signed_value();
         let magnitude: nat = if sv >= 0 { sv as nat } else { (-sv) as nat };
@@ -115,7 +115,7 @@ impl FixedPoint {
         }
     }
 
-    /// Addition preserves well-formedness (when no overflow).
+    ///  Addition preserves well-formedness (when no overflow).
     pub proof fn lemma_add_wf(a: FixedPoint, b: FixedPoint)
         requires
             a.wf_spec(),
@@ -130,21 +130,21 @@ impl FixedPoint {
         let magnitude: nat = if sv >= 0 { sv as nat } else { (-sv) as nat };
         let result = a.add_spec(b);
 
-        // limbs.len() == n
+        //  limbs.len() == n
         lemma_nat_to_limbs_len(magnitude, a.n);
         assert(result.limbs.len() == a.n);
 
-        // n > 0 and frac <= n * 32 inherited from a
+        //  n > 0 and frac <= n * 32 inherited from a
         assert(result.n == a.n);
         assert(result.frac == a.frac);
 
-        // canonical zero: sign == true ==> magnitude != 0
-        // sign == (sv < 0). If sv < 0, then magnitude = (-sv) > 0.
-        // limbs_to_nat(nat_to_limbs(magnitude, n)) == magnitude [by roundtrip]
+        //  canonical zero: sign == true ==> magnitude != 0
+        //  sign == (sv < 0). If sv < 0, then magnitude = (-sv) > 0.
+        //  limbs_to_nat(nat_to_limbs(magnitude, n)) == magnitude [by roundtrip]
         lemma_nat_to_limbs_roundtrip(magnitude, a.n);
     }
 
-    /// signed_value of the sum equals the sum of signed_values.
+    ///  signed_value of the sum equals the sum of signed_values.
     pub proof fn lemma_add_signed_value(a: FixedPoint, b: FixedPoint)
         requires
             a.wf_spec(),
@@ -157,7 +157,7 @@ impl FixedPoint {
         let sv = a.signed_value() + b.signed_value();
         let magnitude: nat = if sv >= 0 { sv as nat } else { (-sv) as nat };
 
-        // limbs_to_nat(nat_to_limbs(magnitude, n)) == magnitude
+        //  limbs_to_nat(nat_to_limbs(magnitude, n)) == magnitude
         lemma_nat_to_limbs_roundtrip(magnitude, a.n);
         let result = a.add_spec(b);
 
@@ -172,7 +172,7 @@ impl FixedPoint {
         }
     }
 
-    /// Addition view corresponds to Rational addition.
+    ///  Addition view corresponds to Rational addition.
     pub proof fn lemma_add_view(a: FixedPoint, b: FixedPoint)
         requires
             a.wf_spec(),
@@ -191,16 +191,16 @@ impl FixedPoint {
         let d = pow2(a.frac) as int;
         lemma_pow2_positive(a.frac);
 
-        // result.view() == from_frac_spec(sv_a + sv_b, d)
-        // a.view().add_spec(b.view()) == from_frac_spec(sv_a, d).add_spec(from_frac_spec(sv_b, d))
-        // By lemma_from_frac_add_same_denom: eqv to from_frac_spec(sv_a + sv_b, d)
+        //  result.view() == from_frac_spec(sv_a + sv_b, d)
+        //  a.view().add_spec(b.view()) == from_frac_spec(sv_a, d).add_spec(from_frac_spec(sv_b, d))
+        //  By lemma_from_frac_add_same_denom: eqv to from_frac_spec(sv_a + sv_b, d)
         lemma_from_frac_add_same_denom(a.signed_value(), b.signed_value(), d);
         Rational::lemma_eqv_reflexive(a.add_spec(b).view());
 
-        // result.view() == from_frac_spec(sv_a + sv_b, d)
-        // from_frac_spec(sv_a, d).add_spec(from_frac_spec(sv_b, d)) eqv from_frac_spec(sv_a + sv_b, d)
-        // So result.view() eqv from_frac_spec(sv_a, d).add_spec(from_frac_spec(sv_b, d))
-        // == a.view().add_spec(b.view())
+        //  result.view() == from_frac_spec(sv_a + sv_b, d)
+        //  from_frac_spec(sv_a, d).add_spec(from_frac_spec(sv_b, d)) eqv from_frac_spec(sv_a + sv_b, d)
+        //  So result.view() eqv from_frac_spec(sv_a, d).add_spec(from_frac_spec(sv_b, d))
+        //  == a.view().add_spec(b.view())
         Rational::lemma_eqv_symmetric(
             Rational::from_frac_spec(a.signed_value(), d).add_spec(Rational::from_frac_spec(b.signed_value(), d)),
             Rational::from_frac_spec(a.signed_value() + b.signed_value(), d)
@@ -212,28 +212,28 @@ impl FixedPoint {
         );
     }
 
-    /// Addition is commutative.
+    ///  Addition is commutative.
     pub proof fn lemma_add_commutative(a: FixedPoint, b: FixedPoint)
         requires a.wf_spec(), b.wf_spec(), a.same_format(b),
         ensures a.add_spec(b) == b.add_spec(a),
     {
-        // signed_value addition is commutative over int
+        //  signed_value addition is commutative over int
         assert(a.signed_value() + b.signed_value() == b.signed_value() + a.signed_value());
     }
 
-    // ── Subtraction ────────────────────────────────────
+    //  ── Subtraction ────────────────────────────────────
 
-    /// No-overflow condition for subtraction.
+    ///  No-overflow condition for subtraction.
     pub open spec fn sub_no_overflow(a: FixedPoint, b: FixedPoint) -> bool {
         Self::add_no_overflow(a, b.neg_spec())
     }
 
-    /// Subtraction: a - b == a + (-b).
+    ///  Subtraction: a - b == a + (-b).
     pub open spec fn sub_spec(self, rhs: FixedPoint) -> FixedPoint {
         self.add_spec(rhs.neg_spec())
     }
 
-    /// Subtraction preserves well-formedness.
+    ///  Subtraction preserves well-formedness.
     pub proof fn lemma_sub_wf(a: FixedPoint, b: FixedPoint)
         requires
             a.wf_spec(),
@@ -249,7 +249,7 @@ impl FixedPoint {
         Self::lemma_add_wf(a, b.neg_spec());
     }
 
-    /// signed_value of difference equals the difference of signed_values.
+    ///  signed_value of difference equals the difference of signed_values.
     pub proof fn lemma_sub_signed_value(a: FixedPoint, b: FixedPoint)
         requires
             a.wf_spec(),
@@ -265,7 +265,7 @@ impl FixedPoint {
         Self::lemma_add_signed_value(a, b.neg_spec());
     }
 
-    /// Subtraction view corresponds to Rational subtraction.
+    ///  Subtraction view corresponds to Rational subtraction.
     pub proof fn lemma_sub_view(a: FixedPoint, b: FixedPoint)
         requires
             a.wf_spec(),
@@ -289,8 +289,8 @@ impl FixedPoint {
         let sv_a = a.signed_value();
         let sv_b = b.signed_value();
 
-        // result.view() == from_frac_spec(sv_a - sv_b, d)
-        // a.view().sub_spec(b.view()) == from_frac_spec(sv_a, d).sub_spec(from_frac_spec(sv_b, d))
+        //  result.view() == from_frac_spec(sv_a - sv_b, d)
+        //  a.view().sub_spec(b.view()) == from_frac_spec(sv_a, d).sub_spec(from_frac_spec(sv_b, d))
         lemma_from_frac_sub_same_denom(sv_a, sv_b, d);
         Rational::lemma_eqv_symmetric(
             Rational::from_frac_spec(sv_a, d).sub_spec(Rational::from_frac_spec(sv_b, d)),
@@ -303,9 +303,9 @@ impl FixedPoint {
         );
     }
 
-    // ── Multiplication ─────────────────────────────────
+    //  ── Multiplication ─────────────────────────────────
 
-    /// Multiplication with widening: result has 2n limbs and 2*frac fractional bits.
+    ///  Multiplication with widening: result has 2n limbs and 2*frac fractional bits.
     pub open spec fn mul_spec(self, rhs: FixedPoint) -> FixedPoint {
         let sv = self.signed_value() * rhs.signed_value();
         let magnitude: nat = if sv >= 0 { sv as nat } else { (-sv) as nat };
@@ -317,7 +317,7 @@ impl FixedPoint {
         }
     }
 
-    /// Product magnitude always fits in 2n limbs (no overflow possible).
+    ///  Product magnitude always fits in 2n limbs (no overflow possible).
     pub proof fn lemma_mul_no_overflow(a: FixedPoint, b: FixedPoint)
         requires a.wf_spec(), b.wf_spec(), a.same_format(b),
         ensures
@@ -331,27 +331,27 @@ impl FixedPoint {
         let mag_b = limbs_to_nat(b.limbs);
         lemma_limbs_to_nat_upper_bound(a.limbs);
         lemma_limbs_to_nat_upper_bound(b.limbs);
-        // mag_a < pow2(n*32), mag_b < pow2(n*32)
+        //  mag_a < pow2(n*32), mag_b < pow2(n*32)
         let bound = pow2((a.n * 32) as nat);
         assert(mag_a < bound);
         assert(mag_b < bound);
 
-        // |sv_a * sv_b| == mag_a * mag_b < bound * bound
+        //  |sv_a * sv_b| == mag_a * mag_b < bound * bound
         assert(mag_a * mag_b < bound * bound) by (nonlinear_arith)
             requires mag_a < bound, mag_b < bound, bound > 0,
         {
         }
         lemma_pow2_positive((a.n * 32) as nat);
 
-        // bound * bound == pow2(2 * n * 32)
+        //  bound * bound == pow2(2 * n * 32)
         lemma_pow2_double((a.n * 32) as nat);
         assert(2 * (a.n * 32) == 2 * a.n * 32);
 
-        // |signed_value product| == mag_a * mag_b
+        //  |signed_value product| == mag_a * mag_b
         let sv = a.signed_value() * b.signed_value();
         let product_mag: nat = if sv >= 0 { sv as nat } else { (-sv) as nat };
-        // Need: product_mag == mag_a * mag_b
-        // Show |sv| == mag_a * mag_b
+        //  Need: product_mag == mag_a * mag_b
+        //  Show |sv| == mag_a * mag_b
         let sv_a = a.signed_value();
         let sv_b = b.signed_value();
         assert(sv == sv_a * sv_b);
@@ -384,7 +384,7 @@ impl FixedPoint {
         }
     }
 
-    /// Multiplication preserves well-formedness.
+    ///  Multiplication preserves well-formedness.
     pub proof fn lemma_mul_wf(a: FixedPoint, b: FixedPoint)
         requires a.wf_spec(), b.wf_spec(), a.same_format(b),
         ensures
@@ -399,13 +399,13 @@ impl FixedPoint {
         lemma_nat_to_limbs_len(magnitude, 2 * a.n);
         lemma_nat_to_limbs_roundtrip(magnitude, 2 * a.n);
 
-        // 2 * n > 0 since n > 0
+        //  2 * n > 0 since n > 0
         assert(2 * a.n > 0);
-        // 2 * frac <= 2 * n * 32 since frac <= n * 32
+        //  2 * frac <= 2 * n * 32 since frac <= n * 32
         assert(2 * a.frac <= 2 * a.n * 32);
     }
 
-    /// signed_value of product equals product of signed_values.
+    ///  signed_value of product equals product of signed_values.
     pub proof fn lemma_mul_signed_value(a: FixedPoint, b: FixedPoint)
         requires a.wf_spec(), b.wf_spec(), a.same_format(b),
         ensures a.mul_spec(b).signed_value() == a.signed_value() * b.signed_value(),
@@ -423,7 +423,7 @@ impl FixedPoint {
         }
     }
 
-    /// Multiplication view corresponds to Rational multiplication.
+    ///  Multiplication view corresponds to Rational multiplication.
     pub proof fn lemma_mul_view(a: FixedPoint, b: FixedPoint)
         requires a.wf_spec(), b.wf_spec(), a.same_format(b),
         ensures a.mul_spec(b).view().eqv_spec(a.view().mul_spec(b.view())),
@@ -444,10 +444,10 @@ impl FixedPoint {
         let sv_a = a.signed_value();
         let sv_b = b.signed_value();
 
-        // result.view() == from_frac_spec(sv_a * sv_b, d_prod)
-        // a.view().mul_spec(b.view()) == from_frac_spec(sv_a, d_a).mul_spec(from_frac_spec(sv_b, d_b))
-        // == from_frac_spec(sv_a * sv_b, d_a * d_b)  [by lemma_from_frac_mul]
-        // d_a * d_b == pow2(frac) * pow2(frac) == pow2(2*frac) == d_prod
+        //  result.view() == from_frac_spec(sv_a * sv_b, d_prod)
+        //  a.view().mul_spec(b.view()) == from_frac_spec(sv_a, d_a).mul_spec(from_frac_spec(sv_b, d_b))
+        //  == from_frac_spec(sv_a * sv_b, d_a * d_b)  [by lemma_from_frac_mul]
+        //  d_a * d_b == pow2(frac) * pow2(frac) == pow2(2*frac) == d_prod
         lemma_from_frac_mul(sv_a, sv_b, d_a, d_b);
         lemma_pow2_double(a.frac);
         assert(d_a * d_b == d_prod) by (nonlinear_arith)
@@ -460,11 +460,11 @@ impl FixedPoint {
         {
         }
 
-        // So a.view().mul_spec(b.view()) == from_frac_spec(sv_a * sv_b, d_prod) == result.view()
+        //  So a.view().mul_spec(b.view()) == from_frac_spec(sv_a * sv_b, d_prod) == result.view()
         Rational::lemma_eqv_reflexive(a.mul_spec(b).view());
     }
 
-    /// Multiplication is commutative.
+    ///  Multiplication is commutative.
     pub proof fn lemma_mul_commutative(a: FixedPoint, b: FixedPoint)
         requires a.wf_spec(), b.wf_spec(), a.same_format(b),
         ensures a.mul_spec(b) == b.mul_spec(a),
@@ -473,4 +473,4 @@ impl FixedPoint {
     }
 }
 
-} // verus!
+} //  verus!

@@ -42,18 +42,18 @@ is explicit and tracked by interval width.
 ### FixedPoint<const N: usize, const FRAC: usize>
 
 ```rust
-/// Fixed-point number with N u32 limbs, FRAC fractional bits.
-/// Sign-magnitude representation: separate sign + unsigned limbs.
+///  Fixed-point number with N u32 limbs, FRAC fractional bits.
+///  Sign-magnitude representation: separate sign + unsigned limbs.
 ///
-/// Total magnitude bits: N * 32
-/// Integer bits: N * 32 - FRAC
-/// Fractional bits: FRAC
+///  Total magnitude bits: N * 32
+///  Integer bits: N * 32 - FRAC
+///  Fractional bits: FRAC
 ///
-/// Represents: (-1)^sign * magnitude * 2^(-FRAC)
-/// where magnitude is the unsigned integer formed by the limbs.
+///  Represents: (-1)^sign * magnitude * 2^(-FRAC)
+///  where magnitude is the unsigned integer formed by the limbs.
 pub struct FixedPoint<const N: usize, const FRAC: usize> {
-    pub sign: bool,           // true = negative
-    pub limbs: [u32; N],      // little-endian unsigned magnitude
+    pub sign: bool,           //  true = negative
+    pub limbs: [u32; N],      //  little-endian unsigned magnitude
 }
 ```
 
@@ -72,7 +72,7 @@ on every operation that constructs a FixedPoint, but it means equality is struct
 **Spec interpretation:**
 ```rust
 impl<const N: usize, const FRAC: usize> FixedPoint<N, FRAC> {
-    /// The exact rational value this fixed-point number represents.
+    ///  The exact rational value this fixed-point number represents.
     pub open spec fn view(&self) -> Rational {
         let magnitude: nat = limbs_to_nat(self.limbs);
         let sign_factor: int = if self.sign { -1 } else { 1 };
@@ -84,18 +84,18 @@ impl<const N: usize, const FRAC: usize> FixedPoint<N, FRAC> {
 ### FixedPointInterval<const N: usize, const FRAC: usize>
 
 ```rust
-/// Interval backed by fixed-point endpoints.
-/// The ghost `exact` tracks the true value being computed on.
+///  Interval backed by fixed-point endpoints.
+///  The ghost `exact` tracks the true value being computed on.
 pub struct FixedPointInterval<const N: usize, const FRAC: usize> {
-    pub lo: FixedPoint<N, FRAC>,    // lower bound (rounded toward -inf)
-    pub hi: FixedPoint<N, FRAC>,    // upper bound (rounded toward +inf)
-    pub model: Ghost<Interval>,      // spec-level interval
+    pub lo: FixedPoint<N, FRAC>,    //  lower bound (rounded toward -inf)
+    pub hi: FixedPoint<N, FRAC>,    //  upper bound (rounded toward +inf)
+    pub model: Ghost<Interval>,      //  spec-level interval
 }
 
-/// Well-formedness:
-///   lo.view() == model@.lo
-///   hi.view() == model@.hi
-///   model@.wf_spec()    (i.e., lo <= hi)
+///  Well-formedness:
+///    lo.view() == model@.lo
+///    hi.view() == model@.hi
+///    model@.wf_spec()    (i.e., lo <= hi)
 ```
 
 ## Operations & Properties
@@ -134,14 +134,14 @@ where the interval layer comes in — `reduce` narrows back to N limbs.
 
 `reduce` is the critical operation:
 ```rust
-/// Narrow a wide interval to working precision.
-/// This is the ONLY place precision is lost.
-/// Proven to preserve containment via existing Interval lemmas.
+///  Narrow a wide interval to working precision.
+///  This is the ONLY place precision is lost.
+///  Proven to preserve containment via existing Interval lemmas.
 pub fn reduce<const M: usize, const FM: usize>(
     wide: FixedPointInterval<M, FM>
 ) -> FixedPointInterval<N, FRAC>
     ensures
-        // anything in the input interval is in the output interval
+        //  anything in the input interval is in the output interval
         forall |x: Rational| wide@.contains(x) ==> result@.contains(x)
 ```
 
@@ -170,9 +170,9 @@ When combining values of different precisions (e.g., a widened mul result with a
 working-precision value), we need `promote`:
 
 ```rust
-/// Widen a FixedPoint to a larger representation.
-/// Zero-extends limbs, adjusts scale. Exact — no information lost.
-/// Proves: result.view() == self.view()
+///  Widen a FixedPoint to a larger representation.
+///  Zero-extends limbs, adjusts scale. Exact — no information lost.
+///  Proves: result.view() == self.view()
 pub fn promote<const M: usize, const FM: usize>(
     a: FixedPoint<N, FRAC>
 ) -> FixedPoint<M, FM>
@@ -185,10 +185,10 @@ This is needed because `z_sq.add(c)` requires both operands at the same type.
 
 ```
 fn mandelbrot_step(z: FPI<4,96>, c: FPI<4,96>) -> FPI<4,96> {
-    let z_sq = z.square();              // FPI<8,192>, exact
-    let c_wide = c.promote::<8, 192>(); // FPI<8,192>, exact (zero-extend + scale)
-    let sum = z_sq.add(&c_wide);        // FPI<8,192>, exact
-    sum.reduce()                         // FPI<4,96>, lo rounded down, hi rounded up
+    let z_sq = z.square();              //  FPI<8,192>, exact
+    let c_wide = c.promote::<8, 192>(); //  FPI<8,192>, exact (zero-extend + scale)
+    let sum = z_sq.add(&c_wide);        //  FPI<8,192>, exact
+    sum.reduce()                         //  FPI<4,96>, lo rounded down, hi rounded up
 }
 ```
 
@@ -222,17 +222,17 @@ the foundational lemmas we need:
 ### limbs_to_nat / nat_to_limbs
 
 ```rust
-/// Interpret N little-endian u32 limbs as a nat.
+///  Interpret N little-endian u32 limbs as a nat.
 pub open spec fn limbs_to_nat<const N: usize>(limbs: [u32; N]) -> nat {
-    // limbs[0] + limbs[1] * 2^32 + limbs[2] * 2^64 + ...
+    //  limbs[0] + limbs[1] * 2^32 + limbs[2] * 2^64 + ...
 }
 ```
 
 ### Multi-limb addition with carry
 
 ```rust
-/// Add two N-limb numbers, returning N-limb result + carry bit.
-/// Proves: result_nat + carry * 2^(N*32) == a_nat + b_nat
+///  Add two N-limb numbers, returning N-limb result + carry bit.
+///  Proves: result_nat + carry * 2^(N*32) == a_nat + b_nat
 pub fn add_limbs(a: [u32; N], b: [u32; N]) -> (result: [u32; N], carry: u32)
 ```
 
@@ -255,9 +255,9 @@ a * b = z2 * B^2 + z1 * B + z0
 3 recursive multiplications instead of 4. Base case: single-limb u32 * u32 -> u64.
 
 ```rust
-/// Multiply two N-limb numbers via Karatsuba, returning 2N-limb exact result.
-/// Proves: result_nat == a_nat * b_nat
-/// Recursive: splits into 3 half-size multiplications.
+///  Multiply two N-limb numbers via Karatsuba, returning 2N-limb exact result.
+///  Proves: result_nat == a_nat * b_nat
+///  Recursive: splits into 3 half-size multiplications.
 pub fn mul_karatsuba(a: [u32; N], b: [u32; N]) -> (result: [u32; {2*N}])
 ```
 
@@ -270,12 +270,12 @@ needs careful handling.
 ### Shift / truncation for reduce
 
 ```rust
-/// Right-shift by k bits, rounding down (floor).
-/// Proves: result_nat == a_nat / 2^k (integer division)
+///  Right-shift by k bits, rounding down (floor).
+///  Proves: result_nat == a_nat / 2^k (integer division)
 pub fn shift_right_floor(a: [u32; M], k: usize) -> [u32; N]
 
-/// Right-shift by k bits, rounding up (ceil).
-/// Proves: result_nat == ceil(a_nat / 2^k)
+///  Right-shift by k bits, rounding up (ceil).
+///  Proves: result_nat == ceil(a_nat / 2^k)
 pub fn shift_right_ceil(a: [u32; M], k: usize) -> [u32; N]
 ```
 

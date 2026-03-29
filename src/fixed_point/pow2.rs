@@ -2,7 +2,7 @@ use vstd::prelude::*;
 
 verus! {
 
-/// 2^n, defined recursively.
+///  2^n, defined recursively.
 pub open spec fn pow2(n: nat) -> nat
     decreases n,
 {
@@ -10,7 +10,7 @@ pub open spec fn pow2(n: nat) -> nat
     else { 2 * pow2((n - 1) as nat) }
 }
 
-/// pow2 is always positive.
+///  pow2 is always positive.
 pub proof fn lemma_pow2_positive(n: nat)
     ensures pow2(n) > 0,
     decreases n,
@@ -20,19 +20,19 @@ pub proof fn lemma_pow2_positive(n: nat)
     }
 }
 
-/// pow2(0) == 1.
+///  pow2(0) == 1.
 pub proof fn lemma_pow2_zero()
     ensures pow2(0nat) == 1nat,
 {}
 
-/// pow2(1) == 2.
+///  pow2(1) == 2.
 pub proof fn lemma_pow2_one()
     ensures pow2(1nat) == 2nat,
 {
     assert(pow2(1) == 2 * pow2(0nat));
 }
 
-/// pow2(a + b) == pow2(a) * pow2(b).
+///  pow2(a + b) == pow2(a) * pow2(b).
 pub proof fn lemma_pow2_add(a: nat, b: nat)
     ensures pow2(a + b) == pow2(a) * pow2(b),
     decreases a,
@@ -44,20 +44,20 @@ pub proof fn lemma_pow2_add(a: nat, b: nat)
     } else {
         let a1 = (a - 1) as nat;
         lemma_pow2_add(a1, b);
-        // IH: pow2(a1 + b) == pow2(a1) * pow2(b)
-        // pow2(a + b) == 2 * pow2((a + b - 1)) == 2 * pow2(a1 + b)
+        //  IH: pow2(a1 + b) == pow2(a1) * pow2(b)
+        //  pow2(a + b) == 2 * pow2((a + b - 1)) == 2 * pow2(a1 + b)
         assert((a + b) - 1 == a1 + b);
         assert(pow2(a + b) == 2 * pow2((a1 + b) as nat));
-        // pow2(a) == 2 * pow2(a1)
+        //  pow2(a) == 2 * pow2(a1)
         assert(pow2(a) == 2 * pow2(a1));
-        // So pow2(a) * pow2(b) == 2 * pow2(a1) * pow2(b) == 2 * (pow2(a1) * pow2(b))
+        //  So pow2(a) * pow2(b) == 2 * pow2(a1) * pow2(b) == 2 * (pow2(a1) * pow2(b))
         assert(pow2(a) * pow2(b) == 2 * pow2(a1) * pow2(b)) by (nonlinear_arith)
             requires pow2(a) == 2 * pow2(a1);
         assert(2 * pow2(a1) * pow2(b) == 2 * (pow2(a1) * pow2(b))) by (nonlinear_arith);
     }
 }
 
-/// Monotonicity: a <= b ==> pow2(a) <= pow2(b).
+///  Monotonicity: a <= b ==> pow2(a) <= pow2(b).
 pub proof fn lemma_pow2_monotone(a: nat, b: nat)
     requires a <= b,
     ensures pow2(a) <= pow2(b),
@@ -72,7 +72,7 @@ pub proof fn lemma_pow2_monotone(a: nat, b: nat)
     }
 }
 
-/// Strict monotonicity: a < b ==> pow2(a) < pow2(b).
+///  Strict monotonicity: a < b ==> pow2(a) < pow2(b).
 pub proof fn lemma_pow2_strict_monotone(a: nat, b: nat)
     requires a < b,
     ensures pow2(a) < pow2(b),
@@ -88,14 +88,14 @@ pub proof fn lemma_pow2_strict_monotone(a: nat, b: nat)
     }
 }
 
-/// pow2(8) == 256.
+///  pow2(8) == 256.
 pub proof fn lemma_pow2_8()
     ensures pow2(8nat) == 256nat,
 {
     reveal_with_fuel(pow2, 9);
 }
 
-/// pow2(16) == 65536.
+///  pow2(16) == 65536.
 pub proof fn lemma_pow2_16()
     ensures pow2(16nat) == 65536nat,
 {
@@ -104,7 +104,7 @@ pub proof fn lemma_pow2_16()
     assert(pow2(16) == pow2(8) * pow2(8));
 }
 
-/// pow2(32) == 4294967296 (the limb base).
+///  pow2(32) == 4294967296 (the limb base).
 pub proof fn lemma_pow2_32()
     ensures pow2(32nat) == 4294967296nat,
 {
@@ -114,7 +114,7 @@ pub proof fn lemma_pow2_32()
     assert(pow2(32) == 65536nat * 65536nat);
 }
 
-/// pow2(2 * n) == pow2(n) * pow2(n).
+///  pow2(2 * n) == pow2(n) * pow2(n).
 pub proof fn lemma_pow2_double(n: nat)
     ensures pow2((2 * n) as nat) == pow2(n) * pow2(n),
 {
@@ -122,7 +122,7 @@ pub proof fn lemma_pow2_double(n: nat)
     assert(n + n == 2 * n);
 }
 
-/// Integer exponentiation: base^exp.
+///  Integer exponentiation: base^exp.
 pub open spec fn pow_int(base: int, exp: nat) -> int
     decreases exp,
 {
@@ -130,11 +130,11 @@ pub open spec fn pow_int(base: int, exp: nat) -> int
     else { base * pow_int(base, (exp - 1) as nat) }
 }
 
-/// pow_int(base, 1) == base.
+///  pow_int(base, 1) == base.
 pub proof fn lemma_pow_int_one(base: int)
     ensures pow_int(base, 1) == base,
 {
     assert(pow_int(base, 1) == base * pow_int(base, 0));
 }
 
-} // verus!
+} //  verus!
