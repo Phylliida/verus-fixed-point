@@ -75,7 +75,8 @@ pub proof fn lemma_gcd_divides(a: nat, b: nat)
     if b == 0 {
         assert(gcd(a, b) == a);
         assert(a > 0nat);
-        assert(a % a == 0nat) by (nonlinear_arith) requires a > 0nat;
+        //  a = 1*a + 0, so a % a == 0
+        lemma_fundamental_div_mod_converse(a as int, a as int, 1, 0);
     } else {
         //  b > 0, so b > 0 || a%b > 0, satisfying IH precondition.
         lemma_gcd_divides(b, a % b);
