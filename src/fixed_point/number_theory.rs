@@ -75,8 +75,10 @@ pub proof fn lemma_gcd_divides(a: nat, b: nat)
     if b == 0 {
         assert(gcd(a, b) == a);
         assert(a > 0nat);
-        //  a = 1*a + 0, so a % a == 0
+        //  a % a = 0: a = 1*a + 0, by div_mod_converse
         lemma_fundamental_div_mod_converse(a as int, a as int, 1, 0);
+        //  0 % a = 0: 0 = 0*a + 0, by div_mod_converse
+        lemma_fundamental_div_mod_converse(0int, a as int, 0, 0);
     } else {
         //  b > 0, so b > 0 || a%b > 0, satisfying IH precondition.
         lemma_gcd_divides(b, a % b);
@@ -88,8 +90,14 @@ pub proof fn lemma_gcd_divides(a: nat, b: nat)
         //  a = b*(a/b) + a%b. Since d | b and d | (a%b), d | a.
         lemma_fundamental_div_mod(a as int, b as int);
         let q = (a as int) / (b as int);
+        let r = (a as int) % (b as int);
         lemma_gcd_positive(b, a % b);
-        lemma_divides_linear_combination(d as int, b as int, (a % b) as int, q);
+        //  Use int mod directly so Z3 connects the linear combination to a
+        lemma_divides_linear_combination(d as int, b as int, r, q);
+        //  Now Z3 knows (q * b + r) % d == 0 where q*b+r == a
+        assert(a as int == (b as int) * q + r);
+        assert((b as int) * q + r == q * (b as int) + r) by (nonlinear_arith);
+        assert((a as int) % (d as int) == 0);
     }
 }
 
