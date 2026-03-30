@@ -41,7 +41,7 @@ pub open spec fn ext_gcd(a: nat, b: nat) -> (int, int)
 
 // ── Helper: if d divides both b and r, it divides q*b+r ──
 
-proof fn lemma_divides_linear_combination(d: int, b: int, r: int, q: int)
+pub proof fn lemma_divides_linear_combination(d: int, b: int, r: int, q: int)
     requires
         d > 0,
         b % d == 0,
