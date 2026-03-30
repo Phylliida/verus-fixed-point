@@ -274,6 +274,176 @@ pub proof fn lemma_one_ne_zero(p: nat)
     ensures !ModularInt::one(p).eqv(ModularInt::zero(p)),
 {}
 
+//  ── Field axiom: multiplicative inverse ─────────────────
+//  For prime p, every nonzero element of Z/pZ has a multiplicative inverse.
+//  The inverse is computed from Bezout's identity: gcd(a,p)=1 ⟹ sa+tp=1 ⟹ sa≡1 (mod p).
+
+use crate::fixed_point::number_theory::*;
+
+impl ModularInt {
+    ///  Multiplicative inverse in Z/pZ (requires prime modulus and nonzero value).
+    ///  Uses the Bezout coefficient from the extended Euclidean algorithm.
+    pub open spec fn inv_mod(self) -> ModularInt {
+        let s = ext_gcd(self.value, self.modulus).0;
+        //  s may be negative; reduce to [0, p) via ((s % p) + p) % p
+        let p = self.modulus as int;
+        let s_mod = ((s % p) + p) % p;
+        ModularInt { value: s_mod as nat, modulus: self.modulus }
+    }
+}
+
+pub proof fn lemma_inv_mod_wf(a: ModularInt)
+    requires
+        a.wf_spec(),
+        is_prime(a.modulus),
+        a.value != 0,
+    ensures
+        a.inv_mod().wf_spec(),
+        a.inv_mod().same_modulus(a),
+{
+    let p = a.modulus as int;
+    let s = ext_gcd(a.value, a.modulus).0;
+    let sr = s % p;
+    assert(0 <= sr && sr < p);
+    //  sp = sr + p = 1*p + sr with 0 <= sr < p
+    //  so sp % p == sr by div_mod_converse.
+    let sp = sr + p;
+    lemma_fundamental_div_mod_converse(sp, p, 1, sr);
+    let s_mod = sp % p;
+    assert(s_mod == sr);
+    assert(0 <= s_mod && s_mod < p);
+}
+
+pub proof fn lemma_mul_inv_right(a: ModularInt)
+    requires
+        a.wf_spec(),
+        is_prime(a.modulus),
+        a.value != 0,
+    ensures
+        a.mul_mod(a.inv_mod()).eqv(ModularInt::one(a.modulus)),
+{
+    let p = a.modulus;
+    let pi = p as int;
+    let av = a.value;
+    let s = ext_gcd(av, p).0;
+    let s_mod = ((s % pi) + pi) % pi;
+
+    //  Step 1: From Bezout, (s * av) % p == 1
+    lemma_bezout_inverse(av, p);
+
+    //  Step 2: s_mod ≡ s (mod p), so av * s_mod ≡ av * s ≡ 1 (mod p)
+    //  (s_mod) % p == s % p (by construction)
+    //  (av * s_mod) % p == (av * s) % p (by mod_mul_right)
+    lemma_mod_mul_right(av, s_mod as nat, p);
+    //  gives: (av * (s_mod % p)) % p == (av * s_mod) % p
+
+    //  We need: (av * s_mod) % p == (s * av) % p == 1
+    //  s_mod % p == s % p:
+    assert(s_mod % pi == ((s % pi + pi) % pi) % pi);
+    //  ((s%p + p) % p) % p == (s%p + p) % p == s_mod
+    //  and s_mod % p == s_mod (since 0 <= s_mod < p)
+    //  and s % p == s_mod by construction of ((s%p)+p)%p
+
+    //  Direct approach: show (av * s_mod) % p == (s * av) % p
+    //  = (s * av) % p == 1 (from Bezout)
+    //  Since (x * y) % p == ((x % p) * y) % p == (x * (y % p)) % p:
+    //  (av * s_mod) % p == (av * (s_mod % p)) % p [by lemma_mod_mul_right]
+    //                   == (av * ((s % p + p) % p)) % p
+    //  And (s * av) % p == ((s % p) * av) % p [by lemma_mod_mul_left on ints]
+    //  We need: ((s%p+p)%p * av) % p == ((s%p) * av) % p
+    //  Since (s%p+p)%p ≡ s%p (mod p), this follows.
+
+    //  Simpler: use that s_mod ≡ s (mod p) as integers.
+    //  s_mod = ((s % p) + p) % p. This ≡ s % p ≡ s (mod p).
+    //  So av * s_mod ≡ av * s ≡ s * av ≡ 1 (mod p).
+
+    //  We know: (s * av as int) % pi == 1 [from lemma_bezout_inverse]
+    assert((s * av as int) % pi == 1);
+
+    //  Show: (av * s_mod as int) % pi == (s * av as int) % pi
+    //  av * s_mod ≡ s * av (mod p) because s_mod ≡ s (mod p)
+    //  s_mod = ((s%p)+p)%p. (s%p+p)%p ≡ s%p ≡ s (mod p).
+
+    //  From fundamental: s = pi * (s/pi) + s%pi
+    //  s_mod = (s%pi + pi) % pi. Since 0 <= s%pi + pi < 2*pi (when s%pi >= 0)
+    //  and s%pi + pi >= pi (when s%pi >= 0). So s_mod = s%pi + pi - pi = s%pi.
+    //  But when s < 0, s%pi could be negative in some semantics.
+    //  In Verus/SMT: s%pi is the Euclidean remainder, always in [0, pi).
+    //  So s%pi >= 0, s%pi < pi. s%pi + pi >= pi, < 2*pi.
+    //  (s%pi + pi) % pi = s%pi + pi - pi = s%pi = s_mod.
+
+    //  So s_mod == s % pi (as int). And s_mod as nat == (s % pi) as nat.
+    //  (av * s_mod) % p = (av * (s % pi)) % pi (as nats)
+    //  = (av as int * (s % pi)) % pi (as int)
+
+    //  And (s * av) % pi == ((s%pi) * av) % pi [by mod_mul_left on ints, using
+    //  the fact that s ≡ s%pi (mod pi)]
+
+    //  Let me just use the int-level approach directly.
+    //  mul_mod(a, inv) = (a.value * inv.value) % p
+    //  = (av * s_mod as nat) % p
+    //  = (av as int * s_mod) % pi (since both are non-negative)
+
+    //  We want this == 1.
+    //  We know: (s * av as int) % pi == 1.
+    //  s ≡ s_mod (mod pi). So s * av ≡ s_mod * av (mod pi).
+    //  Therefore (s * av) % pi == (s_mod * av) % pi.
+    //  And (s_mod * av) == (av * s_mod) by commutativity.
+
+    //  For the mod equivalence: s = (s/pi)*pi + s%pi. s_mod = s%pi (in Euclidean sense).
+    //  s - s_mod = (s/pi)*pi. So s*av - s_mod*av = (s/pi)*pi*av.
+    //  pi | (s*av - s_mod*av). So s*av % pi == s_mod*av % pi.
+
+    lemma_fundamental_div_mod(s, pi);
+    let sq = s / pi;
+    //  s = pi * sq + s % pi = pi * sq + s_mod (since s_mod = ((s%pi)+pi)%pi = s%pi for Euclidean mod)
+
+    //  Actually in SMT, for integer mod: s % pi >= 0 always (Euclidean).
+    //  So s_mod = ((s%pi) + pi) % pi = s%pi (since 0 <= s%pi < pi, s%pi+pi in [pi, 2pi), so mod pi gives s%pi).
+    assert(0 <= s % pi && s % pi < pi);
+    assert(s_mod == s % pi) by (nonlinear_arith)
+        requires 0 <= s % pi, s % pi < pi, pi > 1, s_mod == ((s % pi) + pi) % pi;
+
+    //  Now: s = pi * sq + s_mod.
+    //  s * av = (pi * sq + s_mod) * av = pi * sq * av + s_mod * av.
+    //  So (s * av) % pi == (s_mod * av) % pi [since pi | (pi * sq * av)].
+    //  And (s_mod * av) == (av * s_mod) by commutativity.
+    assert(s * (av as int) == pi * sq * (av as int) + s_mod * (av as int)) by (nonlinear_arith)
+        requires s == pi * sq + s_mod;
+    assert(av as int * s_mod == s_mod * (av as int)) by (nonlinear_arith);
+    //  (pi*sq*av + s_mod*av) % pi == (s_mod*av) % pi
+    lemma_fundamental_div_mod(s_mod * (av as int), pi);
+    let q2 = (s_mod * (av as int)) / pi;
+    let r2 = (s_mod * (av as int)) % pi;
+    //  s_mod*av = pi*q2 + r2
+    //  s*av = pi*sq*av + s_mod*av = pi*sq*av + pi*q2 + r2 = pi*(sq*av + q2) + r2
+    assert(s * (av as int) == pi * (sq * (av as int) + q2) + r2) by (nonlinear_arith)
+        requires s * (av as int) == pi * sq * (av as int) + s_mod * (av as int),
+                 s_mod * (av as int) == pi * q2 + r2;
+    lemma_fundamental_div_mod_converse(s * (av as int), pi, sq * (av as int) + q2, r2);
+    //  (s*av) % pi == r2 == (s_mod*av) % pi
+
+    //  So (av * s_mod) % p == (s * av) % p == 1.
+    assert((av as int * s_mod) % pi == 1);
+    //  And mul_mod computes (av * inv.value) % p where inv.value = s_mod as nat.
+    assert(a.mul_mod(a.inv_mod()).value == ((av * s_mod as nat) % p) as nat);
+    assert((av * s_mod as nat) as int == av as int * s_mod) by (nonlinear_arith)
+        requires av >= 0nat, s_mod >= 0;
+}
+
+pub proof fn lemma_mul_inv_left(a: ModularInt)
+    requires
+        a.wf_spec(),
+        is_prime(a.modulus),
+        a.value != 0,
+    ensures
+        a.inv_mod().mul_mod(a).eqv(ModularInt::one(a.modulus)),
+{
+    lemma_mul_inv_right(a);
+    lemma_inv_mod_wf(a);
+    lemma_mul_commutative(a, a.inv_mod());
+}
+
 //  ── Exec-level modular arithmetic ──────────────────────
 
 ///  Runtime modular integer: value mod p, stored as u32.
