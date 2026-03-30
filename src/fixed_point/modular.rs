@@ -547,149 +547,212 @@ impl RuntimeModularInt {
     }
 
     ///  Modular inverse via iterative extended Euclidean algorithm.
-    ///  Requires prime modulus, nonzero value, and p < 2^31 for overflow safety.
+    ///  Requires prime modulus, nonzero value, and p ≤ 0x7FFF for overflow safety.
     pub fn inv_exec(&self) -> (result: Self)
         requires
             self.wf_spec(),
             is_prime(self.p as nat),
             self.val != 0,
-            self.p <= 0x7FFF_FFFFu32,
+            self.p <= 0x7FFFu32,
         ensures
             result.wf_spec(),
+            result@ == self@.inv_mod(),
             result@.mul_mod(self@).eqv(ModularInt::one(self.p as nat)),
     {
-        let a_init: i64 = self.val as i64;
-        let p_init: i64 = self.p as i64;
+        let ghost ai = self.val as int;
+        let ghost pi = self.p as int;
+        let p_bound: i64 = self.p as i64;
 
-        let mut old_r: i64 = a_init;
-        let mut r: i64 = p_init;
+        let mut old_r: i64 = self.val as i64;
+        let mut r: i64 = self.p as i64;
         let mut old_s: i64 = 1;
         let mut s: i64 = 0;
+        let ghost mut parity: int = 1;
 
-        //  Loop: iterative extended Euclidean algorithm
+        proof {
+            lemma_fundamental_div_mod_converse(-(pi), pi, -1int, 0int);
+        }
+
         while r > 0
             invariant
-                //  Remainders non-negative
-                old_r >= 0,
-                r >= 0,
-                old_r > 0 || r > 0,
-                //  Bezout tracking (as int): old_s*a ≡ old_r (mod p), s*a ≡ r (mod p)
-                ((old_s as int) * (a_init as int) - (old_r as int)) % (p_init as int) == 0,
-                ((s as int) * (a_init as int) - (r as int)) % (p_init as int) == 0,
-                //  GCD preserved
-                gcd(old_r as nat, r as nat) == gcd(a_init as nat, p_init as nat),
-                //  Constants unchanged
-                a_init == self.val as i64,
-                p_init == self.p as i64,
-                a_init > 0,
-                p_init > 1,
-                p_init <= 0x7FFF_FFFFi64,
-                //  Overflow bounds: |old_s|, |s| < p
-                -p_init < old_s && old_s < p_init,
-                -p_init < s && s < p_init,
-                //  Remainder bounds
-                old_r <= p_init,
-                r <= p_init,
+                old_r >= 0i64, r >= 0i64, old_r > 0 || r > 0,
+                old_r <= p_bound, r <= p_bound,
+                //  Bezout mod tracking
+                ((old_s as int) * ai - (old_r as int)) % pi == 0,
+                ((s as int) * ai - (r as int)) % pi == 0,
+                //  Cross-product: old_s*r - s*old_r = parity*p
+                (old_s as int) * (r as int) - (s as int) * (old_r as int) == parity * pi,
+                parity == 1int || parity == -1int,
+                //  GCD
+                gcd(old_r as nat, r as nat) == gcd(self.val as nat, self.p as nat),
+                //  Constants
+                ai == self.val as int, pi == self.p as int,
+                p_bound == self.p as i64,
+                pi > 1, pi <= 0x7FFF,
+                //  Coefficient bounds (from cross-product + old_r > r when both > 0)
+                -p_bound <= old_s, old_s <= p_bound,
+                -p_bound <= s, s <= p_bound,
             decreases r,
         {
             let q = old_r / r;
+
+            proof {
+                lemma_fundamental_div_mod(old_r as int, r as int);
+                assert(q as int * (r as int) <= old_r as int) by (nonlinear_arith)
+                    requires old_r as int == (r as int) * (q as int) + (old_r as int) % (r as int),
+                             (old_r as int) % (r as int) >= 0;
+                assert(-0x4000_0000i64 < q * s && q * s < 0x4000_0000i64) by (nonlinear_arith)
+                    requires q >= 0, q <= p_bound, -p_bound <= s, s <= p_bound, p_bound <= 0x7FFF;
+                assert(-0x8000_0000i64 < old_s - q * s && old_s - q * s < 0x8000_0000i64)
+                    by (nonlinear_arith)
+                    requires -p_bound <= old_s, old_s <= p_bound,
+                             -0x4000_0000i64 < q * s, q * s < 0x4000_0000i64, p_bound <= 0x7FFF;
+            }
+
             let new_r = old_r - q * r;
             let new_s = old_s - q * s;
 
             proof {
-                //  GCD: new_r == old_r % r, so gcd(old_r, r) = gcd(r, new_r)
-                lemma_fundamental_div_mod(old_r as int, r as int);
-                assert(new_r as int == (old_r as int) % (r as int));
-                assert(new_r >= 0i64);
-                assert(new_r < r);
-
-                //  Bezout: (new_s*a - new_r) % p == 0
-                let x = (old_s as int) * (a_init as int) - (old_r as int);
-                let y = (s as int) * (a_init as int) - (r as int);
                 let qi = q as int;
-                assert((new_s as int) * (a_init as int) - (new_r as int) == x - qi * y)
-                    by (nonlinear_arith)
-                    requires
-                        new_s as int == old_s as int - qi * (s as int),
-                        new_r as int == old_r as int - qi * (r as int),
-                        x == (old_s as int) * (a_init as int) - (old_r as int),
-                        y == (s as int) * (a_init as int) - (r as int);
+                let nri = new_r as int;
+                let nsi = new_s as int;
+                let ori = old_r as int;
+                let ri = r as int;
+                let osi = old_s as int;
+                let si = s as int;
+
+                assert(nri == ori % ri);
+                assert(nri >= 0 && nri < ri);
+
+                //  Bezout maintenance
+                let x = osi * ai - ori;
+                let y = si * ai - ri;
+                assert(nsi * ai - nri == x - qi * y) by (nonlinear_arith)
+                    requires nsi == osi - qi * si, nri == ori - qi * ri,
+                             x == osi * ai - ori, y == si * ai - ri;
                 assert(x - qi * y == (-qi) * y + x) by (nonlinear_arith);
-                crate::fixed_point::number_theory::lemma_divides_linear_combination(
-                    p_init as int, y, x, -qi);
+                crate::fixed_point::number_theory::lemma_divides_linear_combination(pi, y, x, -qi);
+
+                //  Cross-product maintenance: si*nri - nsi*ri = -parity*pi
+                assert(si * nri - nsi * ri == -parity * pi) by (nonlinear_arith)
+                    requires nri == ori - qi * ri, nsi == osi - qi * si,
+                             osi * ri - si * ori == parity * pi;
+
+                //  Coefficient bound for new_s using cross-product:
+                //  nsi * ri = si * nri + parity * pi (from above, rearranged)
+                //  |nsi| * ri ≤ |si| * nri + pi ≤ p * nri + pi = pi*(nri+1)
+                //  nri < ri (strict), nri+1 ≤ ri, so pi*(nri+1) ≤ pi*ri
+                //  |nsi| ≤ pi
+                assert(nri + 1 <= ri) by (nonlinear_arith) requires nri >= 0, nri < ri;
+                assert(nsi * ri == si * nri + parity * pi) by (nonlinear_arith)
+                    requires si * nri - nsi * ri == -parity * pi;
+                if nsi >= 0 {
+                    assert(nsi * ri <= pi * ri) by (nonlinear_arith)
+                        requires nsi * ri == si * nri + parity * pi,
+                                 -pi <= si, si <= pi, pi > 0,
+                                 nri >= 0, nri + 1 <= ri, parity == 1 || parity == -1;
+                    assert(nsi <= pi) by (nonlinear_arith) requires nsi * ri <= pi * ri, ri > 0;
+                } else {
+                    assert(-nsi * ri <= pi * ri) by (nonlinear_arith)
+                        requires nsi * ri == si * nri + parity * pi,
+                                 -pi <= si, si <= pi, pi > 0,
+                                 nri >= 0, nri + 1 <= ri, parity == 1 || parity == -1;
+                    assert(-nsi <= pi) by (nonlinear_arith) requires -nsi * ri <= pi * ri, ri > 0;
+                }
             }
 
             old_r = r;
             r = new_r;
             old_s = s;
             s = new_s;
+            proof { parity = -parity; }
         }
 
         //  Post-loop: r == 0, old_r = gcd(a, p) = 1
         proof {
-            assert(r == 0i64);
             assert(gcd(old_r as nat, 0nat) == old_r as nat);
-            lemma_prime_coprime(a_init as nat, p_init as nat);
+            lemma_prime_coprime(ai as nat, pi as nat);
             assert(old_r == 1i64);
         }
 
-        //  Reduce old_s to [0, p): ((old_s % p) + p) % p
-        let sr = old_s % p_init;
-        let sp = sr + p_init;
-        let s_mod = sp % p_init;
+        //  old_s ≠ ±p (since p*a ≡ 0 ≢ 1 mod p), so -p < old_s < p strictly
+        proof {
+            //  If old_s == p: p*a ≡ 0 (mod p), but we need old_s*a ≡ 1 (mod p). Contradiction.
+            //  If old_s == -p: same argument.
+            if old_s as int == pi || old_s as int == -pi {
+                //  ±p * a = ±a * p + 0, so (±p*a) % p == 0
+                if old_s as int == pi {
+                    assert((old_s as int) * ai == ai * pi) by (nonlinear_arith)
+                        requires (old_s as int) == pi;
+                    lemma_fundamental_div_mod_converse((old_s as int) * ai, pi, ai, 0int);
+                } else {
+                    assert((old_s as int) * ai == (-ai) * pi) by (nonlinear_arith)
+                        requires (old_s as int) == -pi;
+                    lemma_fundamental_div_mod_converse((old_s as int) * ai, pi, -ai, 0int);
+                }
+                //  But (old_s*a) % p should be 1:
+                lemma_fundamental_div_mod((old_s as int) * ai - 1, pi);
+                let k2 = ((old_s as int) * ai - 1) / pi;
+                assert((old_s as int) * ai - 1 == pi * k2) by (nonlinear_arith)
+                    requires (old_s as int) * ai - 1 == pi * k2 + ((old_s as int) * ai - 1) % pi,
+                             ((old_s as int) * ai - 1) % pi == 0;
+                assert((old_s as int) * ai == pi * k2 + 1) by (nonlinear_arith)
+                    requires (old_s as int) * ai - 1 == pi * k2;
+                lemma_fundamental_div_mod_converse((old_s as int) * ai, pi, k2, 1int);
+                assert(((old_s as int) * ai) % pi == 1);
+                assert(false);  //  0 == 1 contradiction
+            }
+            assert(-p_bound < old_s && old_s < p_bound);
+        }
+
+        //  Reduce old_s to [0, p) — if/else avoids i64 mod semantics
+        let s_mod: u32 = if old_s >= 0 { old_s as u32 } else { (old_s + p_bound) as u32 };
 
         proof {
-            let ai = a_init as int;
-            let pi = p_init as int;
-            let sri = sr as int;
-            let spi = sp as int;
-            let smi = s_mod as int;
-
-            //  sr = old_s % p, in [0, p). sp = sr+p, in [p, 2p). s_mod = sp%p = sr.
-            assert(0 <= sri && sri < pi);
-            lemma_fundamental_div_mod_converse(spi, pi, 1int, sri);
-            assert(smi == sri);
-            assert(0 <= smi && smi < pi);
-
-            //  old_s*a ≡ 1 (mod p)
+            //  old_s * a ≡ 1 (mod p)
             assert(((old_s as int) * ai - 1) % pi == 0);
-
-            //  s_mod ≡ old_s (mod p), so s_mod*a ≡ old_s*a ≡ 1 (mod p)
-            lemma_fundamental_div_mod(old_s as int, pi);
-            let sq = (old_s as int) / pi;
-            assert(smi == (old_s as int) % pi);
-            assert((old_s as int) * ai == pi * sq * ai + smi * ai) by (nonlinear_arith)
-                requires (old_s as int) == pi * sq + smi;
-            lemma_fundamental_div_mod(smi * ai, pi);
-            let q2 = (smi * ai) / pi;
-            let r2 = (smi * ai) % pi;
-            assert((old_s as int) * ai == pi * (sq * ai + q2) + r2) by (nonlinear_arith)
-                requires (old_s as int) * ai == pi * sq * ai + smi * ai,
-                         smi * ai == pi * q2 + r2;
-            lemma_fundamental_div_mod_converse((old_s as int) * ai, pi, sq * ai + q2, r2);
-
-            //  old_s*a % p == 1, so r2 == 1
             lemma_fundamental_div_mod((old_s as int) * ai - 1, pi);
             let k = ((old_s as int) * ai - 1) / pi;
             assert((old_s as int) * ai - 1 == pi * k) by (nonlinear_arith)
                 requires (old_s as int) * ai - 1 == pi * k + ((old_s as int) * ai - 1) % pi,
                          ((old_s as int) * ai - 1) % pi == 0;
-            assert((old_s as int) * ai == pi * k + 1) by (nonlinear_arith)
-                requires (old_s as int) * ai - 1 == pi * k;
-            lemma_fundamental_div_mod_converse((old_s as int) * ai, pi, k, 1int);
-            assert(r2 == 1);
 
-            //  s_mod*a % p == 1 (as nats)
-            assert((smi * ai) % pi == 1);
-            assert(smi * ai == (s_mod as nat * (a_init as nat)) as int) by (nonlinear_arith)
-                requires smi >= 0, ai >= 0;
+            if old_s >= 0 {
+                //  s_mod == old_s. old_s*a = k*p + 1, so (s_mod*a) % p == 1.
+                assert(s_mod as int == old_s as int);
+                assert((s_mod as int) * ai == pi * k + 1) by (nonlinear_arith)
+                    requires (old_s as int) * ai - 1 == pi * k, s_mod as int == old_s as int;
+                lemma_fundamental_div_mod_converse((s_mod as int) * ai, pi, k, 1int);
+            } else {
+                //  s_mod == old_s + p. (old_s+p)*a = old_s*a + p*a = (k*p+1) + p*a = (k+a)*p + 1.
+                assert(s_mod as int == (old_s as int) + pi);
+                assert((s_mod as int) * ai == pi * (k + ai) + 1) by (nonlinear_arith)
+                    requires (old_s as int) * ai == pi * k + 1,
+                             s_mod as int == (old_s as int) + pi;
+                lemma_fundamental_div_mod_converse((s_mod as int) * ai, pi, k + ai, 1int);
+            }
+            //  (s_mod as int * ai) % pi == 1 in both cases
+
+            //  Spec inv_mod also satisfies the same property (from lemma_mul_inv_right).
+            //  By uniqueness of modular inverse: s_mod == inv_mod.value.
+            lemma_mul_inv_right(self@);
+            lemma_inv_mod_wf(self@);
+            let inv_val = self@.inv_mod().value;
+            //  From lemma_mul_inv_right: (self.val * inv_val) % p == 1
+            //  Need: (s_mod * self.val) % p == 1 and (inv_val * self.val) % p == 1
+            assert(s_mod < self.p);
+            //  Connect int proof to nat: (s_mod as nat * self.val as nat) % self.p as nat == 1
+            assert((s_mod as int) * ai >= 0) by (nonlinear_arith)
+                requires (s_mod as int) >= 0, ai >= 0;
+            //  Commutativity for inv_val
+            assert(inv_val * self.val as nat == self.val as nat * inv_val) by (nonlinear_arith);
+            lemma_mod_inverse_unique(self.val as nat, s_mod as nat, inv_val, self.p as nat);
         }
 
-        let val = s_mod as u32;
         RuntimeModularInt {
-            val,
+            val: s_mod,
             p: self.p,
-            model: Ghost(ModularInt { value: val as nat, modulus: self.p as nat }),
+            model: Ghost(ModularInt { value: s_mod as nat, modulus: self.p as nat }),
         }
     }
 }
