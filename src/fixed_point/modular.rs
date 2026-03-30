@@ -545,6 +545,153 @@ impl RuntimeModularInt {
     {
         RuntimeModularInt { val: self.val, p: self.p, model: Ghost(self@) }
     }
+
+    ///  Modular inverse via iterative extended Euclidean algorithm.
+    ///  Requires prime modulus, nonzero value, and p < 2^31 for overflow safety.
+    pub fn inv_exec(&self) -> (result: Self)
+        requires
+            self.wf_spec(),
+            is_prime(self.p as nat),
+            self.val != 0,
+            self.p <= 0x7FFF_FFFFu32,
+        ensures
+            result.wf_spec(),
+            result@.mul_mod(self@).eqv(ModularInt::one(self.p as nat)),
+    {
+        let a_init: i64 = self.val as i64;
+        let p_init: i64 = self.p as i64;
+
+        let mut old_r: i64 = a_init;
+        let mut r: i64 = p_init;
+        let mut old_s: i64 = 1;
+        let mut s: i64 = 0;
+
+        //  Loop: iterative extended Euclidean algorithm
+        while r > 0
+            invariant
+                //  Remainders non-negative
+                old_r >= 0,
+                r >= 0,
+                old_r > 0 || r > 0,
+                //  Bezout tracking (as int): old_s*a ≡ old_r (mod p), s*a ≡ r (mod p)
+                ((old_s as int) * (a_init as int) - (old_r as int)) % (p_init as int) == 0,
+                ((s as int) * (a_init as int) - (r as int)) % (p_init as int) == 0,
+                //  GCD preserved
+                gcd(old_r as nat, r as nat) == gcd(a_init as nat, p_init as nat),
+                //  Constants unchanged
+                a_init == self.val as i64,
+                p_init == self.p as i64,
+                a_init > 0,
+                p_init > 1,
+                p_init <= 0x7FFF_FFFFi64,
+                //  Overflow bounds: |old_s|, |s| < p
+                -p_init < old_s && old_s < p_init,
+                -p_init < s && s < p_init,
+                //  Remainder bounds
+                old_r <= p_init,
+                r <= p_init,
+            decreases r,
+        {
+            let q = old_r / r;
+            let new_r = old_r - q * r;
+            let new_s = old_s - q * s;
+
+            proof {
+                //  GCD: new_r == old_r % r, so gcd(old_r, r) = gcd(r, new_r)
+                lemma_fundamental_div_mod(old_r as int, r as int);
+                assert(new_r as int == (old_r as int) % (r as int));
+                assert(new_r >= 0i64);
+                assert(new_r < r);
+
+                //  Bezout: (new_s*a - new_r) % p == 0
+                let x = (old_s as int) * (a_init as int) - (old_r as int);
+                let y = (s as int) * (a_init as int) - (r as int);
+                let qi = q as int;
+                assert((new_s as int) * (a_init as int) - (new_r as int) == x - qi * y)
+                    by (nonlinear_arith)
+                    requires
+                        new_s as int == old_s as int - qi * (s as int),
+                        new_r as int == old_r as int - qi * (r as int),
+                        x == (old_s as int) * (a_init as int) - (old_r as int),
+                        y == (s as int) * (a_init as int) - (r as int);
+                assert(x - qi * y == (-qi) * y + x) by (nonlinear_arith);
+                crate::fixed_point::number_theory::lemma_divides_linear_combination(
+                    p_init as int, y, x, -qi);
+            }
+
+            old_r = r;
+            r = new_r;
+            old_s = s;
+            s = new_s;
+        }
+
+        //  Post-loop: r == 0, old_r = gcd(a, p) = 1
+        proof {
+            assert(r == 0i64);
+            assert(gcd(old_r as nat, 0nat) == old_r as nat);
+            lemma_prime_coprime(a_init as nat, p_init as nat);
+            assert(old_r == 1i64);
+        }
+
+        //  Reduce old_s to [0, p): ((old_s % p) + p) % p
+        let sr = old_s % p_init;
+        let sp = sr + p_init;
+        let s_mod = sp % p_init;
+
+        proof {
+            let ai = a_init as int;
+            let pi = p_init as int;
+            let sri = sr as int;
+            let spi = sp as int;
+            let smi = s_mod as int;
+
+            //  sr = old_s % p, in [0, p). sp = sr+p, in [p, 2p). s_mod = sp%p = sr.
+            assert(0 <= sri && sri < pi);
+            lemma_fundamental_div_mod_converse(spi, pi, 1int, sri);
+            assert(smi == sri);
+            assert(0 <= smi && smi < pi);
+
+            //  old_s*a ≡ 1 (mod p)
+            assert(((old_s as int) * ai - 1) % pi == 0);
+
+            //  s_mod ≡ old_s (mod p), so s_mod*a ≡ old_s*a ≡ 1 (mod p)
+            lemma_fundamental_div_mod(old_s as int, pi);
+            let sq = (old_s as int) / pi;
+            assert(smi == (old_s as int) % pi);
+            assert((old_s as int) * ai == pi * sq * ai + smi * ai) by (nonlinear_arith)
+                requires (old_s as int) == pi * sq + smi;
+            lemma_fundamental_div_mod(smi * ai, pi);
+            let q2 = (smi * ai) / pi;
+            let r2 = (smi * ai) % pi;
+            assert((old_s as int) * ai == pi * (sq * ai + q2) + r2) by (nonlinear_arith)
+                requires (old_s as int) * ai == pi * sq * ai + smi * ai,
+                         smi * ai == pi * q2 + r2;
+            lemma_fundamental_div_mod_converse((old_s as int) * ai, pi, sq * ai + q2, r2);
+
+            //  old_s*a % p == 1, so r2 == 1
+            lemma_fundamental_div_mod((old_s as int) * ai - 1, pi);
+            let k = ((old_s as int) * ai - 1) / pi;
+            assert((old_s as int) * ai - 1 == pi * k) by (nonlinear_arith)
+                requires (old_s as int) * ai - 1 == pi * k + ((old_s as int) * ai - 1) % pi,
+                         ((old_s as int) * ai - 1) % pi == 0;
+            assert((old_s as int) * ai == pi * k + 1) by (nonlinear_arith)
+                requires (old_s as int) * ai - 1 == pi * k;
+            lemma_fundamental_div_mod_converse((old_s as int) * ai, pi, k, 1int);
+            assert(r2 == 1);
+
+            //  s_mod*a % p == 1 (as nats)
+            assert((smi * ai) % pi == 1);
+            assert(smi * ai == (s_mod as nat * (a_init as nat)) as int) by (nonlinear_arith)
+                requires smi >= 0, ai >= 0;
+        }
+
+        let val = s_mod as u32;
+        RuntimeModularInt {
+            val,
+            p: self.p,
+            model: Ghost(ModularInt { value: val as nat, modulus: self.p as nat }),
+        }
+    }
 }
 
 //  ═══════════════════════════════════════════════════════════════════
