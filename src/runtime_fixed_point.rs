@@ -160,6 +160,7 @@ pub fn add_limbs(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: (Vec<u32>, u3
 
 ///  Unsigned borrow-chain subtraction of two n-limb arrays.
 ///  Returns (result, borrow_out) where borrow_out is 0 or 1.
+///  Delegates to generic_sub_limbs (u32 implements LimbOps).
 pub fn sub_limbs(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: (Vec<u32>, u32))
     requires
         a@.len() == n,
@@ -170,100 +171,40 @@ pub fn sub_limbs(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: (Vec<u32>, u3
             == limbs_to_nat(a@) + (result.1 as nat) * pow2((n * 32) as nat),
         result.1 <= 1,
 {
-    let mut out: Vec<u32> = Vec::new();
-    let mut borrow: u64 = 0;
-    let mut i: usize = 0;
+    use crate::fixed_point::limb_ops::{
+        generic_sub_limbs, lemma_limbs_val_eq_limbs_to_nat,
+        lemma_limb_power_eq_pow2, valid_limbs, LimbOps,
+    };
 
+    //  u32 always has valid_limbs (all values in [0, BASE))
     proof {
-        lemma_limbs_to_nat_subrange_zero(a@);
-        lemma_limbs_to_nat_subrange_zero(b@);
-    }
-
-    while i < n
-        invariant
-            i <= n,
-            a@.len() == n,
-            b@.len() == n,
-            out@.len() == i as int,
-            borrow <= 1,
-            limbs_to_nat(out@) + limbs_to_nat(b@.subrange(0, i as int))
-                == limbs_to_nat(a@.subrange(0, i as int))
-                    + borrow as nat * pow2((i * 32) as nat),
-        decreases n - i,
-    {
-        let ai = a[i] as u64;
-        let bi = b[i] as u64;
-        let need = bi + borrow;
-
-        let (digit, next_borrow): (u32, u64) = if ai >= need {
-            ((ai - need) as u32, 0u64)
-        } else {
-            ((ai + 4_294_967_296u64 - need) as u32, 1u64)
-        };
-
-        proof {
-            if ai >= need {
-                assert(next_borrow == 0u64);
-                let diff = ai - need;
-                assert(diff < 4_294_967_296u64);
-                assert(digit as nat == diff as nat);
-                assert(diff as nat + need as nat == ai as nat);
-                assert(need as nat == bi as nat + borrow as nat);
-            } else {
-                assert(next_borrow == 1u64);
-                let sum_with_base = ai + 4_294_967_296u64 - need;
-                assert(sum_with_base < 4_294_967_296u64);
-                assert(digit as nat == sum_with_base as nat);
-                assert(digit as nat + need as nat == ai as nat + 4_294_967_296u64 as nat);
-                assert(need as nat == bi as nat + borrow as nat);
-            }
-
-            assert(next_borrow <= 1);
-
-            let p = pow2((i * 32) as nat);
-            let p_next = pow2(((i + 1) * 32) as nat);
-            lemma_pow2_add(32, (i * 32) as nat);
-            assert(32 + i * 32 == (i + 1) * 32);
-            lemma_limb_base_is_pow2_32();
-            assert(p_next == limb_base() * p) by (nonlinear_arith)
-                requires
-                    p_next == pow2(((i + 1) * 32) as nat),
-                    p == pow2((i * 32) as nat),
-                    pow2(((i + 1) * 32) as nat) == pow2(32nat) * pow2((i * 32) as nat),
-                    pow2(32nat) == limb_base(),
-            {}
-
-            lemma_limbs_to_nat_push(out@, digit);
-            lemma_limbs_to_nat_subrange_extend(a@, i as nat);
-            lemma_limbs_to_nat_subrange_extend(b@, i as nat);
-
-            assert(
-                limbs_to_nat(out@) + (digit as nat) * p
-                    + limbs_to_nat(b@.subrange(0, i as int)) + (bi as nat) * p
-                == limbs_to_nat(a@.subrange(0, i as int)) + (ai as nat) * p
-                    + (next_borrow as nat) * p_next
-            ) by (nonlinear_arith)
-                requires
-                    limbs_to_nat(out@) + limbs_to_nat(b@.subrange(0, i as int))
-                        == limbs_to_nat(a@.subrange(0, i as int))
-                            + (borrow as nat) * p,
-                    (digit as nat) + (bi as nat) + (borrow as nat)
-                        == (ai as nat) + (next_borrow as nat) * limb_base(),
-                    p_next == limb_base() * p,
-            {}
+        assert(valid_limbs(a@)) by {
+            assert forall |j: int| 0 <= j < a@.len()
+                implies 0 <= (#[trigger] a@[j]).sem() && a@[j].sem() < crate::fixed_point::limb_ops::LIMB_BASE()
+            by {}
         }
-
-        out.push(digit);
-        borrow = next_borrow;
-        i = i + 1;
+        assert(valid_limbs(b@)) by {
+            assert forall |j: int| 0 <= j < b@.len()
+                implies 0 <= (#[trigger] b@[j]).sem() && b@[j].sem() < crate::fixed_point::limb_ops::LIMB_BASE()
+            by {}
+        }
     }
+
+    let (out, borrow) = generic_sub_limbs(a, b, n);
 
     proof {
-        lemma_limbs_to_nat_subrange_full(a@);
-        lemma_limbs_to_nat_subrange_full(b@);
+        lemma_limbs_val_eq_limbs_to_nat(out@);
+        lemma_limbs_val_eq_limbs_to_nat(a@);
+        lemma_limbs_val_eq_limbs_to_nat(b@);
+        lemma_limb_power_eq_pow2(n as nat);
+        //  borrow is 0 or 1 from generic_sub_limbs ensures
+        assert(borrow <= 1u32) by {
+            assert(LimbOps::sem(&borrow) == borrow as int);
+            assert(LimbOps::sem(&borrow) == 0 || LimbOps::sem(&borrow) == 1);
+        }
     }
 
-    (out, borrow as u32)
+    (out, borrow)
 }
 
 ///  Check if all limbs are zero.
@@ -843,6 +784,7 @@ pub fn slice_vec(a: &Vec<u32>, start: usize, end: usize) -> (result: Vec<u32>)
 
 ///  Karatsuba multiplication: a * b -> 2n-limb result. O(n^1.585).
 ///  Falls back to schoolbook for small n.
+///  Delegates to generic_mul_karatsuba (u32 implements LimbOps).
 pub fn mul_karatsuba(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: Vec<u32>)
     requires
         a@.len() == n,
@@ -854,10 +796,64 @@ pub fn mul_karatsuba(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: Vec<u32>)
         limbs_to_nat(result@) == limbs_to_nat(a@) * limbs_to_nat(b@),
     decreases n,
 {
-    if n <= 4 {
-        return mul_schoolbook(a, b, n);
+    use crate::fixed_point::limb_ops::{
+        generic_mul_karatsuba, lemma_limbs_val_eq_limbs_to_nat,
+        lemma_limb_power_eq_pow2, valid_limbs, vec_val, limb_power,
+        LimbOps,
+    };
+
+    //  u32 always has valid_limbs
+    proof {
+        assert(valid_limbs(a@)) by {
+            assert forall |j: int| 0 <= j < a@.len()
+                implies 0 <= (#[trigger] a@[j]).sem() && a@[j].sem() < crate::fixed_point::limb_ops::LIMB_BASE()
+            by {}
+        }
+        assert(valid_limbs(b@)) by {
+            assert forall |j: int| 0 <= j < b@.len()
+                implies 0 <= (#[trigger] b@[j]).sem() && b@[j].sem() < crate::fixed_point::limb_ops::LIMB_BASE()
+            by {}
+        }
     }
 
+    let (result, gc) = generic_mul_karatsuba(a, b, n);
+
+    proof {
+        //  Bridge: vec_val(result@) + gc@ * limb_power(2*n) == vec_val(a@) * vec_val(b@)
+        lemma_limbs_val_eq_limbs_to_nat(result@);
+        lemma_limbs_val_eq_limbs_to_nat(a@);
+        lemma_limbs_val_eq_limbs_to_nat(b@);
+        lemma_limb_power_eq_pow2((2 * n) as nat);
+        //  gc == 0: product of n-limb numbers fits in 2n limbs
+        //  vec_val(result) + gc * limb_power(2n) == vec_val(a) * vec_val(b)
+        //  Since limbs_to_nat(a) < pow2(n*32) and limbs_to_nat(b) < pow2(n*32):
+        //  product < pow2(2n*32) = limb_power(2n)
+        //  And result < limb_power(2n). So gc * limb_power(2n) < 2*limb_power(2n), gc < 2.
+        //  Also gc * limb_power(2n) = product - result >= 0, so gc >= 0.
+        //  Since gc is int: gc == 0.
+        lemma_limbs_to_nat_upper_bound(a@);
+        lemma_limbs_to_nat_upper_bound(b@);
+        lemma_limbs_to_nat_upper_bound(result@);
+        let p = pow2((n * 32) as nat);
+        lemma_pow2_add((n * 32) as nat, (n * 32) as nat);
+        assert(n * 32 + n * 32 == 2 * n * 32) by (nonlinear_arith);
+        let p2 = pow2((2 * n * 32) as nat);
+        assert(p2 == p * p);
+        assert(gc@ == 0int) by (nonlinear_arith)
+            requires
+                limbs_to_nat(result@) as int + gc@ * (p2 as int)
+                    == (limbs_to_nat(a@) as int) * (limbs_to_nat(b@) as int),
+                limbs_to_nat(a@) < p,
+                limbs_to_nat(b@) < p,
+                limbs_to_nat(result@) < p2,
+                p2 == p * p,
+                p2 > 0nat;
+    }
+
+    result
+}
+
+/*  Old mul_karatsuba body — replaced by generic_mul_karatsuba delegation above.
     let half: usize = n / 2;
     let upper: usize = n - half;
 
@@ -1057,6 +1053,7 @@ pub fn mul_karatsuba(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: Vec<u32>)
 
     s2
 }
+*/
 
 //  ── RuntimeFixedPointInterval ──────────────────────────
 
