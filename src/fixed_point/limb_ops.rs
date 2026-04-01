@@ -1399,7 +1399,119 @@ pub fn generic_mul_karatsuba<T: LimbOps>(
         lemma_vec_val_pad(z1_shifted@, z1_f@);
         lemma_vec_val_pad(z2_shifted@, z2_f@);
 
-        //  8. Final chain: s2 + carries * BASE^(2n) == z0 + z1*B^half + z2*B^(2*half) == va*vb
+        //  8. Final chain
+        //  From sub_limbs: z1 = z1_full - z0 - z2 (borrows are 0 by cross-term nonnegativity)
+        //  z1_full = vec_val(a_sum) * vec_val(b_sum) = (va_lo + va_hi)(vb_lo + vb_hi)
+        lemma_vec_val_pad(z0@, z0_p@);
+        lemma_vec_val_pad(z2@, z2_p@);
+        let vz1_full = vec_val(z1_full@);
+        let vz1_tmp = vec_val(z1_tmp@);
+        let vz1 = vec_val(z1@);
+        //  z1 = z1_full - z0 - z2 (from sub_limbs postconditions + borrows)
+        //  From sub_limbs: vz1_tmp + vz0 == vz1_full + bw1 * limb_power(tgt)
+        //  And: vz1 + vz2 == vz1_tmp + bw2 * limb_power(tgt)
+        //  Borrows are 0 or 1 from sub_limbs ensures
+
+        //  Shift/pad values
+        let vz0_f = vec_val(z0_f@);
+        let vz1_f = vec_val(z1_f@);
+        let vz2_f = vec_val(z2_f@);
+        //  vz0_f == vz0
+        //  vz1_f == vz1 * limb_power(half) (from shift)
+        //  vz2_f == vz2 * limb_power(2*half) (from shift)
+
+        //  From add_limbs:
+        //  vec_val(s1) + c1 * limb_power(rlen) == vz0_f + vz1_f
+        //  vec_val(s2) + c2 * limb_power(rlen) == vec_val(s1) + vz2_f
+        //  So: vec_val(s2) + (c1+c2) * limb_power(rlen) == vz0 + vz1*B^half + vz2*B^(2*half)
+        //  And from karatsuba_identity: va*vb == vz0 + vz1*B^half + vz2*B^(2*half)
+        //  where vz1 = vz1_full - vz0 - vz2 = (va_lo+va_hi)(vb_lo+vb_hi) - va_lo*vb_lo - va_hi*vb_hi
+
+        //  Chain it with nonlinear_arith:
+        let lp_rlen = limb_power(rlen as nat);
+        let lp_half = limb_power(half as nat);
+        let lp_2half = limb_power((2 * half) as nat);
+        assert(vec_val(s2@) + (c1.sem() + c2.sem()) * lp_rlen
+            == vz0_f + vz1_f + vz2_f) by(nonlinear_arith)
+            requires
+                vec_val(s2@) + c2.sem() * lp_rlen == vec_val(s1@) + vz2_f,
+                vec_val(s1@) + c1.sem() * lp_rlen == vz0_f + vz1_f;
+
+        //  From Karatsuba identity (already called above):
+        //  va * vb == vz0 + (vz1_full - vz0 - vz2) * B + vz2 * B^2
+        //  = vz0 + vz1 * B + vz2 * B^2  (if borrows are 0)
+        //  But we need to connect vz1 to z1_full - z0 - z2 and borrows to 0
+
+        //  The identity needs the cross terms to be non-negative for borrows to be 0
+        //  (va_lo+va_hi)(vb_lo+vb_hi) >= va_lo*vb_lo + va_hi*vb_hi
+        //  since the cross terms va_lo*vb_hi + va_hi*vb_lo >= 0 (all non-negative from valid_limbs)
+        assert(vz1_full >= vz0 + vz2) by(nonlinear_arith)
+            requires
+                vz1_full == (va_lo + va_hi) * (vb_lo + vb_hi),
+                vz0 == va_lo * vb_lo,
+                vz2 == va_hi * vb_hi,
+                va_lo >= 0, va_hi >= 0, vb_lo >= 0, vb_hi >= 0;
+
+        //  Borrows are 0 (since z1_full >= z0 + z2, sub_limbs doesn't underflow)
+        //  sub_limbs gives: vz1_tmp + vz0 == vz1_full + bw1 * limb_power(tgt)
+        //  Since vz1_full >= vz0: vz1_tmp = vz1_full - vz0 + bw1 * lp_tgt
+        //  If bw1 == 1: vz1_tmp = vz1_full - vz0 + lp_tgt >= lp_tgt, contradicts vz1_tmp < lp_tgt
+        let lp_tgt = limb_power(tgt as nat);
+        lemma_vec_val_bounded(z1_tmp@);
+        lemma_vec_val_bounded(z1@);
+        assert(bw1.sem() == 0int) by(nonlinear_arith)
+            requires
+                vz1_tmp + vz0 == vz1_full + bw1.sem() * lp_tgt,
+                vz1_full >= vz0 + vz2,
+                0 <= vz1_tmp, vz1_tmp < lp_tgt,
+                bw1.sem() == 0 || bw1.sem() == 1,
+                vz0 >= 0, vz2 >= 0;
+        assert(bw2.sem() == 0int) by(nonlinear_arith)
+            requires
+                vz1 + vz2 == vz1_tmp + bw2.sem() * lp_tgt,
+                vz1_tmp == vz1_full - vz0,
+                vz1_full >= vz0 + vz2,
+                0 <= vz1, vz1 < lp_tgt,
+                bw2.sem() == 0 || bw2.sem() == 1,
+                vz0 >= 0, vz2 >= 0;
+
+        //  So: vz1 = vz1_full - vz0 - vz2
+        assert(vz1 == vz1_full - vz0 - vz2);
+
+        //  Final: vec_val(s2) + (c1+c2) * limb_power(rlen)
+        //       == vz0 + vz1 * limb_power(half) + vz2 * limb_power(2*half)
+        //       == va * vb  (from karatsuba_identity)
+        assert(vz0_f == vz0);
+        assert(vz1_f == vz1 * lp_half);
+        assert(vz2_f == vz2 * lp_2half);
+
+        //  From karatsuba_identity: va*vb == z0 + z1*B + z2*B^2
+        //  where z1 = (va_lo+va_hi)(vb_lo+vb_hi) - z0 - z2
+        //  This matches vz1 = vz1_full - vz0 - vz2
+        lemma_limb_power_add(half as nat, half as nat);
+        assert(half + half == 2 * half);
+        assert(lp_2half == lp_half * lp_half);
+
+        //  Step A: Karatsuba identity gives va*vb in terms of z0, z1, z2
+        //  lemma_karatsuba_identity already called above; it ensures:
+        //  (va_hi * B + va_lo) * (vb_hi * B + vb_lo) == z0 + z1 * B + z2 * B * B
+        //  But the ensures uses a_hi*base + a_lo form, we have va_lo + va_hi * B
+        assert(va == va_hi * lp_half + va_lo) by(nonlinear_arith)
+            requires va == va_lo + va_hi * lp_half;
+        assert(vb == vb_hi * lp_half + vb_lo) by(nonlinear_arith)
+            requires vb == vb_lo + vb_hi * lp_half;
+        //  Now the identity matches: va * vb == vz0 + vz1 * B + vz2 * B^2
+        assert(va * vb == vz0 + vz1 * lp_half + vz2 * lp_half * lp_half);
+
+        //  Step B: lp_2half == lp_half * lp_half, so combine
+        assert(va * vb == vz0 + vz1 * lp_half + vz2 * lp_2half) by(nonlinear_arith)
+            requires
+                va * vb == vz0 + vz1 * lp_half + vz2 * lp_half * lp_half,
+                lp_2half == lp_half * lp_half;
+
+        //  Step C: s2 + carries == z0 + z1*B^half + z2*B^(2*half) == va*vb
+        assert(vec_val(s2@) + (c1.sem() + c2.sem()) * lp_rlen == va * vb);
+        assert(rlen == 2 * n);
     }
 
     (s2, Ghost(c1.sem() + c2.sem()))
