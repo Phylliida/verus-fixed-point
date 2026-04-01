@@ -711,10 +711,16 @@ pub proof fn lemma_limbs_val_shift(s: Seq<int>, zeros: Seq<int>)
     ensures limbs_val(zeros + s) == limbs_val(s) * limb_power(zeros.len()),
     decreases zeros.len(),
 {
-    reveal_with_fuel(limb_power, 2);
     if zeros.len() == 0 {
         assert(zeros + s =~= s);
+        reveal_with_fuel(limb_power, 2);
+        assert(limb_power(zeros.len()) == 1int);
+        assert(limbs_val(zeros + s) == limbs_val(s) * limb_power(zeros.len())) by(nonlinear_arith)
+            requires
+                limbs_val(zeros + s) == limbs_val(s),
+                limb_power(zeros.len()) == 1int;
     } else {
+        reveal_with_fuel(limb_power, 2);
         let tail_zeros = zeros.subrange(1, zeros.len() as int);
         assert forall |i: int| 0 <= i < tail_zeros.len()
             implies tail_zeros[i] == 0int
@@ -723,6 +729,15 @@ pub proof fn lemma_limbs_val_shift(s: Seq<int>, zeros: Seq<int>)
         assert((zeros + s) =~= (seq![0int] + (tail_zeros + s)));
         lemma_limbs_val_shift(s, tail_zeros);
         lemma_limbs_val_prepend_zero(tail_zeros + s);
+        //  Chain: limbs_val(zeros+s) == BASE * limbs_val(tail_zeros+s)
+        //       == BASE * limbs_val(s) * limb_power(tail_zeros.len())
+        //       == limbs_val(s) * (BASE * limb_power(tail_zeros.len()))
+        //       == limbs_val(s) * limb_power(zeros.len())
+        assert(limbs_val(zeros + s) == limbs_val(s) * limb_power(zeros.len())) by(nonlinear_arith)
+            requires
+                limbs_val(zeros + s) == LIMB_BASE() * limbs_val(tail_zeros + s),
+                limbs_val(tail_zeros + s) == limbs_val(s) * limb_power(tail_zeros.len()),
+                limb_power(zeros.len()) == LIMB_BASE() * limb_power(tail_zeros.len());
     }
 }
 
