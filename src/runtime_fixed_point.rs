@@ -3786,22 +3786,28 @@ impl RuntimeModularIntMultiLimb {
                     requires r2v + pv == rv + _borrow as nat * pow2((2 * n * 32) as nat),
                              rv >= pv, r2v < pow2((2 * n * 32) as nat), _borrow <= 1,
                              pow2((2 * n * 32) as nat) > 0;
-                //  r2v = rv - pv
+                //  r2v + pv == rv (sub_limbs postcondition with borrow == 0)
+                assert(r2v + pv == rv) by (nonlinear_arith)
+                    requires r2v + pv == rv + _borrow as nat * pow2((2 * n * 32) as nat),
+                             _borrow == 0nat;
                 assert(r2v == rv - pv) by (nonlinear_arith)
                     requires r2v + pv == rv;
                 assert(r2v < rv) by (nonlinear_arith)
                     requires r2v == rv - pv, pv > 0;
 
                 //  Congruence: (rv - pv) % pv == rv % pv
-                //  rv = (rv/pv)*pv + rv%pv. rv-pv = (rv/pv - 1)*pv + rv%pv.
-                //  So (rv-pv)%pv = rv%pv.
                 vstd::arithmetic::div_mod::lemma_fundamental_div_mod(rv as int, pv as int);
                 let q_rv = rv / pv;
                 let rem_rv = rv % pv;
-                //  rv = q_rv * pv + rem_rv, 0 ≤ rem_rv < pv
-                //  rv - pv = (q_rv - 1)*pv + rem_rv (since rv >= pv, q_rv ≥ 1)
+                //  fundamental_div_mod on int: rv == (rv/pv)*pv + rv%pv
+                //  Bridge: nat div/mod matches int div/mod for non-negative values
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(rv as int, pv as int);
+                assert((rv as int) == (rv as int / pv as int) * (pv as int) + (rv as int % pv as int));
+                assert(rv == q_rv * pv + rem_rv);
                 assert(q_rv >= 1) by (nonlinear_arith)
                     requires rv >= pv, rv == q_rv * pv + rem_rv, rem_rv < pv, pv > 0;
+                assert(rv - pv == (q_rv - 1) * pv + rem_rv) by (nonlinear_arith)
+                    requires rv == q_rv * pv + rem_rv, q_rv >= 1;
                 vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(
                     (rv - pv) as int, pv as int, (q_rv - 1) as int, rem_rv as int);
                 //  (rv - pv) % pv == rem_rv == rv % pv ✓
@@ -3934,9 +3940,10 @@ impl RuntimeModularIntMultiLimb {
             //    q*p % p == 0, so rw_val % p == (a*b) % p
             vstd::arithmetic::div_mod::lemma_fundamental_div_mod(
                 (q_val * p_val) as int, p_val as int);
-            assert((q_val * p_val) % p_val == 0) by (nonlinear_arith)
-                requires q_val * p_val == (q_val * p_val / p_val) * p_val
-                    + (q_val * p_val) % p_val;
+            //  q*p % p == 0: by fundamental_div_mod_converse with quotient=q, remainder=0
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(
+                (q_val * p_val) as int, p_val as int, q_val as int, 0int);
+            assert((q_val * p_val) % p_val == 0);
             crate::fixed_point::modular::lemma_mod_add_right(rw_val, q_val * p_val, p_val);
             assert(rw_val + q_val * p_val == prod_val);
             //  rw_val % p == (rw_val + q*p) % p == prod_val % p == (a*b) % p
@@ -3957,6 +3964,9 @@ impl RuntimeModularIntMultiLimb {
                          r_lo < p_bound, r_hi >= 0nat, p_bound > 0;
             let r_val = limbs_to_nat(r@);
             assert(r@ =~= r_full@.subrange(0, n as int));
+            assert(r_val == r_lo);
+            assert(rf_val == r_lo) by (nonlinear_arith)
+                requires rf_val == r_lo + r_hi * p_bound, r_hi == 0nat;
             assert(r_val == rf_val);
             assert(r_val == (a_val * b_val) % p_val);
             assert(r_val < p_val);
