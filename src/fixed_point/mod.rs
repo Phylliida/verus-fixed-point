@@ -14,6 +14,7 @@ pub mod modular;
 pub mod number_theory;
 pub mod ntt;
 pub mod newton_convergence;
+pub mod limb_ops;
 
 verus! {
 
