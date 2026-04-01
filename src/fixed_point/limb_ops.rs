@@ -67,6 +67,10 @@ pub trait LimbOps : Sized {
     ///  Constant from u32 value.
     fn const_u32(c: u32) -> (out: Self)
         ensures out.sem() == c as int;
+
+    ///  Clone preserving semantic value.
+    fn clone_limb(&self) -> (out: Self)
+        ensures out.sem() == self.sem();
 }
 
 //  ══════════════════════════════════════════════════════════════
@@ -135,6 +139,8 @@ impl LimbOps for u32 {
     fn zero_val() -> (out: Self) { 0u32 }
 
     fn const_u32(c: u32) -> (out: Self) { c }
+
+    fn clone_limb(&self) -> (out: Self) { *self }
 }
 
 //  ══════════════════════════════════════════════════════════════
@@ -546,4 +552,300 @@ pub fn generic_sub_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
     (out, borrow)
 }
 
+//  ══════════════════════════════════════════════════════════════
+//  Generic vector helpers for multi-limb multiply
+//  ══════════════════════════════════════════════════════════════
+
+///  Vector of n zeros.
+pub fn generic_zero_vec<T: LimbOps>(n: usize) -> (result: Vec<T>)
+    ensures
+        result@.len() == n,
+        forall |j: int| 0 <= j < n ==> (#[trigger] result@[j]).sem() == 0int,
+{
+    let mut out: Vec<T> = Vec::new();
+    let mut i: usize = 0;
+    while i < n
+        invariant i <= n, out@.len() == i as int,
+            forall |j: int| 0 <= j < i ==> (#[trigger] out@[j]).sem() == 0int,
+        decreases n - i,
+    {
+        out.push(T::zero_val());
+        i = i + 1;
+    }
+    out
+}
+
+///  Copy a subrange of a Vec.
+pub fn generic_slice_vec<T: LimbOps>(a: &Vec<T>, start: usize, end: usize) -> (result: Vec<T>)
+    requires start <= end, end <= a@.len(),
+    ensures result@.len() == end - start,
+        forall |j: int| 0 <= j < result@.len() ==> (#[trigger] result@[j]).sem() == a@[(start + j) as int].sem(),
+{
+    let mut out: Vec<T> = Vec::new();
+    let mut i: usize = start;
+    while i < end
+        invariant start <= i, i <= end, end <= a@.len(),
+            out@.len() == (i - start) as int,
+            forall |j: int| 0 <= j < out@.len() ==> (#[trigger] out@[j]).sem() == a@[(start + j) as int].sem(),
+        decreases end - i,
+    {
+        out.push(a[i].clone_limb());
+        i = i + 1;
+    }
+    out
+}
+
+///  Pad a Vec with zeros to reach target length.
+pub fn generic_pad_to_length<T: LimbOps>(a: &Vec<T>, target: usize) -> (result: Vec<T>)
+    requires target >= a@.len(),
+    ensures result@.len() == target,
+        forall |j: int| 0 <= j < a@.len() ==> (#[trigger] result@[j]).sem() == a@[j].sem(),
+        forall |j: int| a@.len() <= j < target ==> (#[trigger] result@[j]).sem() == 0int,
+{
+    let mut out: Vec<T> = Vec::new();
+    let mut i: usize = 0;
+    while i < a.len()
+        invariant i <= a@.len(), target >= a@.len(),
+            out@.len() == i as int,
+            forall |j: int| 0 <= j < i ==> (#[trigger] out@[j]).sem() == a@[j].sem(),
+        decreases a@.len() - i,
+    {
+        out.push(a[i].clone_limb());
+        i = i + 1;
+    }
+    while i < target
+        invariant a@.len() <= i, i <= target,
+            out@.len() == i as int,
+            forall |j: int| 0 <= j < a@.len() ==> (#[trigger] out@[j]).sem() == a@[j].sem(),
+            forall |j: int| a@.len() <= j < i ==> (#[trigger] out@[j]).sem() == 0int,
+        decreases target - i,
+    {
+        out.push(T::zero_val());
+        i = i + 1;
+    }
+    out
+}
+
+///  Shift left (prepend zeros).
+pub fn generic_shift_left<T: LimbOps>(a: &Vec<T>, offset: usize) -> (result: Vec<T>)
+    ensures result@.len() == a@.len() + offset,
+        forall |j: int| 0 <= j < offset ==> (#[trigger] result@[j]).sem() == 0int,
+        forall |j: int| 0 <= j < a@.len() ==> (#[trigger] result@[(offset + j) as int]).sem() == a@[j].sem(),
+{
+    let mut out: Vec<T> = Vec::new();
+    let mut i: usize = 0;
+    while i < offset
+        invariant i <= offset, out@.len() == i as int,
+            forall |j: int| 0 <= j < i ==> (#[trigger] out@[j]).sem() == 0int,
+        decreases offset - i,
+    {
+        out.push(T::zero_val());
+        i = i + 1;
+    }
+    let mut k: usize = 0;
+    while k < a.len()
+        invariant k <= a@.len(), out@.len() == (offset + k) as int,
+            forall |j: int| 0 <= j < offset ==> (#[trigger] out@[j]).sem() == 0int,
+            forall |j: int| 0 <= j < k ==> (#[trigger] out@[(offset + j) as int]).sem() == a@[j].sem(),
+        decreases a@.len() - k,
+    {
+        out.push(a[k].clone_limb());
+        k = k + 1;
+    }
+    out
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Generic schoolbook multiplication (O(n²), base case for Karatsuba)
+//  ══════════════════════════════════════════════════════════════
+
+///  limbs_val of a Vec<T> — convenience wrapper.
+pub open spec fn vec_val<T: LimbOps>(v: Seq<T>) -> int {
+    limbs_val(sem_seq(v))
+}
+
+///  limbs_val of all-zeros is 0.
+pub proof fn lemma_limbs_val_zeros(n: nat)
+    ensures limbs_val(Seq::new(n, |_i: int| 0int)) == 0int,
+    decreases n,
+{
+    reveal_with_fuel(limbs_val, 2);
+    if n > 0 {
+        let s = Seq::new(n, |_i: int| 0int);
+        assert(s.subrange(1, n as int) =~= Seq::new((n - 1) as nat, |_i: int| 0int));
+        lemma_limbs_val_zeros((n - 1) as nat);
+    }
+}
+
+///  sem_seq of a Vec where all sem() == 0 gives all-zero Seq.
+pub proof fn lemma_sem_seq_zeros<T: LimbOps>(v: Seq<T>)
+    requires forall |j: int| 0 <= j < v.len() ==> (#[trigger] v[j]).sem() == 0int,
+    ensures sem_seq(v) =~= Seq::new(v.len(), |_i: int| 0int),
+{}
+
+///  vec_val of all-zero Vec is 0.
+pub proof fn lemma_vec_val_zeros<T: LimbOps>(v: Seq<T>)
+    requires forall |j: int| 0 <= j < v.len() ==> (#[trigger] v[j]).sem() == 0int,
+    ensures vec_val(v) == 0int,
+{
+    lemma_sem_seq_zeros(v);
+    lemma_limbs_val_zeros(v.len());
+}
+
 } //  verus!
+
+// ══════════════════════════════════════════════════════════════
+// TODO: Schoolbook + Karatsuba multiply
+// Next steps:
+// 1. lemma_vec_val_shift: vec_val of shifted == original * limb_power(offset)
+// 2. lemma_vec_val_pad: vec_val of padded == original
+// 3. generic_mul_schoolbook: O(n²) base case
+// 4. generic_mul_karatsuba: O(n^1.585) recursive
+// Reference: runtime_fixed_point.rs lines 726-1116 has full u32 proofs
+// ══════════════════════════════════════════════════════════════
+
+/* WORK IN PROGRESS — to be completed next session
+
+pub proof fn lemma_vec_val_shift<T: LimbOps>(a: Seq<T>, offset: nat, shifted: Seq<T>)
+    requires
+        shifted.len() == a.len() + offset,
+        forall |j: int| 0 <= j < offset ==> (#[trigger] shifted[j]).sem() == 0int,
+        forall |j: int| 0 <= j < a.len() ==> (#[trigger] shifted[(offset + j) as int]).sem() == a[j].sem(),
+    ensures vec_val(shifted) == vec_val(a) * limb_power(offset),
+    decreases offset,
+{
+    reveal_with_fuel(limbs_val, 2);
+    reveal_with_fuel(limb_power, 2);
+    if offset == 0 {
+        //  shifted =~= a (same sem values, same length)
+        assert(sem_seq(shifted) =~= sem_seq(a));
+    } else {
+        //  shifted = [0] + shifted[1..]
+        //  shifted[0].sem() == 0
+        //  shifted[1..] is the same as a shifted by (offset-1)
+        let tail = shifted.subrange(1, shifted.len() as int);
+        //  tail has length a.len() + offset - 1
+        //  tail[j].sem() for j < offset-1: shifted[j+1].sem() == 0 (j+1 < offset)
+        //  tail[j].sem() for j >= offset-1: shifted[j+1].sem() == a[j - (offset-1)].sem()
+        assert forall |j: int| 0 <= j < (offset - 1) as nat
+            implies (#[trigger] tail[j]).sem() == 0int
+        by { assert(tail[j] == shifted[j + 1]); }
+        assert forall |j: int| 0 <= j < a.len()
+            implies (#[trigger] tail[((offset - 1) as nat + j) as int]).sem() == a[j].sem()
+        by { assert(tail[((offset - 1) as nat + j) as int] == shifted[(offset + j) as int]); }
+        lemma_vec_val_shift(a, (offset - 1) as nat, tail);
+        //  IH: vec_val(tail) == vec_val(a) * limb_power(offset - 1)
+        //  vec_val(shifted) == shifted[0].sem() + BASE * vec_val(tail)
+        //                   == 0 + BASE * vec_val(a) * limb_power(offset-1)
+        //                   == vec_val(a) * limb_power(offset)
+        assert(sem_seq(shifted).subrange(1, sem_seq(shifted).len() as int) =~= sem_seq(tail));
+    }
+}
+
+///  Pad semantics: vec_val of padded == vec_val of original.
+pub proof fn lemma_vec_val_pad<T: LimbOps>(a: Seq<T>, padded: Seq<T>)
+    requires
+        padded.len() >= a.len(),
+        forall |j: int| 0 <= j < a.len() ==> (#[trigger] padded[j]).sem() == a[j].sem(),
+        forall |j: int| a.len() <= j < padded.len() ==> (#[trigger] padded[j]).sem() == 0int,
+    ensures vec_val(padded) == vec_val(a),
+    decreases padded.len(),
+{
+    reveal_with_fuel(limbs_val, 2);
+    if padded.len() == 0 {
+    } else if a.len() == 0 {
+        //  All padded elements are zero
+        let tail = padded.subrange(1, padded.len() as int);
+        assert forall |j: int| 0 <= j < tail.len() implies (#[trigger] tail[j]).sem() == 0int
+        by { assert(tail[j] == padded[j + 1]); }
+        let empty: Seq<T> = Seq::empty();
+        lemma_vec_val_pad(empty, tail);
+        assert(padded[0].sem() == 0int);
+        assert(sem_seq(padded).subrange(1, sem_seq(padded).len() as int) =~= sem_seq(tail));
+    } else {
+        let a_tail = a.subrange(1, a.len() as int);
+        let p_tail = padded.subrange(1, padded.len() as int);
+        assert(padded[0].sem() == a[0].sem());
+        assert forall |j: int| 0 <= j < a_tail.len() implies (#[trigger] p_tail[j]).sem() == a_tail[j].sem()
+        by { assert(p_tail[j] == padded[j + 1]); assert(a_tail[j] == a[j + 1]); }
+        assert forall |j: int| a_tail.len() <= j < p_tail.len() implies (#[trigger] p_tail[j]).sem() == 0int
+        by { assert(p_tail[j] == padded[j + 1]); }
+        lemma_vec_val_pad(a_tail, p_tail);
+        assert(sem_seq(padded).subrange(1, sem_seq(padded).len() as int) =~= sem_seq(p_tail));
+        assert(sem_seq(a).subrange(1, sem_seq(a).len() as int) =~= sem_seq(a_tail));
+    }
+}
+
+///  Schoolbook multiply: returns 2n-limb result.
+///  vec_val(result) == vec_val(a) * vec_val(b)
+pub fn generic_mul_schoolbook<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (result: Vec<T>)
+    requires
+        a@.len() == n,
+        b@.len() == n,
+        n > 0,
+        n <= 0x3FFF_FFFF,
+    ensures
+        result@.len() == 2 * n,
+        vec_val(result@) == vec_val(a@) * vec_val(b@),
+{
+    let nn: usize = 2 * n;
+    let mut acc = generic_zero_vec::<T>(nn);
+    let mut i: usize = 0;
+    let ghost sb = sem_seq(b@);
+
+    proof {
+        lemma_vec_val_zeros(acc@);
+    }
+
+    while i < n
+        invariant
+            i <= n,
+            a@.len() == n,
+            b@.len() == n,
+            nn == 2 * n,
+            acc@.len() == nn,
+            sb == sem_seq(b@),
+            vec_val(acc@) == vec_val(a@) * limbs_val(sb.subrange(0, i as int)),
+        decreases n - i,
+    {
+        let ghost acc_old = acc@;
+        let bi = b[i].clone_limb();
+        let partial = generic_mul_by_limb(a, &bi, n);
+        let shifted = generic_shift_left(&partial, i);
+        let shifted_p = generic_pad_to_length(&shifted, nn);
+        let (new_acc, _carry) = generic_add_limbs(&acc, &shifted_p, nn);
+
+        proof {
+            //  1. vec_val(partial@) == vec_val(a@) * bi.sem()
+            //  2. vec_val(shifted@) == vec_val(partial@) * limb_power(i)
+            lemma_vec_val_shift(partial@, i as nat, shifted@);
+            //  3. vec_val(shifted_p@) == vec_val(shifted@) == vec_val(a@) * bi.sem() * limb_power(i)
+            lemma_vec_val_pad(shifted@, shifted_p@);
+            //  4. vec_val(new_acc@) + carry * limb_power(nn) == vec_val(acc@) + vec_val(shifted_p@)
+            //     = vec_val(a@) * limbs_val(sb[..i]) + vec_val(a@) * bi.sem() * limb_power(i)
+            //     = vec_val(a@) * (limbs_val(sb[..i]) + bi.sem() * limb_power(i))
+            //     = vec_val(a@) * limbs_val(sb[..i+1])
+            assert(bi.sem() == b@[i as int].sem());
+            assert(sb[i as int] == b@[i as int].sem());
+            lemma_limbs_val_subrange_extend(sb, i as nat);
+            //  vec_val(new_acc@) == vec_val(a@) * limbs_val(sb[..i+1]) - carry * limb_power(nn)
+            //  For schoolbook, no overflow if inputs are bounded, but generically we accept the carry.
+            //  Actually the postcondition of generic_add_limbs includes the carry term.
+            //  We need: vec_val(new_acc@) == vec_val(a@) * limbs_val(sb[..i+1])
+            //  This requires carry == 0, which is true when values fit in nn limbs.
+            //  For now, the invariant tracks: vec_val(acc) == target (without carry).
+            //  TODO: prove carry == 0 for schoolbook (product of n-limb numbers fits in 2n limbs).
+        }
+
+        acc = new_acc;
+        i = i + 1;
+    }
+
+    proof {
+        assert(sb.subrange(0, sb.len() as int) =~= sb);
+    }
+
+    acc
+}
+
+*/
