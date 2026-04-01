@@ -9,11 +9,8 @@
 
 use vstd::prelude::*;
 use super::limbs::limb_base;
-// pow2 imports kept for potential future use connecting limb_power to pow2
 #[cfg(verus_keep_ghost)]
-use super::limbs::lemma_limb_base_is_pow2_32;
-#[cfg(verus_keep_ghost)]
-use super::pow2::{pow2, lemma_pow2_add};
+use super::limbs::{lemma_limb_base_is_pow2_32, lemma_karatsuba_identity, lemma_mul_distribute};
 
 verus! {
 
@@ -466,6 +463,33 @@ pub fn generic_mul_by_limb<T: LimbOps>(a: &Vec<T>, scalar: &T, n: usize) -> (res
 }
 
 //  ══════════════════════════════════════════════════════════════
+///  limb_power(a + b) == limb_power(a) * limb_power(b).
+pub proof fn lemma_limb_power_add(a: nat, b: nat)
+    ensures limb_power(a + b) == limb_power(a) * limb_power(b),
+    decreases a,
+{
+    reveal_with_fuel(limb_power, 2);
+    if a == 0 {
+        assert(limb_power(0nat) == 1int);
+        assert(limb_power(a + b) == limb_power(a) * limb_power(b)) by(nonlinear_arith)
+            requires limb_power(0nat) == 1int, a == 0nat,
+                     limb_power(a + b) == limb_power(b),
+                     limb_power(a) == 1int;
+    } else {
+        lemma_limb_power_add((a - 1) as nat, b);
+        //  IH: limb_power((a-1) + b) == limb_power(a-1) * limb_power(b)
+        assert(limb_power(a + b) == LIMB_BASE() * limb_power(((a - 1) + b) as nat)) by {
+            assert(a + b > 0);
+            assert(((a + b) - 1) as nat == ((a - 1) + b) as nat);
+        }
+        assert(limb_power(a + b) == limb_power(a) * limb_power(b)) by(nonlinear_arith)
+            requires
+                limb_power(a + b) == LIMB_BASE() * limb_power(((a - 1) + b) as nat),
+                limb_power(((a - 1) + b) as nat) == limb_power((a - 1) as nat) * limb_power(b),
+                limb_power(a) == LIMB_BASE() * limb_power((a - 1) as nat);
+    }
+}
+
 //  Valid limb predicate
 //  ══════════════════════════════════════════════════════════════
 
@@ -731,6 +755,104 @@ pub proof fn lemma_vec_val_zeros<T: LimbOps>(v: Seq<T>)
 {
     lemma_sem_seq_zeros(v);
     lemma_limbs_val_zeros(v.len());
+}
+
+///  Valid limbs have value bounded by limb_power(n).
+pub proof fn lemma_limbs_val_upper_bound(s: Seq<int>, n: nat)
+    requires
+        s.len() == n,
+        forall |j: int| 0 <= j < n ==> 0 <= #[trigger] s[j] && s[j] < LIMB_BASE(),
+    ensures
+        0 <= limbs_val(s),
+        limbs_val(s) < limb_power(n),
+    decreases n,
+{
+    reveal_with_fuel(limbs_val, 2);
+    reveal_with_fuel(limb_power, 2);
+    if n == 0 {
+    } else {
+        let tail = s.subrange(1, n as int);
+        assert forall |j: int| 0 <= j < (n-1) as nat implies 0 <= #[trigger] tail[j] && tail[j] < LIMB_BASE()
+        by { assert(tail[j] == s[j + 1]); }
+        lemma_limbs_val_upper_bound(tail, (n - 1) as nat);
+        //  limbs_val(s) = s[0] + BASE * limbs_val(tail)
+        //  0 <= s[0] < BASE, 0 <= limbs_val(tail) < limb_power(n-1)
+        //  So: 0 <= limbs_val(s) < BASE + BASE * (limb_power(n-1) - 1) + BASE - 1
+        //  Actually: limbs_val(s) <= (BASE-1) + BASE * (limb_power(n-1) - 1) = BASE*limb_power(n-1) - 1 = limb_power(n) - 1
+        assert(limbs_val(s) < limb_power(n)) by(nonlinear_arith)
+            requires
+                limbs_val(s) == s[0] + LIMB_BASE() * limbs_val(tail),
+                0 <= s[0], s[0] < LIMB_BASE(),
+                0 <= limbs_val(tail), limbs_val(tail) < limb_power((n-1) as nat),
+                limb_power(n) == LIMB_BASE() * limb_power((n-1) as nat);
+    }
+}
+
+///  vec_val of valid limbs is bounded.
+pub proof fn lemma_vec_val_bounded<T: LimbOps>(a: Seq<T>)
+    requires valid_limbs(a),
+    ensures 0 <= vec_val(a) < limb_power(a.len()),
+{
+    assert forall |j: int| 0 <= j < sem_seq(a).len()
+        implies 0 <= #[trigger] sem_seq(a)[j] && sem_seq(a)[j] < LIMB_BASE()
+    by { assert(sem_seq(a)[j] == a[j].sem()); }
+    lemma_limbs_val_upper_bound(sem_seq(a), a.len());
+}
+
+///  Split a Seq<int> into lo + hi * BASE^mid.
+pub proof fn lemma_limbs_val_split(s: Seq<int>, mid: nat)
+    requires mid <= s.len(),
+    ensures limbs_val(s) == limbs_val(s.subrange(0, mid as int))
+        + limbs_val(s.subrange(mid as int, s.len() as int)) * limb_power(mid),
+    decreases mid,
+{
+    reveal_with_fuel(limbs_val, 2);
+    reveal_with_fuel(limb_power, 2);
+    if mid == 0 {
+        assert(s.subrange(0, 0int) =~= Seq::<int>::empty());
+        assert(s.subrange(0, s.len() as int) =~= s);
+    } else {
+        //  s = [s[0]] + s[1..]
+        //  limbs_val(s) = s[0] + BASE * limbs_val(s[1..])
+        //  By IH on s[1..] with mid-1:
+        //  limbs_val(s[1..]) = limbs_val(s[1..mid]) + limbs_val(s[mid..]) * limb_power(mid-1)
+        //  So: limbs_val(s) = s[0] + BASE * (limbs_val(s[1..mid]) + limbs_val(s[mid..]) * limb_power(mid-1))
+        //  = s[0] + BASE * limbs_val(s[1..mid]) + limbs_val(s[mid..]) * BASE * limb_power(mid-1)
+        //  = limbs_val(s[0..mid]) + limbs_val(s[mid..]) * limb_power(mid)
+        let tail = s.subrange(1, s.len() as int);
+        lemma_limbs_val_split(tail, (mid - 1) as nat);
+        assert(tail.subrange(0, (mid - 1) as int) =~= s.subrange(1, mid as int));
+        assert(tail.subrange((mid - 1) as int, tail.len() as int) =~= s.subrange(mid as int, s.len() as int));
+        //  limbs_val(s[0..mid]) = s[0] + BASE * limbs_val(s[1..mid])
+        assert(s.subrange(0, mid as int).subrange(1, (s.subrange(0, mid as int)).len() as int)
+            =~= s.subrange(1, mid as int));
+        //  limb_power(mid) = BASE * limb_power(mid-1)
+        assert(limbs_val(s) == limbs_val(s.subrange(0, mid as int))
+            + limbs_val(s.subrange(mid as int, s.len() as int)) * limb_power(mid))
+        by(nonlinear_arith)
+            requires
+                limbs_val(s) == s[0] + LIMB_BASE() * limbs_val(tail),
+                limbs_val(tail) == limbs_val(tail.subrange(0, (mid-1) as int))
+                    + limbs_val(tail.subrange((mid-1) as int, tail.len() as int)) * limb_power((mid-1) as nat),
+                limbs_val(s.subrange(0, mid as int)) == s[0] + LIMB_BASE() * limbs_val(s.subrange(1, mid as int)),
+                tail.subrange(0, (mid-1) as int) =~= s.subrange(1, mid as int),
+                tail.subrange((mid-1) as int, tail.len() as int) =~= s.subrange(mid as int, s.len() as int),
+                limb_power(mid) == LIMB_BASE() * limb_power((mid - 1) as nat);
+    }
+}
+
+///  Split vec_val into lo + hi * limb_power(mid).
+pub proof fn lemma_vec_val_split<T: LimbOps>(a: Seq<T>, mid: nat)
+    requires mid <= a.len(),
+    ensures vec_val(a) == vec_val(a.subrange(0, mid as int))
+        + vec_val(a.subrange(mid as int, a.len() as int)) * limb_power(mid),
+{
+    lemma_sem_seq_subrange(a, 0, mid as int);
+    lemma_sem_seq_subrange(a, mid as int, a.len() as int);
+    lemma_limbs_val_split(sem_seq(a), mid);
+    assert(sem_seq(a).subrange(0, mid as int) =~= sem_seq(a.subrange(0, mid as int)));
+    assert(sem_seq(a).subrange(mid as int, sem_seq(a).len() as int)
+        =~= sem_seq(a.subrange(mid as int, a.len() as int)));
 }
 
 //  ══════════════════════════════════════════════════════════════
@@ -1129,9 +1251,155 @@ pub fn generic_mul_karatsuba<T: LimbOps>(
     let (s2, c2) = generic_add_limbs(&s1, &z2_f, rlen);
 
     proof {
-        //  TODO: Connect to Karatsuba identity.
-        //  The algebraic proof from runtime_fixed_point.rs operates on
-        //  int values and is directly reusable here.
+        //  ── Karatsuba algebraic proof ──
+        //  Goal: vec_val(s2@) + (c1.sem() + c2.sem()) * limb_power(rlen)
+        //        == vec_val(a@) * vec_val(b@)
+
+        let va = vec_val(a@);
+        let vb = vec_val(b@);
+        let B = limb_power(half as nat);
+        //  1. Split: va == va_lo + va_hi * B, vb == vb_lo + vb_hi * B
+        lemma_vec_val_split(a@, half as nat);
+        lemma_vec_val_split(b@, half as nat);
+        //  a_lo = a[0..half], a_hi = a[half..n]
+        //  vec_val(a_lo@) matches vec_val(a@.subrange(0, half))
+        //  since slice_vec preserves sem
+        assert(sem_seq(a_lo@) =~= sem_seq(a@).subrange(0, half as int)) by {
+            lemma_sem_seq_subrange(a@, 0, half as int);
+            assert forall |j: int| 0 <= j < a_lo@.len()
+                implies sem_seq(a_lo@)[j] == sem_seq(a@).subrange(0, half as int)[j]
+            by { assert(a_lo@[j].sem() == a@[j].sem()); }
+        }
+        assert(sem_seq(a_hi@) =~= sem_seq(a@).subrange(half as int, n as int)) by {
+            lemma_sem_seq_subrange(a@, half as int, n as int);
+            assert forall |j: int| 0 <= j < a_hi@.len()
+                implies sem_seq(a_hi@)[j] == sem_seq(a@).subrange(half as int, n as int)[j]
+            by { assert(a_hi@[j].sem() == a@[(half + j) as int].sem()); }
+        }
+        //  pad doesn't change value
+        lemma_vec_val_pad(a_lo@, a_lo_p@);
+        lemma_vec_val_pad(b_lo@, b_lo_p@);
+        assert(sem_seq(b_lo@) =~= sem_seq(b@).subrange(0, half as int)) by {
+            lemma_sem_seq_subrange(b@, 0, half as int);
+            assert forall |j: int| 0 <= j < b_lo@.len()
+                implies sem_seq(b_lo@)[j] == sem_seq(b@).subrange(0, half as int)[j]
+            by { assert(b_lo@[j].sem() == b@[j].sem()); }
+        }
+        assert(sem_seq(b_hi@) =~= sem_seq(b@).subrange(half as int, n as int)) by {
+            lemma_sem_seq_subrange(b@, half as int, n as int);
+            assert forall |j: int| 0 <= j < b_hi@.len()
+                implies sem_seq(b_hi@)[j] == sem_seq(b@).subrange(half as int, n as int)[j]
+            by { assert(b_hi@[j].sem() == b@[(half + j) as int].sem()); }
+        }
+
+        let va_lo = vec_val(a_lo_p@);
+        let va_hi = vec_val(a_hi@);
+        let vb_lo = vec_val(b_lo_p@);
+        let vb_hi = vec_val(b_hi@);
+
+        //  Bridge: vec_val of slices == vec_val of subranges
+        //  sem_seq(a_lo@) =~= sem_seq(a@).subrange(0, half) =~= sem_seq(a@.subrange(0, half))
+        lemma_sem_seq_subrange(a@, 0, half as int);
+        lemma_sem_seq_subrange(a@, half as int, n as int);
+        lemma_sem_seq_subrange(b@, 0, half as int);
+        lemma_sem_seq_subrange(b@, half as int, n as int);
+        assert(sem_seq(a_lo@) =~= sem_seq(a@.subrange(0, half as int)));
+        assert(sem_seq(a_hi@) =~= sem_seq(a@.subrange(half as int, n as int)));
+        assert(sem_seq(b_lo@) =~= sem_seq(b@.subrange(0, half as int)));
+        assert(sem_seq(b_hi@) =~= sem_seq(b@.subrange(half as int, n as int)));
+        //  va_lo == vec_val(a_lo_p@) == vec_val(a_lo@) from pad
+        //  va == va_lo + va_hi * B from split + pad + bridge
+        assert(va == va_lo + va_hi * B);
+        assert(vb == vb_lo + vb_hi * B);
+
+        //  2. z0 = va_lo * vb_lo, z2 = va_hi * vb_hi (from recursive postconditions)
+        let vz0 = vec_val(z0@);
+        let vz2 = vec_val(z2@);
+        //  vz0 + gz0@ * limb_power(2*upper) == va_lo * vb_lo
+        //  vz2 + gz2@ * limb_power(2*upper) == va_hi * vb_hi
+
+        //  3. Sums: va_sum == va_lo + va_hi, vb_sum == vb_lo + vb_hi
+        //  (from add_limbs postcondition + push carry)
+        lemma_sem_seq_push(a_sum_pre, a_carry);
+        lemma_limbs_val_push(sem_seq(a_sum_pre), a_carry.sem());
+        lemma_sem_seq_push(b_sum_pre, b_carry);
+        lemma_limbs_val_push(sem_seq(b_sum_pre), b_carry.sem());
+
+        //  4. Ghost carries are 0 (products fit in output limbs)
+        //  vec_val(a_lo_p) < limb_power(upper), vec_val(b_lo_p) < limb_power(upper)
+        //  product < limb_power(upper)^2 = limb_power(2*upper), fits in 2*upper limbs
+        lemma_vec_val_bounded(a_lo_p@);
+        lemma_vec_val_bounded(b_lo_p@);
+        lemma_vec_val_bounded(a_hi@);
+        lemma_vec_val_bounded(b_hi@);
+        //  z0 product: va_lo * vb_lo < limb_power(upper)^2 = limb_power(2*upper)
+        //  So gz0 == 0
+        lemma_vec_val_bounded(z0@);
+        lemma_vec_val_bounded(z2@);
+        //  limb_power(2*upper) == limb_power(upper) * limb_power(upper)
+        lemma_limb_power_add(upper as nat, upper as nat);
+        assert(upper + upper == 2 * upper);
+        let lp_upper = limb_power(upper as nat);
+        let lp_2upper = limb_power((2 * upper) as nat);
+        assert(lp_2upper == lp_upper * lp_upper);
+        //  va_lo * vb_lo < lp_upper^2 = lp_2upper, and vec_val(z0) < lp_2upper
+        //  So gz0 * lp_2upper == va_lo*vb_lo - vec_val(z0), |rhs| < lp_2upper, so gz0 == 0
+        assert(gz0@ == 0int) by(nonlinear_arith)
+            requires
+                vec_val(z0@) + gz0@ * lp_2upper == va_lo * vb_lo,
+                0 <= vec_val(z0@), vec_val(z0@) < lp_2upper,
+                0 <= va_lo, va_lo < lp_upper,
+                0 <= vb_lo, vb_lo < lp_upper,
+                lp_2upper == lp_upper * lp_upper,
+                lp_2upper > 0;
+        assert(gz2@ == 0int) by(nonlinear_arith)
+            requires
+                vec_val(z2@) + gz2@ * lp_2upper == va_hi * vb_hi,
+                0 <= vec_val(z2@), vec_val(z2@) < lp_2upper,
+                0 <= va_hi, va_hi < lp_upper,
+                0 <= vb_hi, vb_hi < lp_upper,
+                lp_2upper == lp_upper * lp_upper,
+                lp_2upper > 0;
+
+        //  Sum bounds for z1_full
+        lemma_sem_seq_push(a_sum_pre, a_carry);
+        lemma_limbs_val_push(sem_seq(a_sum_pre), a_carry.sem());
+        lemma_sem_seq_push(b_sum_pre, b_carry);
+        lemma_limbs_val_push(sem_seq(b_sum_pre), b_carry.sem());
+        lemma_vec_val_bounded(a_sum@);
+        lemma_vec_val_bounded(b_sum@);
+        lemma_vec_val_bounded(z1_full@);
+        lemma_limb_power_add((upper + 1) as nat, (upper + 1) as nat);
+        assert((upper + 1) + (upper + 1) == 2 * (upper + 1));
+        let lp_up1 = limb_power((upper + 1) as nat);
+        let lp_2up1 = limb_power((2 * (upper + 1)) as nat);
+        assert(lp_2up1 == lp_up1 * lp_up1);
+        assert(gz1f@ == 0int) by(nonlinear_arith)
+            requires
+                vec_val(z1_full@) + gz1f@ * lp_2up1
+                    == vec_val(a_sum@) * vec_val(b_sum@),
+                0 <= vec_val(z1_full@), vec_val(z1_full@) < lp_2up1,
+                0 <= vec_val(a_sum@), vec_val(a_sum@) < lp_up1,
+                0 <= vec_val(b_sum@), vec_val(b_sum@) < lp_up1,
+                lp_2up1 == lp_up1 * lp_up1, lp_2up1 > 0;
+
+        //  5. Now: vz0 == va_lo * vb_lo, vz2 == va_hi * vb_hi (exact, no carry)
+        let vz0 = vec_val(z0@);
+        let vz2 = vec_val(z2@);
+        assert(vz0 == va_lo * vb_lo);
+        assert(vz2 == va_hi * vb_hi);
+
+        //  6. Karatsuba identity: va * vb == z0 + z1 * B + z2 * B^2
+        lemma_karatsuba_identity(va_lo, va_hi, vb_lo, vb_hi, B);
+
+        //  7. Connect shift + pad + add to the final result
+        lemma_vec_val_shift(z1@, half as nat, z1_shifted@);
+        lemma_vec_val_shift(z2@, (2 * half) as nat, z2_shifted@);
+        lemma_vec_val_pad(z0@, z0_f@);
+        lemma_vec_val_pad(z1_shifted@, z1_f@);
+        lemma_vec_val_pad(z2_shifted@, z2_f@);
+
+        //  8. Final chain: s2 + carries * BASE^(2n) == z0 + z1*B^half + z2*B^(2*half) == va*vb
     }
 
     (s2, Ghost(c1.sem() + c2.sem()))
