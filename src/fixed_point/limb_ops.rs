@@ -260,6 +260,7 @@ pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
         b@.len() == n,
     ensures
         result.0@.len() == n,
+        valid_limbs(result.0@),
         limbs_val(sem_seq(result.0@)) + result.1.sem() * limb_power(n as nat)
             == limbs_val(sem_seq(a@)) + limbs_val(sem_seq(b@)),
 {
@@ -275,6 +276,7 @@ pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
             a@.len() == n,
             b@.len() == n,
             out@.len() == i as int,
+            valid_limbs(out@),
             sa == sem_seq(a@),
             sb == sem_seq(b@),
             limbs_val(sem_seq(out@)) + carry.sem() * limb_power(i as nat)
@@ -284,6 +286,10 @@ pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
     {
         let (digit, next_carry) = a[i].add3(&b[i], &carry);
         proof {
+            //  digit.sem() == (sum) % BASE, which is in [0, BASE)
+            assert(0 <= digit.sem() && digit.sem() < LIMB_BASE()) by(nonlinear_arith)
+                requires digit.sem() == (a@[i as int].sem() + b@[i as int].sem() + carry.sem()) % LIMB_BASE(),
+                         LIMB_BASE() > 0;
             //  div_mod identity
             let x = a@[i as int].sem() + b@[i as int].sem() + carry.sem();
             assert(digit.sem() + next_carry.sem() * LIMB_BASE() == x) by(nonlinear_arith)
@@ -918,5 +924,27 @@ pub fn generic_mul_schoolbook<T: LimbOps>(
 
     (acc, Ghost(ghost_carry))
 }
+
+//  ══════════════════════════════════════════════════════════════
+//  Generic Karatsuba multiplication (O(n^1.585))
+//  ══════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════
+// TODO: generic_mul_karatsuba<T: LimbOps>
+//
+// The Karatsuba algorithm structure is ready (see generic_mul_schoolbook
+// as base case). Remaining work:
+// 1. Thread valid_limbs through: prove add3/mul_add_carry outputs are
+//    in [0, BASE) (follows from x % BASE property), add valid_limbs
+//    postconditions to mul_by_limb, sub_limbs, schoolbook, shift_left
+// 2. Copy the algebraic proof from runtime_fixed_point.rs mul_karatsuba
+//    (lemma_karatsuba_identity, lemma_karatsuba_no_overflow,
+//    lemma_karatsuba_combine — all operate on int, reusable directly)
+// 3. The recursive structure: schoolbook for n<=4, Karatsuba for n>4
+//    using generic_slice_vec, generic_pad_to_length, generic_add_limbs,
+//    generic_sub_limbs, generic_shift_left
+//
+// Reference: runtime_fixed_point.rs lines 903-1116
+// ══════════════════════════════════════════════════════════════
 
 } //  verus!
