@@ -169,54 +169,108 @@ impl LimbOps for u32 {
     //  GPU-native: wrapping mul for lo, 16-bit decomposition for hi
     fn mul2(&self, b: &Self) -> (out: (Self, Self))
     {
-        //  lo = a * b (wrapping — low 32 bits)
         let lo = self.wrapping_mul(*b);
-        //  hi via 16-bit decomposition (no u64 needed)
         let a_lo: u32 = *self & 0xFFFFu32;
         let a_hi: u32 = *self >> 16u32;
         let b_lo: u32 = *b & 0xFFFFu32;
         let b_hi: u32 = *b >> 16u32;
         proof {
-            //  16-bit * 16-bit <= 0xFFFF * 0xFFFF = 0xFFFE0001 < 2^32
             assert(a_lo <= 0xFFFFu32) by(bit_vector) requires a_lo == *self & 0xFFFFu32;
             assert(a_hi <= 0xFFFFu32) by(bit_vector) requires a_hi == *self >> 16u32;
             assert(b_lo <= 0xFFFFu32) by(bit_vector) requires b_lo == *b & 0xFFFFu32;
             assert(b_hi <= 0xFFFFu32) by(bit_vector) requires b_hi == *b >> 16u32;
-        }
-        proof {
-            assert(a_lo as int * b_hi as int <= 0xFFFF as int * 0xFFFF as int) by(nonlinear_arith)
+            assert(a_lo as int * b_hi as int <= 0xFFFE_0001 as int) by(nonlinear_arith)
                 requires a_lo <= 0xFFFFu32, b_hi <= 0xFFFFu32;
-            assert(a_hi as int * b_lo as int <= 0xFFFF as int * 0xFFFF as int) by(nonlinear_arith)
+            assert(a_hi as int * b_lo as int <= 0xFFFE_0001 as int) by(nonlinear_arith)
                 requires a_hi <= 0xFFFFu32, b_lo <= 0xFFFFu32;
-            assert(a_hi as int * b_hi as int <= 0xFFFF as int * 0xFFFF as int) by(nonlinear_arith)
+            assert(a_hi as int * b_hi as int <= 0xFFFE_0001 as int) by(nonlinear_arith)
                 requires a_hi <= 0xFFFFu32, b_hi <= 0xFFFFu32;
-            assert(0xFFFF as int * 0xFFFF as int == 0xFFFE_0001 as int) by(compute_only);
         }
         let p1: u32 = a_lo * b_hi;
         let p2: u32 = a_hi * b_lo;
         let p3: u32 = a_hi * b_hi;
         let lo_hi: u32 = lo >> 16u32;
-        let mid_sum = lo_hi.wrapping_add(p1 & 0xFFFFu32).wrapping_add(p2 & 0xFFFFu32);
-        let hi = p3.wrapping_add(p1 >> 16u32).wrapping_add(p2 >> 16u32).wrapping_add(mid_sum >> 16u32);
+        let mid = lo_hi.wrapping_add(p1 & 0xFFFFu32).wrapping_add(p2 & 0xFFFFu32);
+        let hi = p3.wrapping_add(p1 >> 16u32).wrapping_add(p2 >> 16u32).wrapping_add(mid >> 16u32);
         proof {
-            //  TODO: prove hi == (a * b) / 2^32 via 16-bit decomposition
+            //  Prove via ghost int computation
+            use vstd::wrapping::u32_specs;
+            let prod: int = *self as int * *b as int;
+            let base = LIMB_BASE();
+            //  lo == prod % BASE (wrapping_mul spec)
+            assert(lo as int == prod % base) by {
+                assert(lo as int == u32_specs::wrapping_mul(*self, *b) as int);
+            }
+            //  hi == (a*b) >> 32 via bit_vector on the 16-bit decomposition
+            assert(hi as u64 == (*self as u64 * *b as u64) / 0x1_0000_0000u64) by(bit_vector)
+                requires
+                    a_lo == *self & 0xFFFFu32,
+                    a_hi == *self >> 16u32,
+                    b_lo == *b & 0xFFFFu32,
+                    b_hi == *b >> 16u32,
+                    p1 == a_lo * b_hi,
+                    p2 == a_hi * b_lo,
+                    p3 == a_hi * b_hi,
+                    lo_hi == lo >> 16u32,
+                    lo == u32_specs::wrapping_mul(*self, *b),
+                    mid == u32_specs::wrapping_add(
+                        u32_specs::wrapping_add(lo_hi, p1 & 0xFFFFu32),
+                        p2 & 0xFFFFu32),
+                    hi == u32_specs::wrapping_add(
+                        u32_specs::wrapping_add(
+                            u32_specs::wrapping_add(p3, p1 >> 16u32),
+                            p2 >> 16u32),
+                        mid >> 16u32);
+            assert(hi as int == prod / base);
         }
         (lo, hi)
     }
 
-    //  GPU-native: mul_lo + add with carry detection
+    //  GPU-native: mul2 + wrapping add with carry detection
     fn mul_add_carry(&self, b: &Self, accum: &Self, carry: &Self) -> (out: (Self, Self))
     {
         let (mul_lo, mul_hi) = self.mul2(b);
-        //  lo = mul_lo + accum + carry (wrapping, with carry detection)
         let sum1 = mul_lo.wrapping_add(*accum);
         let c1: u32 = if sum1 < mul_lo { 1u32 } else { 0u32 };
         let sum2 = sum1.wrapping_add(*carry);
         let c2: u32 = if sum2 < sum1 { 1u32 } else { 0u32 };
-        //  carry_out = mul_hi + c1 + c2
         let carry_out = mul_hi.wrapping_add(c1).wrapping_add(c2);
         proof {
-            //  TODO: prove postconditions via wrapping specs
+            use vstd::wrapping::u32_specs;
+            let prod = self.sem() * b.sem();
+            let total = prod + accum.sem() + carry.sem();
+            //  mul_lo == prod % BASE, mul_hi == prod / BASE (from mul2)
+            //  sum1 + c1*BASE == mul_lo + accum (wrapping add)
+            assert(sum1 as int + c1 as int * LIMB_BASE() == mul_lo as int + *accum as int) by {
+                assert(sum1 as int == u32_specs::wrapping_add(mul_lo, *accum) as int);
+                if mul_lo as int + *accum as int > u32::MAX as int {
+                    assert(c1 == 1u32);
+                } else {
+                    assert(c1 == 0u32);
+                }
+            }
+            //  sum2 + c2*BASE == sum1 + carry (wrapping add)
+            assert(sum2 as int + c2 as int * LIMB_BASE() == sum1 as int + *carry as int) by {
+                assert(sum2 as int == u32_specs::wrapping_add(sum1, *carry) as int);
+                if sum1 as int + *carry as int > u32::MAX as int {
+                    assert(c2 == 1u32);
+                } else {
+                    assert(c2 == 0u32);
+                }
+            }
+            //  sum2 = (prod % BASE + accum + carry) mod BASE = total mod BASE
+            //  carry_out = prod / BASE + c1 + c2 = total / BASE
+            //  (wrapping_add for carry_out is safe: mul_hi < BASE, c1+c2 <= 2)
+            let base = LIMB_BASE();
+            assert(sum2 as int == mul_lo as int + *accum as int + *carry as int
+                - (c1 as int + c2 as int) * base) by(nonlinear_arith)
+                requires
+                    sum1 as int + c1 as int * base == mul_lo as int + *accum as int,
+                    sum2 as int + c2 as int * base == sum1 as int + *carry as int;
+            //  carry_out via wrapping: mul_hi + c1 + c2 can't overflow u32
+            //  because mul_hi <= 0xFFFE_0001 and c1+c2 <= 2
+            assert(mul_hi as int + c1 as int + c2 as int <= u32::MAX as int) by(nonlinear_arith)
+                requires mul_hi as int <= 0xFFFE_0001, c1 <= 1, c2 <= 1;
         }
         (sum2, carry_out)
     }
