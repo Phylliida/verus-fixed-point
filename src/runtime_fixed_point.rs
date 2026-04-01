@@ -117,6 +117,7 @@ impl RuntimeFixedPoint {
 
 ///  Unsigned carry-chain addition of two n-limb arrays.
 ///  Returns (result, carry_out) where carry_out is 0 or 1.
+///  Delegates to generic_add_limbs (u32 implements LimbOps).
 pub fn add_limbs(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: (Vec<u32>, u32))
     requires
         a@.len() == n,
@@ -127,92 +128,34 @@ pub fn add_limbs(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (result: (Vec<u32>, u3
             == limbs_to_nat(a@) + limbs_to_nat(b@),
         result.1 <= 1,
 {
-    let mut out: Vec<u32> = Vec::new();
-    let mut carry: u64 = 0;
-    let mut i: usize = 0;
+    use crate::fixed_point::limb_ops::{
+        generic_add_limbs, lemma_limbs_val_eq_limbs_to_nat,
+        lemma_limb_power_eq_pow2,
+    };
+
+    let (out, carry) = generic_add_limbs(a, b, n);
 
     proof {
-        lemma_limbs_to_nat_subrange_zero(a@);
-        lemma_limbs_to_nat_subrange_zero(b@);
+        //  Bridge lemmas: limbs_val(sem_seq(x)) == limbs_to_nat(x)
+        lemma_limbs_val_eq_limbs_to_nat(out@);
+        lemma_limbs_val_eq_limbs_to_nat(a@);
+        lemma_limbs_val_eq_limbs_to_nat(b@);
+        lemma_limb_power_eq_pow2(n as nat);
+        //  carry <= 1: a + b < 2 * BASE^n, result >= 0
+        //  so carry * BASE^n <= a + b < 2 * BASE^n, thus carry < 2
+        lemma_limbs_to_nat_upper_bound(a@);
+        lemma_limbs_to_nat_upper_bound(b@);
+        let p = pow2((n * 32) as nat);
+        assert(carry <= 1u32) by(nonlinear_arith)
+            requires
+                limbs_to_nat(out@) + (carry as nat) * p == limbs_to_nat(a@) + limbs_to_nat(b@),
+                limbs_to_nat(a@) < p,
+                limbs_to_nat(b@) < p,
+                limbs_to_nat(out@) >= 0nat,
+                p > 0nat;
     }
 
-    while i < n
-        invariant
-            i <= n,
-            a@.len() == n,
-            b@.len() == n,
-            out@.len() == i as int,
-            carry <= 1,
-            limbs_to_nat(out@) + carry as nat * pow2((i * 32) as nat)
-                == limbs_to_nat(a@.subrange(0, i as int))
-                    + limbs_to_nat(b@.subrange(0, i as int)),
-        decreases n - i,
-    {
-        let ai = a[i] as u64;
-        let bi = b[i] as u64;
-        let sum: u64 = ai + bi + carry;
-
-        let digit: u32 = (sum % 4_294_967_296u64) as u32;
-        let next_carry: u64 = sum / 4_294_967_296u64;
-
-        proof {
-            assert(digit as nat + next_carry as nat * limb_base()
-                == ai as nat + bi as nat + carry as nat) by (nonlinear_arith)
-                requires
-                    digit == (sum % 4_294_967_296u64) as u32,
-                    next_carry == sum / 4_294_967_296u64,
-                    sum == ai + bi + carry,
-            {}
-
-            assert(next_carry <= 1) by (nonlinear_arith)
-                requires
-                    next_carry == sum / 4_294_967_296u64,
-                    sum <= 2 * 4_294_967_296u64 - 1,
-            {}
-
-            let p = pow2((i * 32) as nat);
-            let p_next = pow2(((i + 1) * 32) as nat);
-            lemma_pow2_add(32, (i * 32) as nat);
-            assert(32 + i * 32 == (i + 1) * 32);
-            lemma_limb_base_is_pow2_32();
-            assert(p_next == limb_base() * p) by (nonlinear_arith)
-                requires
-                    p_next == pow2(((i + 1) * 32) as nat),
-                    p == pow2((i * 32) as nat),
-                    pow2(((i + 1) * 32) as nat) == pow2(32nat) * pow2((i * 32) as nat),
-                    pow2(32nat) == limb_base(),
-            {}
-
-            lemma_limbs_to_nat_push(out@, digit);
-            lemma_limbs_to_nat_subrange_extend(a@, i as nat);
-            lemma_limbs_to_nat_subrange_extend(b@, i as nat);
-
-            assert(
-                limbs_to_nat(out@) + (digit as nat) * p + (next_carry as nat) * p_next
-                == limbs_to_nat(a@.subrange(0, i as int)) + (ai as nat) * p
-                    + limbs_to_nat(b@.subrange(0, i as int)) + (bi as nat) * p
-            ) by (nonlinear_arith)
-                requires
-                    limbs_to_nat(out@) + (carry as nat) * p
-                        == limbs_to_nat(a@.subrange(0, i as int))
-                            + limbs_to_nat(b@.subrange(0, i as int)),
-                    (digit as nat) + (next_carry as nat) * limb_base()
-                        == (ai as nat) + (bi as nat) + (carry as nat),
-                    p_next == limb_base() * p,
-            {}
-        }
-
-        out.push(digit);
-        carry = next_carry;
-        i = i + 1;
-    }
-
-    proof {
-        lemma_limbs_to_nat_subrange_full(a@);
-        lemma_limbs_to_nat_subrange_full(b@);
-    }
-
-    (out, carry as u32)
+    (out, carry)
 }
 
 ///  Unsigned borrow-chain subtraction of two n-limb arrays.

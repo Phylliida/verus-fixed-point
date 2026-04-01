@@ -11,6 +11,8 @@ use vstd::prelude::*;
 use super::limbs::limb_base;
 #[cfg(verus_keep_ghost)]
 use super::limbs::{lemma_limb_base_is_pow2_32, lemma_karatsuba_identity, lemma_mul_distribute};
+#[cfg(verus_keep_ghost)]
+use super::limbs as limb_base_conv;
 
 verus! {
 
@@ -142,6 +144,46 @@ impl LimbOps for u32 {
     fn const_u32(c: u32) -> (out: Self) { c }
 
     fn clone_limb(&self) -> (out: Self) { *self }
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Bridge: limbs_to_nat(u32) == limbs_val(sem_seq(u32))
+//  Connects existing u32 proofs to the generic framework.
+//  ══════════════════════════════════════════════════════════════
+
+///  For u32 sequences: limbs_val(sem_seq(s)) == limbs_to_nat(s) as int.
+pub proof fn lemma_limbs_val_eq_limbs_to_nat(s: Seq<u32>)
+    ensures limbs_val(sem_seq(s)) == limb_base_conv::limbs_to_nat(s) as int,
+    decreases s.len(),
+{
+    reveal_with_fuel(limbs_val, 2);
+    reveal_with_fuel(limb_base_conv::limbs_to_nat, 2);
+    if s.len() == 0 {
+    } else {
+        let tail = s.subrange(1, s.len() as int);
+        assert(sem_seq(s).subrange(1, sem_seq(s).len() as int) =~= sem_seq(tail));
+        lemma_limbs_val_eq_limbs_to_nat(tail);
+        //  limbs_val(sem_seq(s)) == s[0] as int + LIMB_BASE() * limbs_val(sem_seq(tail))
+        //                        == s[0] as int + LIMB_BASE() * (limbs_to_nat(tail) as int)
+        //                        == (s[0] as nat + limb_base() * limbs_to_nat(tail)) as int
+        //                        == limbs_to_nat(s) as int
+    }
+}
+
+///  limb_power(n) == pow2(n * 32) as int.
+pub proof fn lemma_limb_power_eq_pow2(n: nat)
+    ensures limb_power(n) == super::pow2::pow2((n * 32) as nat) as int,
+    decreases n,
+{
+    reveal_with_fuel(limb_power, 2);
+    if n == 0 {
+        assert(super::pow2::pow2(0nat) == 1nat) by(compute_only);
+    } else {
+        lemma_limb_power_eq_pow2((n - 1) as nat);
+        lemma_limb_base_is_pow2_32();
+        super::pow2::lemma_pow2_add(32, ((n - 1) * 32) as nat);
+        assert(32 + (n - 1) * 32 == n * 32);
+    }
 }
 
 //  ══════════════════════════════════════════════════════════════
