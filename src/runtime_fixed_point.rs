@@ -61,6 +61,7 @@ impl<T: LimbOps> GenericFixedPoint<T> {
     pub fn add(&self, other: &Self) -> (out: Self)
         requires self.wf_spec(), other.wf_spec(),
             self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
+        ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
     {
         use crate::fixed_point::limb_ops::generic_add_limbs;
         let (sum, _carry) = generic_add_limbs(&self.limbs, &other.limbs, self.n_exec);
@@ -76,6 +77,7 @@ impl<T: LimbOps> GenericFixedPoint<T> {
     pub fn sub(&self, other: &Self) -> (out: Self)
         requires self.wf_spec(), other.wf_spec(),
             self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
+        ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
     {
         use crate::fixed_point::limb_ops::generic_sub_limbs;
         let (diff, _borrow) = generic_sub_limbs(&self.limbs, &other.limbs, self.n_exec);
@@ -93,7 +95,8 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         requires self.wf_spec(), other.wf_spec(),
             self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
             self.n_exec > 0, self.n_exec <= 0x1FFF_FFFF,
-            self.frac_exec % 32 == 0,  //  limb-aligned frac for clean truncation
+            self.frac_exec % 32 == 0,
+        ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
     {
         use crate::fixed_point::limb_ops::{generic_mul_karatsuba, generic_slice_vec};
         let n = self.n_exec;
@@ -2449,7 +2452,10 @@ impl RuntimeFixedPointInterval {
                         (b_int * x_int) as int, s as int);
                     let bx_rem = (b_int * x_int) % s;
                     //  b*x = bx_val*S + bx_rem, bx_val ≤ S+1
-                    //  b*x ≤ (S+1)*S + S-1 < (S+2)*S
+                    assert(b_int * x_int == bx_val * s + bx_rem) by {
+                        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(
+                            (b_int * x_int) as int, s as int);
+                    }
                     assert(b_int * x_int < (s + 2) * s) by (nonlinear_arith)
                         requires b_int * x_int == bx_val * s + bx_rem,
                                  bx_val <= s + 1, bx_rem < s as int, s > 0;
