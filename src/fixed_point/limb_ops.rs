@@ -91,24 +91,64 @@ impl LimbOps for u32 {
         let abc = ab.wrapping_add(*carry);
         let c2: u32 = if abc < ab { 1u32 } else { 0u32 };
         proof {
-            //  wrapping_add spec: ab == (a + b) mod 2^32
-            //  if overflow (a + b >= 2^32): ab = a + b - 2^32, ab < a ✓
-            //  if no overflow: ab = a + b, ab >= a ✓
-            //  So c1 = overflow indicator, abc = ab + carry (wrapping), c2 = second overflow
-            //  digit = abc = (a + b + carry) mod 2^32
-            //  carry_out = c1 + c2 = (a + b + carry) / 2^32
             use vstd::wrapping::u32_specs;
-            assert(abc as int == ((*self as int + *b as int + *carry as int) % LIMB_BASE())) by {
+            //  Step 1: ab + c1 * BASE == a + b
+            //  wrapping_add: ab == if a+b > MAX { a+b - BASE } else { a+b }
+            //  c1 == if ab < a { 1 } else { 0 } == if a+b > MAX { 1 } else { 0 }
+            assert(ab as int + c1 as int * LIMB_BASE() == *self as int + *b as int) by {
                 assert(ab as int == u32_specs::wrapping_add(*self, *b) as int);
+                if *self as int + *b as int > u32::MAX as int {
+                    assert(ab as int == *self as int + *b as int - LIMB_BASE());
+                    assert(c1 == 1u32);
+                } else {
+                    assert(ab as int == *self as int + *b as int);
+                    assert(c1 == 0u32);
+                }
+            }
+            //  Step 2: abc + c2 * BASE == ab + carry
+            assert(abc as int + c2 as int * LIMB_BASE() == ab as int + *carry as int) by {
                 assert(abc as int == u32_specs::wrapping_add(ab, *carry) as int);
+                if ab as int + *carry as int > u32::MAX as int {
+                    assert(abc as int == ab as int + *carry as int - LIMB_BASE());
+                    assert(c2 == 1u32);
+                } else {
+                    assert(abc as int == ab as int + *carry as int);
+                    assert(c2 == 0u32);
+                }
             }
-            assert((c1 + c2) as int == ((*self as int + *b as int + *carry as int) / LIMB_BASE())) by {
-                //  Total carry is 0 or 1 (sum < 2*BASE)
-                //  c1 + c2 correctly counts overflow
-                assert(c1 + c2 <= 1) by(nonlinear_arith)
-                    requires c1 <= 1, c2 <= 1,
-                        *self <= u32::MAX, *b <= u32::MAX, *carry <= u32::MAX;
-            }
+            //  Step 3: combine → abc + (c1+c2)*BASE == a + b + carry
+            //  Therefore abc == (a+b+carry) % BASE and (c1+c2) == (a+b+carry) / BASE
+            let sum = *self as int + *b as int + *carry as int;
+            let base = LIMB_BASE();
+            //  Steps 1-2 used LIMB_BASE() directly; assert equivalence
+            assert(ab as int + c1 as int * base == *self as int + *b as int);
+            assert(abc as int + c2 as int * base == ab as int + *carry as int);
+            //  From step 2: abc = ab + carry - c2*base
+            //  Substituting ab = a + b - c1*base (from step 1):
+            //  abc = (a + b - c1*base) + carry - c2*base = a + b + carry - (c1+c2)*base
+            //  So abc + (c1+c2)*base = a + b + carry = sum
+            assert(abc as int == ab as int + *carry as int - c2 as int * base);
+            assert(ab as int == *self as int + *b as int - c1 as int * base);
+            assert(abc as int + (c1 + c2) as int * base == sum) by(nonlinear_arith)
+                requires
+                    abc as int == ab as int + *carry as int - c2 as int * base,
+                    ab as int == *self as int + *b as int - c1 as int * base,
+                    sum == *self as int + *b as int + *carry as int;
+            let carry_val = (c1 + c2) as int;
+            let digit_val = abc as int;
+            assert(digit_val == sum % base) by(nonlinear_arith)
+                requires
+                    digit_val + carry_val * base == sum,
+                    0 <= digit_val,
+                    digit_val < base,
+                    0 <= carry_val,
+                    base > 0;
+            assert(carry_val == sum / base) by(nonlinear_arith)
+                requires
+                    digit_val + carry_val * base == sum,
+                    0 <= digit_val,
+                    digit_val < base,
+                    base > 0;
         }
         (abc, c1 + c2)
     }
@@ -136,6 +176,22 @@ impl LimbOps for u32 {
         let a_hi: u32 = *self >> 16u32;
         let b_lo: u32 = *b & 0xFFFFu32;
         let b_hi: u32 = *b >> 16u32;
+        proof {
+            //  16-bit * 16-bit <= 0xFFFF * 0xFFFF = 0xFFFE0001 < 2^32
+            assert(a_lo <= 0xFFFFu32) by(bit_vector) requires a_lo == *self & 0xFFFFu32;
+            assert(a_hi <= 0xFFFFu32) by(bit_vector) requires a_hi == *self >> 16u32;
+            assert(b_lo <= 0xFFFFu32) by(bit_vector) requires b_lo == *b & 0xFFFFu32;
+            assert(b_hi <= 0xFFFFu32) by(bit_vector) requires b_hi == *b >> 16u32;
+        }
+        proof {
+            assert(a_lo as int * b_hi as int <= 0xFFFF as int * 0xFFFF as int) by(nonlinear_arith)
+                requires a_lo <= 0xFFFFu32, b_hi <= 0xFFFFu32;
+            assert(a_hi as int * b_lo as int <= 0xFFFF as int * 0xFFFF as int) by(nonlinear_arith)
+                requires a_hi <= 0xFFFFu32, b_lo <= 0xFFFFu32;
+            assert(a_hi as int * b_hi as int <= 0xFFFF as int * 0xFFFF as int) by(nonlinear_arith)
+                requires a_hi <= 0xFFFFu32, b_hi <= 0xFFFFu32;
+            assert(0xFFFF as int * 0xFFFF as int == 0xFFFE_0001 as int) by(compute_only);
+        }
         let p1: u32 = a_lo * b_hi;
         let p2: u32 = a_hi * b_lo;
         let p3: u32 = a_hi * b_hi;
