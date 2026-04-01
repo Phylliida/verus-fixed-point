@@ -13,9 +13,119 @@ use crate::fixed_point::pow2::*;
 
 verus! {
 
-//  ── RuntimeFixedPoint struct ───────────────────────────
+//  ── GenericFixedPoint<T: LimbOps> ─────────────────────────
+//  Generic multi-limb fixed-point number. Works for both u32 (CPU)
+//  and ArithLimb (GPU expression trees) via LimbOps trait.
 
-///  Exec-level fixed-point number.
+use crate::fixed_point::limb_ops::{LimbOps, valid_limbs, vec_val, LIMB_BASE};
+
+///  Generic exec-level fixed-point number over any LimbOps type.
+pub struct GenericFixedPoint<T: LimbOps> {
+    pub limbs: Vec<T>,
+    pub sign: bool,
+    pub n_exec: usize,
+    pub frac_exec: usize,
+}
+
+impl<T: LimbOps> GenericFixedPoint<T> {
+    pub open spec fn n_spec(&self) -> nat { self.n_exec as nat }
+    pub open spec fn frac_spec(&self) -> nat { self.frac_exec as nat }
+
+    pub open spec fn wf_spec(&self) -> bool {
+        &&& self.limbs@.len() == self.n_exec
+        &&& self.n_exec > 0
+        &&& self.frac_exec <= self.n_exec * 32
+        &&& valid_limbs(self.limbs@)
+    }
+
+    ///  The unsigned limb value (before sign).
+    pub open spec fn unsigned_val(&self) -> int {
+        vec_val(self.limbs@)
+    }
+
+    ///  Zero with given format.
+    pub fn zero(n: usize, frac: usize) -> (out: Self)
+        requires n > 0, frac <= n * 32,
+        ensures out.wf_spec(), out.n_exec == n, out.frac_exec == frac,
+    {
+        use crate::fixed_point::limb_ops::generic_zero_vec;
+        GenericFixedPoint {
+            limbs: generic_zero_vec(n),
+            sign: false,
+            n_exec: n,
+            frac_exec: frac,
+        }
+    }
+
+    ///  Add (same format, unsigned, ignore carry).
+    pub fn add(&self, other: &Self) -> (out: Self)
+        requires self.wf_spec(), other.wf_spec(),
+            self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
+    {
+        use crate::fixed_point::limb_ops::generic_add_limbs;
+        let (sum, _carry) = generic_add_limbs(&self.limbs, &other.limbs, self.n_exec);
+        GenericFixedPoint {
+            limbs: sum,
+            sign: false,
+            n_exec: self.n_exec,
+            frac_exec: self.frac_exec,
+        }
+    }
+
+    ///  Subtract (same format, unsigned).
+    pub fn sub(&self, other: &Self) -> (out: Self)
+        requires self.wf_spec(), other.wf_spec(),
+            self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
+    {
+        use crate::fixed_point::limb_ops::generic_sub_limbs;
+        let (diff, _borrow) = generic_sub_limbs(&self.limbs, &other.limbs, self.n_exec);
+        GenericFixedPoint {
+            limbs: diff,
+            sign: false,
+            n_exec: self.n_exec,
+            frac_exec: self.frac_exec,
+        }
+    }
+
+    ///  Multiply with fixed-point truncation.
+    ///  a * b → 2n limbs → take limbs frac_limbs..frac_limbs+n (shift right by frac).
+    pub fn mul(&self, other: &Self) -> (out: Self)
+        requires self.wf_spec(), other.wf_spec(),
+            self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
+            self.n_exec > 0, self.n_exec <= 0x1FFF_FFFF,
+            self.frac_exec % 32 == 0,  //  limb-aligned frac for clean truncation
+    {
+        use crate::fixed_point::limb_ops::{generic_mul_karatsuba, generic_slice_vec};
+        let n = self.n_exec;
+        let frac_limbs = self.frac_exec / 32;
+        let (product, _gc) = generic_mul_karatsuba(&self.limbs, &other.limbs, n);
+        //  Fixed-point truncation: take limbs frac_limbs..frac_limbs+n from 2n product
+        let truncated = generic_slice_vec(&product, frac_limbs, frac_limbs + n);
+        GenericFixedPoint {
+            limbs: truncated,
+            sign: false,
+            n_exec: n,
+            frac_exec: self.frac_exec,
+        }
+    }
+
+    ///  Clone the value.
+    pub fn copy(&self) -> (out: Self)
+        requires self.wf_spec(),
+    {
+        use crate::fixed_point::limb_ops::generic_slice_vec;
+        GenericFixedPoint {
+            limbs: generic_slice_vec(&self.limbs, 0, self.n_exec),
+            sign: self.sign,
+            n_exec: self.n_exec,
+            frac_exec: self.frac_exec,
+        }
+    }
+}
+
+//  ── RuntimeFixedPoint (u32 specialization) ──────────────
+
+///  Exec-level fixed-point number (u32 limbs, for CPU computation).
 pub struct RuntimeFixedPoint {
     pub limbs: Vec<u32>,
     pub sign: bool,
@@ -2631,7 +2741,9 @@ impl RuntimeFixedPointInterval {
             assert(zero.le_spec(self.exact@)) by {
                 Rational::lemma_le_transitive(zero, self.lo@.view(), self.exact@);
             }
-            assert(zero.le_spec(rhs.lo@.view()));
+            assert(zero.le_spec(rhs.lo@.view())) by {
+                assert(rhs.lo@.view().num >= 0);
+            }
             assert(zero.le_spec(rhs.exact@)) by {
                 Rational::lemma_le_transitive(zero, rhs.lo@.view(), rhs.exact@);
             }
