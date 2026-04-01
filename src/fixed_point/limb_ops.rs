@@ -329,4 +329,101 @@ pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
     (out, carry)
 }
 
+//  ══════════════════════════════════════════════════════════════
+//  Generic scalar multiplication (a * scalar)
+//  ══════════════════════════════════════════════════════════════
+
+///  Multiply n-limb array by a single limb. Returns (n+1)-limb result.
+///  limbs_val(result) == limbs_val(a) * scalar.sem()
+pub fn generic_mul_by_limb<T: LimbOps>(a: &Vec<T>, scalar: &T, n: usize) -> (result: Vec<T>)
+    requires
+        a@.len() == n,
+        n < 0x7FFF_FFFF,
+    ensures
+        result@.len() == n + 1,
+        limbs_val(sem_seq(result@)) == limbs_val(sem_seq(a@)) * scalar.sem(),
+{
+    let mut out: Vec<T> = Vec::new();
+    let mut carry: T = T::zero_val();
+    let mut i: usize = 0;
+    let ghost sa = sem_seq(a@);
+
+    while i < n
+        invariant
+            i <= n,
+            a@.len() == n,
+            out@.len() == i as int,
+            sa == sem_seq(a@),
+            limbs_val(sem_seq(out@)) + carry.sem() * limb_power(i as nat)
+                == limbs_val(sa.subrange(0, i as int)) * scalar.sem(),
+        decreases n - i,
+    {
+        let (digit, next_carry) = a[i].mul_add_carry(scalar, &T::zero_val(), &carry);
+        proof {
+            //  digit.sem() == (a[i].sem() * scalar.sem() + 0 + carry.sem()) % BASE
+            //  next_carry.sem() == (a[i].sem() * scalar.sem() + carry.sem()) / BASE
+            //  So: digit.sem() + next_carry.sem() * BASE == a[i].sem() * scalar.sem() + carry.sem()
+            let ai = sa[i as int];
+            assert(ai == a@[i as int].sem());
+            let x = ai * scalar.sem() + carry.sem();
+            assert(digit.sem() + next_carry.sem() * LIMB_BASE() == x) by(nonlinear_arith)
+                requires
+                    digit.sem() == x % LIMB_BASE(),
+                    next_carry.sem() == x / LIMB_BASE(),
+                    LIMB_BASE() > 0;
+
+            reveal_with_fuel(limb_power, 2);
+            let p = limb_power(i as nat);
+            let p_next = limb_power((i + 1) as nat);
+            assert(p_next == LIMB_BASE() * p);
+
+            lemma_sem_seq_push(out@, digit);
+            lemma_limbs_val_push(sem_seq(out@), digit.sem());
+            lemma_limbs_val_subrange_extend(sa, i as nat);
+
+            //  Telescope: ltn(out) + digit*p + next_carry*p_next
+            //  == ltn(a[..i])*scalar + (ai*scalar + carry - carry)*p + next_carry*p_next
+            //  == ltn(a[..i])*scalar + ai*scalar*p + (digit + next_carry*BASE - carry)*p
+            //  == ltn(a[..i+1])*scalar
+            assert(
+                limbs_val(sem_seq(out@)) + digit.sem() * p + next_carry.sem() * p_next
+                == limbs_val(sa.subrange(0, (i + 1) as int)) * scalar.sem()
+            ) by(nonlinear_arith)
+                requires
+                    limbs_val(sem_seq(out@)) + carry.sem() * p
+                        == limbs_val(sa.subrange(0, i as int)) * scalar.sem(),
+                    digit.sem() + next_carry.sem() * LIMB_BASE()
+                        == ai * scalar.sem() + carry.sem(),
+                    limbs_val(sa.subrange(0, (i + 1) as int))
+                        == limbs_val(sa.subrange(0, i as int)) + ai * p,
+                    p_next == LIMB_BASE() * p;
+        }
+
+        out.push(digit);
+        carry = next_carry;
+        i = i + 1;
+    }
+
+    //  Push final carry as the (n+1)-th limb
+    //  Capture pre-push state
+    let ghost out_before = out@;
+    out.push(carry);
+
+    proof {
+        assert(sa.subrange(0, sa.len() as int) =~= sa);
+        //  out@ == out_before.push(carry)
+        //  sem_seq(out@) =~= sem_seq(out_before).push(carry.sem())
+        lemma_sem_seq_push(out_before, carry);
+        assert(sem_seq(out@) =~= sem_seq(out_before).push(carry.sem()));
+        //  limbs_val(sem_seq(out@)) == limbs_val(sem_seq(out_before)) + carry.sem() * limb_power(n)
+        lemma_limbs_val_push(sem_seq(out_before), carry.sem());
+        //  From invariant at i=n:
+        //  limbs_val(sem_seq(out_before)) + carry.sem() * limb_power(n) == limbs_val(sa) * scalar.sem()
+        //  And push lemma: limbs_val(sem_seq(out@)) == limbs_val(sem_seq(out_before)) + carry.sem() * limb_power(n)
+        //  Therefore: limbs_val(sem_seq(out@)) == limbs_val(sa) * scalar.sem()
+    }
+
+    out
+}
+
 } //  verus!
