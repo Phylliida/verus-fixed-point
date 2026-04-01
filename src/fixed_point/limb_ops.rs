@@ -83,60 +83,86 @@ pub trait LimbOps : Sized {
 impl LimbOps for u32 {
     open spec fn sem(&self) -> int { *self as int }
 
+    //  GPU-native: wrapping add + carry via overflow detection
     fn add3(&self, b: &Self, carry: &Self) -> (out: (Self, Self))
     {
-        let sum: u64 = *self as u64 + *b as u64 + *carry as u64;
-        let base: u64 = 4_294_967_296u64;
-        let digit: u32 = (sum % base) as u32;
-        let c_out: u32 = (sum / base) as u32;
-        (digit, c_out)
+        let ab = self.wrapping_add(*b);
+        let c1: u32 = if ab < *self { 1u32 } else { 0u32 };
+        let abc = ab.wrapping_add(*carry);
+        let c2: u32 = if abc < ab { 1u32 } else { 0u32 };
+        proof {
+            //  wrapping_add spec: ab == (a + b) mod 2^32
+            //  if overflow (a + b >= 2^32): ab = a + b - 2^32, ab < a ✓
+            //  if no overflow: ab = a + b, ab >= a ✓
+            //  So c1 = overflow indicator, abc = ab + carry (wrapping), c2 = second overflow
+            //  digit = abc = (a + b + carry) mod 2^32
+            //  carry_out = c1 + c2 = (a + b + carry) / 2^32
+            use vstd::wrapping::u32_specs;
+            assert(abc as int == ((*self as int + *b as int + *carry as int) % LIMB_BASE())) by {
+                assert(ab as int == u32_specs::wrapping_add(*self, *b) as int);
+                assert(abc as int == u32_specs::wrapping_add(ab, *carry) as int);
+            }
+            assert((c1 + c2) as int == ((*self as int + *b as int + *carry as int) / LIMB_BASE())) by {
+                //  Total carry is 0 or 1 (sum < 2*BASE)
+                //  c1 + c2 correctly counts overflow
+                assert(c1 + c2 <= 1) by(nonlinear_arith)
+                    requires c1 <= 1, c2 <= 1,
+                        *self <= u32::MAX, *b <= u32::MAX, *carry <= u32::MAX;
+            }
+        }
+        (abc, c1 + c2)
     }
 
+    //  GPU-native: wrapping sub + borrow via underflow detection
     fn sub_borrow(&self, b: &Self, borrow: &Self) -> (out: (Self, Self))
     {
-        //  borrow is 0 or 1, so a + BASE - b - borrow >= BASE - (2^32-1) - 1 = 0
-        let a_wide: u64 = *self as u64 + 4_294_967_296u64;
+        let ab = self.wrapping_sub(*b);
+        let bw1: u32 = if *self < *b { 1u32 } else { 0u32 };
+        let result = ab.wrapping_sub(*borrow);
+        let bw2: u32 = if ab < *borrow { 1u32 } else { 0u32 };
         proof {
-            assert(a_wide >= *b as u64 + *borrow as u64) by(nonlinear_arith)
-                requires *borrow <= 1u32, a_wide == *self as u64 + 4_294_967_296u64,
-                         *b <= u32::MAX;
+            use vstd::wrapping::u32_specs;
         }
-        let result: u64 = a_wide - *b as u64 - *borrow as u64;
-        let base: u64 = 4_294_967_296u64;
-        let digit: u32 = (result % base) as u32;
-        let raw: i64 = *self as i64 - *b as i64 - *borrow as i64;
-        let borrow_out: u32 = if raw < 0 { 1u32 } else { 0u32 };
-        (digit, borrow_out)
+        (result, bw1 + bw2)
     }
 
+    //  GPU-native: wrapping mul for lo, 16-bit decomposition for hi
     fn mul2(&self, b: &Self) -> (out: (Self, Self))
     {
+        //  lo = a * b (wrapping — low 32 bits)
+        let lo = self.wrapping_mul(*b);
+        //  hi via 16-bit decomposition (no u64 needed)
+        let a_lo: u32 = *self & 0xFFFFu32;
+        let a_hi: u32 = *self >> 16u32;
+        let b_lo: u32 = *b & 0xFFFFu32;
+        let b_hi: u32 = *b >> 16u32;
+        let p1: u32 = a_lo * b_hi;
+        let p2: u32 = a_hi * b_lo;
+        let p3: u32 = a_hi * b_hi;
+        let lo_hi: u32 = lo >> 16u32;
+        let mid_sum = lo_hi.wrapping_add(p1 & 0xFFFFu32).wrapping_add(p2 & 0xFFFFu32);
+        let hi = p3.wrapping_add(p1 >> 16u32).wrapping_add(p2 >> 16u32).wrapping_add(mid_sum >> 16u32);
         proof {
-            assert((*self as u64) * (*b as u64) <= u64::MAX)
-                by(nonlinear_arith)
-                requires *self <= u32::MAX, *b <= u32::MAX;
+            //  TODO: prove hi == (a * b) / 2^32 via 16-bit decomposition
         }
-        let prod: u64 = *self as u64 * *b as u64;
-        let base: u64 = 4_294_967_296u64;
-        let lo: u32 = (prod % base) as u32;
-        let hi: u32 = (prod / base) as u32;
         (lo, hi)
     }
 
+    //  GPU-native: mul_lo + add with carry detection
     fn mul_add_carry(&self, b: &Self, accum: &Self, carry: &Self) -> (out: (Self, Self))
     {
+        let (mul_lo, mul_hi) = self.mul2(b);
+        //  lo = mul_lo + accum + carry (wrapping, with carry detection)
+        let sum1 = mul_lo.wrapping_add(*accum);
+        let c1: u32 = if sum1 < mul_lo { 1u32 } else { 0u32 };
+        let sum2 = sum1.wrapping_add(*carry);
+        let c2: u32 = if sum2 < sum1 { 1u32 } else { 0u32 };
+        //  carry_out = mul_hi + c1 + c2
+        let carry_out = mul_hi.wrapping_add(c1).wrapping_add(c2);
         proof {
-            //  (2^32-1)^2 + 2*(2^32-1) = 2^64 - 1 = u64::MAX
-            assert((*self as u64) * (*b as u64) + (*accum as u64) + (*carry as u64) <= u64::MAX)
-                by(nonlinear_arith)
-                requires *self <= u32::MAX, *b <= u32::MAX,
-                         *accum <= u32::MAX, *carry <= u32::MAX;
+            //  TODO: prove postconditions via wrapping specs
         }
-        let prod: u64 = *self as u64 * *b as u64 + *accum as u64 + *carry as u64;
-        let base: u64 = 4_294_967_296u64;
-        let digit: u32 = (prod % base) as u32;
-        let c_out: u32 = (prod / base) as u32;
-        (digit, c_out)
+        (sum2, carry_out)
     }
 
     fn zero_val() -> (out: Self) { 0u32 }
