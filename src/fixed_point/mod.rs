@@ -15,6 +15,7 @@ pub mod number_theory;
 pub mod ntt;
 pub mod newton_convergence;
 pub mod limb_ops;
+pub mod prime_field;
 
 verus! {
 
