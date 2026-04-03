@@ -1333,6 +1333,7 @@ pub fn generic_mul_schoolbook<T: LimbOps>(
         valid_limbs(result.0@),
         vec_val(result.0@) + result.1@ * limb_power((2 * n) as nat)
             == vec_val(a@) * vec_val(b@),
+        result.1@ == 0int,
 {
     let nn: usize = 2 * n;
     let mut acc = generic_zero_vec::<T>(nn);
@@ -1403,14 +1404,25 @@ pub fn generic_mul_schoolbook<T: LimbOps>(
 
     proof {
         assert(sb.subrange(0, sb.len() as int) =~= sb);
+        //  ghost_carry == 0: product of n-limb numbers fits in 2n limbs
+        lemma_vec_val_bounded(acc@);
+        lemma_vec_val_bounded(a@);
+        lemma_vec_val_bounded(b@);
+        lemma_limb_power_add(n as nat, n as nat);
+        let lp_n = limb_power(n as nat);
+        let lp_2n = limb_power((2 * n) as nat);
+        assert(ghost_carry == 0int) by(nonlinear_arith)
+            requires
+                vec_val(acc@) + ghost_carry * lp_2n == vec_val(a@) * vec_val(b@),
+                0 <= vec_val(acc@), vec_val(acc@) < lp_2n,
+                0 <= vec_val(a@), vec_val(a@) < lp_n,
+                0 <= vec_val(b@), vec_val(b@) < lp_n,
+                lp_2n == lp_n * lp_n,
+                lp_n > 0;
     }
 
     (acc, Ghost(ghost_carry))
 }
-
-//  ══════════════════════════════════════════════════════════════
-//  Generic Karatsuba multiplication (O(n^1.585))
-//  ══════════════════════════════════════════════════════════════
 
 //  ══════════════════════════════════════════════════════════════
 //  Generic Karatsuba multiplication (O(n^1.585))
