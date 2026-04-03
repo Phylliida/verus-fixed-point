@@ -175,4 +175,28 @@ impl<S: PrimeSpec> Ring for SpecPrimeField<S> {
     }
 }
 
+//  ══════════════════════════════════════════════════════════════
+//  Phase 2: Pseudo-Mersenne reduction lemma
+//  ══════════════════════════════════════════════════════════════
+
+///  Core Mersenne reduction: 2^k ≡ c (mod 2^k - c), so hi*2^k + lo ≡ hi*c + lo.
+pub proof fn lemma_pseudo_mersenne_reduce(lo: nat, hi: nat, base_k: nat, c: nat)
+    requires
+        c > 0,
+        base_k > c,  //  p = base_k - c > 0
+    ensures
+        (lo + hi * base_k) % ((base_k - c) as nat) == (lo + hi * c) % ((base_k - c) as nat),
+{
+    let p: nat = (base_k - c) as nat;
+    //  hi * base_k == hi * p + hi * c  (since base_k = p + c)
+    assert(hi * base_k == hi * p + hi * c) by(nonlinear_arith)
+        requires base_k == p + c;
+    //  lo + hi*base_k == (lo + hi*c) + hi*p
+    //  (x + k*p) % p == x % p
+    lemma_mod_add_left(hi * p, lo + hi * c, p);
+    assert(hi * p % p == 0nat) by(nonlinear_arith) requires p > 0;
+    assert(hi * p + (lo + hi * c) == lo + hi * base_k) by(nonlinear_arith)
+        requires hi * base_k == hi * p + hi * c;
+}
+
 } // verus!
