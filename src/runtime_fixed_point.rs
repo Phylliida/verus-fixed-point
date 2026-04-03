@@ -17,7 +17,7 @@ verus! {
 //  Generic multi-limb fixed-point number. Works for both u32 (CPU)
 //  and ArithLimb (GPU expression trees) via LimbOps trait.
 
-use crate::fixed_point::limb_ops::{LimbOps, valid_limbs, vec_val, LIMB_BASE};
+use crate::fixed_point::limb_ops::{LimbOps, valid_limbs, vec_val, LIMB_BASE, limb_power};
 
 ///  Generic exec-level fixed-point number over any LimbOps type.
 pub struct GenericFixedPoint<T: LimbOps> {
@@ -57,14 +57,28 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         }
     }
 
-    ///  Add (same format, unsigned, ignore carry).
+    ///  Add (same format, unsigned, modular — carry is dropped).
     pub fn add(&self, other: &Self) -> (out: Self)
         requires self.wf_spec(), other.wf_spec(),
             self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
         ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
+            out.unsigned_val() == (self.unsigned_val() + other.unsigned_val()) % limb_power(self.n_spec()),
     {
-        use crate::fixed_point::limb_ops::generic_add_limbs;
-        let (sum, _carry) = generic_add_limbs(&self.limbs, &other.limbs, self.n_exec);
+        use crate::fixed_point::limb_ops::{generic_add_limbs, lemma_vec_val_bounded as lvb};
+        let (sum, carry) = generic_add_limbs(&self.limbs, &other.limbs, self.n_exec);
+        proof {
+            lvb(sum@);
+            let lp = limb_power(self.n_exec as nat);
+            assert(vec_val(sum@) == (vec_val(self.limbs@) + vec_val(other.limbs@)) % lp)
+                by(nonlinear_arith)
+                requires
+                    vec_val(sum@) + carry.sem() * lp
+                        == vec_val(self.limbs@) + vec_val(other.limbs@),
+                    0 <= vec_val(sum@),
+                    vec_val(sum@) < lp,
+                    carry.sem() >= 0,
+                    lp > 0;
+        }
         GenericFixedPoint {
             limbs: sum,
             sign: false,
@@ -73,14 +87,32 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         }
     }
 
-    ///  Subtract (same format, unsigned).
+    ///  Subtract (same format, unsigned, modular — borrow is dropped).
     pub fn sub(&self, other: &Self) -> (out: Self)
         requires self.wf_spec(), other.wf_spec(),
             self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
         ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
+            out.unsigned_val() == (self.unsigned_val() - other.unsigned_val() + limb_power(self.n_spec())) % limb_power(self.n_spec()),
     {
-        use crate::fixed_point::limb_ops::generic_sub_limbs;
-        let (diff, _borrow) = generic_sub_limbs(&self.limbs, &other.limbs, self.n_exec);
+        use crate::fixed_point::limb_ops::{generic_sub_limbs, lemma_vec_val_bounded as lvb};
+        let (diff, borrow) = generic_sub_limbs(&self.limbs, &other.limbs, self.n_exec);
+        proof {
+            lvb(diff@);
+            let lp = limb_power(self.n_exec as nat);
+            //  generic_sub_limbs: vec_val(diff) + vec_val(b) == vec_val(a) + borrow * lp
+            //  → vec_val(diff) == vec_val(a) - vec_val(b) + borrow * lp
+            //  borrow is 0 or 1, 0 <= vec_val(diff) < lp
+            //  → vec_val(diff) == (vec_val(a) - vec_val(b) + lp) % lp
+            assert(vec_val(diff@) == (vec_val(self.limbs@) - vec_val(other.limbs@) + lp) % lp)
+                by(nonlinear_arith)
+                requires
+                    vec_val(diff@) + vec_val(other.limbs@)
+                        == vec_val(self.limbs@) + borrow.sem() * lp,
+                    0 <= vec_val(diff@),
+                    vec_val(diff@) < lp,
+                    borrow.sem() == 0 || borrow.sem() == 1,
+                    lp > 0;
+        }
         GenericFixedPoint {
             limbs: diff,
             sign: false,
@@ -91,12 +123,15 @@ impl<T: LimbOps> GenericFixedPoint<T> {
 
     ///  Multiply with fixed-point truncation.
     ///  a * b → 2n limbs → take limbs frac_limbs..frac_limbs+n (shift right by frac).
+    ///  Result value = (a * b / limb_power(frac_limbs)) mod limb_power(n).
     pub fn mul(&self, other: &Self) -> (out: Self)
         requires self.wf_spec(), other.wf_spec(),
             self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
             self.n_exec > 0, self.n_exec <= 0x1FFF_FFFF,
             self.frac_exec % 32 == 0,
         ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
+            //  Full product is exact: gc == 0, so vec_val(product) == a_val * b_val
+            //  Truncation extracts limbs frac_limbs..frac_limbs+n
     {
         use crate::fixed_point::limb_ops::{generic_mul_karatsuba, generic_slice_vec};
         let n = self.n_exec;
@@ -2452,10 +2487,10 @@ impl RuntimeFixedPointInterval {
                         (b_int * x_int) as int, s as int);
                     let bx_rem = (b_int * x_int) % s;
                     //  b*x = bx_val*S + bx_rem, bx_val ≤ S+1
-                    assert(b_int * x_int == bx_val * s + bx_rem) by {
-                        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(
-                            (b_int * x_int) as int, s as int);
-                    }
+                    let bx_prod: nat = b_int * x_int;
+                    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(
+                        bx_prod as int, s as int);
+                    assert(bx_prod == bx_val * s + bx_rem);
                     assert(b_int * x_int < (s + 2) * s) by (nonlinear_arith)
                         requires b_int * x_int == bx_val * s + bx_rem,
                                  bx_val <= s + 1, bx_rem < s as int, s > 0;
