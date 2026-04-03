@@ -167,6 +167,8 @@ impl LimbOps for u32 {
     }
 
     //  GPU-native: wrapping mul for lo, 16-bit decomposition for hi
+    //  Uses Hacker's Delight mulhi approach: compute p0=a_lo*b_lo separately
+    //  (NOT lo from wrapping_mul) to get correct carry propagation.
     fn mul2(&self, b: &Self) -> (out: (Self, Self))
     {
         let lo = self.wrapping_mul(*b);
@@ -179,49 +181,148 @@ impl LimbOps for u32 {
             assert(a_hi <= 0xFFFFu32) by(bit_vector) requires a_hi == *self >> 16u32;
             assert(b_lo <= 0xFFFFu32) by(bit_vector) requires b_lo == *b & 0xFFFFu32;
             assert(b_hi <= 0xFFFFu32) by(bit_vector) requires b_hi == *b >> 16u32;
-            assert(a_lo as int * b_hi as int <= 0xFFFE_0001 as int) by(nonlinear_arith)
+            assert(a_lo as int * b_lo as int <= 0xFFFE_0001int) by(nonlinear_arith)
+                requires a_lo <= 0xFFFFu32, b_lo <= 0xFFFFu32;
+            assert(a_lo as int * b_hi as int <= 0xFFFE_0001int) by(nonlinear_arith)
                 requires a_lo <= 0xFFFFu32, b_hi <= 0xFFFFu32;
-            assert(a_hi as int * b_lo as int <= 0xFFFE_0001 as int) by(nonlinear_arith)
+            assert(a_hi as int * b_lo as int <= 0xFFFE_0001int) by(nonlinear_arith)
                 requires a_hi <= 0xFFFFu32, b_lo <= 0xFFFFu32;
-            assert(a_hi as int * b_hi as int <= 0xFFFE_0001 as int) by(nonlinear_arith)
+            assert(a_hi as int * b_hi as int <= 0xFFFE_0001int) by(nonlinear_arith)
                 requires a_hi <= 0xFFFFu32, b_hi <= 0xFFFFu32;
         }
+        let p0: u32 = a_lo * b_lo;
         let p1: u32 = a_lo * b_hi;
         let p2: u32 = a_hi * b_lo;
         let p3: u32 = a_hi * b_hi;
-        let lo_hi: u32 = lo >> 16u32;
-        let mid = lo_hi.wrapping_add(p1 & 0xFFFFu32).wrapping_add(p2 & 0xFFFFu32);
-        let hi = p3.wrapping_add(p1 >> 16u32).wrapping_add(p2 >> 16u32).wrapping_add(mid >> 16u32);
+        let p0_hi: u32 = p0 >> 16u32;
         proof {
-            //  Prove via ghost int computation
+            //  Bounds for mid: p0_hi <= 0xFFFE, masks <= 0xFFFF
+            assert(p0_hi <= 0xFFFEu32) by(bit_vector)
+                requires p0_hi == p0 >> 16u32, p0 <= 0xFFFE_0001u32;
+            assert((p1 & 0xFFFFu32) <= 0xFFFFu32) by(bit_vector);
+            assert((p2 & 0xFFFFu32) <= 0xFFFFu32) by(bit_vector);
+            //  mid <= 0xFFFE + 0xFFFF + 0xFFFF = 0x2FFFC
+            assert(p0_hi as int + (p1 & 0xFFFFu32) as int <= 0x1FFFDint);
+            assert(p0_hi as int + (p1 & 0xFFFFu32) as int + (p2 & 0xFFFFu32) as int <= 0x2FFFCint);
+        }
+        let mid: u32 = p0_hi + (p1 & 0xFFFFu32) + (p2 & 0xFFFFu32);
+        proof {
+            //  Bounds for hi: shifts and mid >> 16
+            assert((p1 >> 16u32) <= 0xFFFEu32) by(bit_vector)
+                requires p1 <= 0xFFFE_0001u32;
+            assert((p2 >> 16u32) <= 0xFFFEu32) by(bit_vector)
+                requires p2 <= 0xFFFE_0001u32;
+            assert((mid >> 16u32) <= 2u32) by(bit_vector)
+                requires mid <= 0x2FFFCu32;
+            //  hi <= 0xFFFE0001 + 0xFFFE + 0xFFFE + 2 = 0xFFFFFFFF
+            assert(p3 as int + (p1 >> 16u32) as int <= 0xFFFE_FFFFint) by(nonlinear_arith)
+                requires p3 as int <= 0xFFFE_0001int, (p1 >> 16u32) as int <= 0xFFFEint;
+            assert(p3 as int + (p1 >> 16u32) as int + (p2 >> 16u32) as int <= 0xFFFF_FFFDint) by(nonlinear_arith)
+                requires p3 as int + (p1 >> 16u32) as int <= 0xFFFE_FFFFint, (p2 >> 16u32) as int <= 0xFFFEint;
+            assert(p3 as int + (p1 >> 16u32) as int + (p2 >> 16u32) as int + (mid >> 16u32) as int
+                <= 0xFFFF_FFFFint) by(nonlinear_arith)
+                requires
+                    p3 as int + (p1 >> 16u32) as int + (p2 >> 16u32) as int <= 0xFFFF_FFFDint,
+                    (mid >> 16u32) as int <= 2int;
+        }
+        let hi: u32 = p3 + (p1 >> 16u32) + (p2 >> 16u32) + (mid >> 16u32);
+        proof {
             use vstd::wrapping::u32_specs;
             let prod: int = *self as int * *b as int;
-            let base = LIMB_BASE();
-            //  lo == prod % BASE (wrapping_mul spec)
+            let base: int = LIMB_BASE();
+            let half: int = 0x10000int;
+            //  lo == prod % base
             assert(lo as int == prod % base) by {
                 assert(lo as int == u32_specs::wrapping_mul(*self, *b) as int);
             }
-            //  hi == (a*b) >> 32 via bit_vector on the 16-bit decomposition
-            assert(hi as u64 == (*self as u64 * *b as u64) / 0x1_0000_0000u64) by(bit_vector)
+            //  Decomposition: a = a_hi*H + a_lo, b = b_hi*H + b_lo (via u64 bit_vector)
+            assert((*self as u64) == (a_hi as u64) * 0x10000u64 + (a_lo as u64)) by(bit_vector)
+                requires a_lo == *self & 0xFFFFu32, a_hi == *self >> 16u32;
+            assert((*b as u64) == (b_hi as u64) * 0x10000u64 + (b_lo as u64)) by(bit_vector)
+                requires b_lo == *b & 0xFFFFu32, b_hi == *b >> 16u32;
+            //  Lift u64 decomposition to int (Z3 knows u32→u64 preserves int value)
+            assert(*self as int == a_hi as int * half + a_lo as int);
+            assert(*b as int == b_hi as int * half + b_lo as int);
+            //  Product expansion: a*b = p3*base + (p1+p2)*half + p0
+            assert(prod == p3 as int * base + (p1 as int + p2 as int) * half + p0 as int)
+                by(nonlinear_arith)
                 requires
-                    a_lo == *self & 0xFFFFu32,
-                    a_hi == *self >> 16u32,
-                    b_lo == *b & 0xFFFFu32,
-                    b_hi == *b >> 16u32,
-                    p1 == a_lo * b_hi,
-                    p2 == a_hi * b_lo,
-                    p3 == a_hi * b_hi,
-                    lo_hi == lo >> 16u32,
-                    lo == u32_specs::wrapping_mul(*self, *b),
-                    mid == u32_specs::wrapping_add(
-                        u32_specs::wrapping_add(lo_hi, p1 & 0xFFFFu32),
-                        p2 & 0xFFFFu32),
-                    hi == u32_specs::wrapping_add(
-                        u32_specs::wrapping_add(
-                            u32_specs::wrapping_add(p3, p1 >> 16u32),
-                            p2 >> 16u32),
-                        mid >> 16u32);
-            assert(hi as int == prod / base);
+                    prod == (*self as int) * (*b as int),
+                    *self as int == a_hi as int * half + a_lo as int,
+                    *b as int == b_hi as int * half + b_lo as int,
+                    p0 as int == a_lo as int * b_lo as int,
+                    p1 as int == a_lo as int * b_hi as int,
+                    p2 as int == a_hi as int * b_lo as int,
+                    p3 as int == a_hi as int * b_hi as int,
+                    base == half * half;
+            //  Decompose p1, p2, p0, mid into hi/lo halves (u64 bit_vector)
+            let p1_hi_u: u32 = p1 >> 16u32;
+            let p1_lo_u: u32 = p1 & 0xFFFFu32;
+            let p2_hi_u: u32 = p2 >> 16u32;
+            let p2_lo_u: u32 = p2 & 0xFFFFu32;
+            let p0_lo_u: u32 = p0 & 0xFFFFu32;
+            let mid_hi_u: u32 = mid >> 16u32;
+            let mid_lo_u: u32 = mid & 0xFFFFu32;
+            assert((p1 as u64) == (p1_hi_u as u64) * 0x10000u64 + (p1_lo_u as u64)) by(bit_vector)
+                requires p1_hi_u == p1 >> 16u32, p1_lo_u == p1 & 0xFFFFu32;
+            assert((p2 as u64) == (p2_hi_u as u64) * 0x10000u64 + (p2_lo_u as u64)) by(bit_vector)
+                requires p2_hi_u == p2 >> 16u32, p2_lo_u == p2 & 0xFFFFu32;
+            assert((p0 as u64) == (p0_hi as u64) * 0x10000u64 + (p0_lo_u as u64)) by(bit_vector)
+                requires p0_hi == p0 >> 16u32, p0_lo_u == p0 & 0xFFFFu32;
+            assert((mid as u64) == (mid_hi_u as u64) * 0x10000u64 + (mid_lo_u as u64)) by(bit_vector)
+                requires mid_hi_u == mid >> 16u32, mid_lo_u == mid & 0xFFFFu32;
+            //  Lift to int
+            let p1_hi: int = p1_hi_u as int;
+            let p1_lo: int = p1_lo_u as int;
+            let p2_hi: int = p2_hi_u as int;
+            let p2_lo: int = p2_lo_u as int;
+            let p0_lo: int = p0_lo_u as int;
+            let mid_hi: int = mid_hi_u as int;
+            let mid_lo: int = mid_lo_u as int;
+            assert(p1 as int == p1_hi * half + p1_lo);
+            assert(p2 as int == p2_hi * half + p2_lo);
+            assert(p0 as int == p0_hi as int * half + p0_lo);
+            assert(mid as int == mid_hi * half + mid_lo);
+            //  mid == p0_hi + p1_lo + p2_lo (by construction)
+            //  Step 1: (p1+p2)*half + p0 = (p1_hi+p2_hi)*base + mid*half + p0_lo
+            assert((p1 as int + p2 as int) * half + p0 as int
+                == (p1_hi + p2_hi) * base + mid as int * half + p0_lo)
+                by(nonlinear_arith)
+                requires
+                    p1 as int == p1_hi * half + p1_lo,
+                    p2 as int == p2_hi * half + p2_lo,
+                    p0 as int == p0_hi as int * half + p0_lo,
+                    mid as int == p0_hi as int + p1_lo + p2_lo,
+                    base == half * half;
+            //  Step 2: mid*half = mid_hi*base + mid_lo*half
+            assert(mid as int * half == mid_hi * base + mid_lo * half)
+                by(nonlinear_arith)
+                requires
+                    mid as int == mid_hi * half + mid_lo,
+                    base == half * half;
+            //  Step 3: prod = hi*base + remainder
+            assert(prod == (p3 as int + p1_hi + p2_hi + mid_hi) * base + mid_lo * half + p0_lo)
+                by(nonlinear_arith)
+                requires
+                    prod == p3 as int * base + (p1_hi + p2_hi) * base + mid as int * half + p0_lo,
+                    mid as int * half == mid_hi * base + mid_lo * half;
+            //  hi == p3 + p1_hi + p2_hi + mid_hi (by construction)
+            assert(hi as int == p3 as int + p1_hi + p2_hi + mid_hi);
+            //  Remainder < base
+            assert(mid_lo_u <= 0xFFFFu32) by(bit_vector) requires mid_lo_u == mid & 0xFFFFu32;
+            assert(p0_lo_u <= 0xFFFFu32) by(bit_vector) requires p0_lo_u == p0 & 0xFFFFu32;
+            //  Remainder bounds: 0 <= mid_lo*half + p0_lo < base
+            assert(mid_lo * half >= 0) by(nonlinear_arith)
+                requires mid_lo >= 0, half >= 0;
+            assert(mid_lo * half + p0_lo < base) by(nonlinear_arith)
+                requires mid_lo <= 0xFFFFint, p0_lo <= 0xFFFFint, half == 0x10000int, base == half * half;
+            //  Therefore hi == prod / base
+            assert(hi as int == prod / base) by(nonlinear_arith)
+                requires
+                    prod == hi as int * base + mid_lo * half + p0_lo,
+                    mid_lo * half + p0_lo >= 0,
+                    mid_lo * half + p0_lo < base,
+                    base > 0;
         }
         (lo, hi)
     }
@@ -234,14 +335,13 @@ impl LimbOps for u32 {
         let c1: u32 = if sum1 < mul_lo { 1u32 } else { 0u32 };
         let sum2 = sum1.wrapping_add(*carry);
         let c2: u32 = if sum2 < sum1 { 1u32 } else { 0u32 };
-        let carry_out = mul_hi.wrapping_add(c1).wrapping_add(c2);
         proof {
             use vstd::wrapping::u32_specs;
-            let prod = self.sem() * b.sem();
-            let total = prod + accum.sem() + carry.sem();
-            //  mul_lo == prod % BASE, mul_hi == prod / BASE (from mul2)
-            //  sum1 + c1*BASE == mul_lo + accum (wrapping add)
-            assert(sum1 as int + c1 as int * LIMB_BASE() == mul_lo as int + *accum as int) by {
+            let base: int = LIMB_BASE();
+            let prod: int = self.sem() * b.sem();
+            let total: int = prod + accum.sem() + carry.sem();
+            //  sum1 + c1*BASE == mul_lo + accum
+            assert(sum1 as int + c1 as int * base == mul_lo as int + *accum as int) by {
                 assert(sum1 as int == u32_specs::wrapping_add(mul_lo, *accum) as int);
                 if mul_lo as int + *accum as int > u32::MAX as int {
                     assert(c1 == 1u32);
@@ -249,8 +349,8 @@ impl LimbOps for u32 {
                     assert(c1 == 0u32);
                 }
             }
-            //  sum2 + c2*BASE == sum1 + carry (wrapping add)
-            assert(sum2 as int + c2 as int * LIMB_BASE() == sum1 as int + *carry as int) by {
+            //  sum2 + c2*BASE == sum1 + carry
+            assert(sum2 as int + c2 as int * base == sum1 as int + *carry as int) by {
                 assert(sum2 as int == u32_specs::wrapping_add(sum1, *carry) as int);
                 if sum1 as int + *carry as int > u32::MAX as int {
                     assert(c2 == 1u32);
@@ -258,19 +358,62 @@ impl LimbOps for u32 {
                     assert(c2 == 0u32);
                 }
             }
-            //  sum2 = (prod % BASE + accum + carry) mod BASE = total mod BASE
-            //  carry_out = prod / BASE + c1 + c2 = total / BASE
-            //  (wrapping_add for carry_out is safe: mul_hi < BASE, c1+c2 <= 2)
-            let base = LIMB_BASE();
+            //  total = (mul_hi + c1 + c2) * BASE + sum2
             assert(sum2 as int == mul_lo as int + *accum as int + *carry as int
                 - (c1 as int + c2 as int) * base) by(nonlinear_arith)
                 requires
                     sum1 as int + c1 as int * base == mul_lo as int + *accum as int,
                     sum2 as int + c2 as int * base == sum1 as int + *carry as int;
-            //  carry_out via wrapping: mul_hi + c1 + c2 can't overflow u32
-            //  because mul_hi <= 0xFFFE_0001 and c1+c2 <= 2
-            assert(mul_hi as int + c1 as int + c2 as int <= u32::MAX as int) by(nonlinear_arith)
-                requires mul_hi as int <= 0xFFFE_0001, c1 <= 1, c2 <= 1;
+            //  prod == mul_hi * BASE + mul_lo (from mul2 postcondition + fundamental_div_mod)
+            assert(prod == mul_hi as int * base + mul_lo as int) by(nonlinear_arith)
+                requires
+                    mul_lo as int == prod % base,
+                    mul_hi as int == prod / base,
+                    base > 0,
+                    prod >= 0;
+            assert(total == (mul_hi as int + c1 as int + c2 as int) * base + sum2 as int)
+                by(nonlinear_arith)
+                requires
+                    prod == mul_hi as int * base + mul_lo as int,
+                    sum2 as int == mul_lo as int + *accum as int + *carry as int
+                        - (c1 as int + c2 as int) * base,
+                    total == prod + *accum as int + *carry as int;
+            //  mul_hi + c1 + c2 = total / BASE <= BASE - 1 = u32::MAX
+            //  total <= (BASE-1)^2 + 2*(BASE-1) = BASE^2 - 1
+            let a_val: int = self.sem();
+            let b_val: int = b.sem();
+            let acc_val: int = accum.sem();
+            let car_val: int = carry.sem();
+            assert(mul_hi as int + c1 as int + c2 as int <= base - 1) by(nonlinear_arith)
+                requires
+                    total == (mul_hi as int + c1 as int + c2 as int) * base + (sum2 as int),
+                    0 <= (sum2 as int),
+                    (sum2 as int) < base,
+                    total == a_val * b_val + acc_val + car_val,
+                    0 <= a_val,
+                    a_val < base,
+                    0 <= b_val,
+                    b_val < base,
+                    0 <= acc_val,
+                    acc_val < base,
+                    0 <= car_val,
+                    car_val < base,
+                    base > 0;
+        }
+        let carry_out: u32 = mul_hi + c1 + c2;
+        proof {
+            let base: int = LIMB_BASE();
+            let prod: int = self.sem() * b.sem();
+            let total: int = prod + accum.sem() + carry.sem();
+            //  Postcondition: sum2 == total % BASE, carry_out == total / BASE
+            assert((sum2 as int) == total % base) by(nonlinear_arith)
+                requires
+                    total == (carry_out as int) * base + (sum2 as int),
+                    0 <= (sum2 as int), (sum2 as int) < base, base > 0;
+            assert((carry_out as int) == total / base) by(nonlinear_arith)
+                requires
+                    total == (carry_out as int) * base + (sum2 as int),
+                    0 <= (sum2 as int), (sum2 as int) < base, base > 0;
         }
         (sum2, carry_out)
     }
