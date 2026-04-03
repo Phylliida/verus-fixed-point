@@ -162,6 +162,65 @@ impl LimbOps for u32 {
         let bw2: u32 = if ab < *borrow { 1u32 } else { 0u32 };
         proof {
             use vstd::wrapping::u32_specs;
+            let base = LIMB_BASE();
+            let sv: int = *self as int;
+            let bv: int = *b as int;
+            let brv: int = *borrow as int;
+            let diff: int = sv - bv - brv;
+            //  Step 1: ab == self - b + bw1 * BASE
+            assert(ab as int == sv - bv + bw1 as int * base) by {
+                assert(ab as int == u32_specs::wrapping_sub(*self, *b) as int);
+                if sv < bv {
+                    assert(ab as int == sv - bv + base);
+                    assert(bw1 == 1u32);
+                } else {
+                    assert(ab as int == sv - bv);
+                    assert(bw1 == 0u32);
+                }
+            }
+            //  Step 2: result == ab - borrow + bw2 * BASE
+            assert(result as int == ab as int - brv + bw2 as int * base) by {
+                assert(result as int == u32_specs::wrapping_sub(ab, *borrow) as int);
+                if (ab as int) < brv {
+                    assert(result as int == ab as int - brv + base);
+                    assert(bw2 == 1u32);
+                } else {
+                    assert(result as int == ab as int - brv);
+                    assert(bw2 == 0u32);
+                }
+            }
+            //  Step 3: combine → result == diff + (bw1+bw2)*BASE
+            assert(result as int == diff + (bw1 + bw2) as int * base) by(nonlinear_arith)
+                requires
+                    result as int == ab as int - brv + bw2 as int * base,
+                    ab as int == sv - bv + bw1 as int * base,
+                    diff == sv - bv - brv;
+            //  bw1 + bw2 can't be 2: when bw1=1, ab >= 1 > borrow
+            assert(bw1 as int + bw2 as int <= 1) by {
+                if bw1 == 1u32 {
+                    //  ab = self - b + BASE >= 0 - (BASE-1) + BASE = 1
+                    assert(ab as int >= 1);
+                    //  borrow <= 1 (precondition), so ab >= 1 >= borrow → bw2 = 0
+                    assert(bw2 == 0u32);
+                }
+            }
+            //  result == (diff + BASE) % BASE
+            let total_borrow = (bw1 + bw2) as int;
+            assert(result as int == (diff + base) % base) by(nonlinear_arith)
+                requires
+                    result as int == diff + total_borrow * base,
+                    0 <= result as int,
+                    (result as int) < base,
+                    total_borrow == 0 || total_borrow == 1,
+                    base > 0;
+            //  borrow_out == if diff < 0 { 1 } else { 0 }
+            assert(total_borrow == if diff < 0 { 1int } else { 0int }) by(nonlinear_arith)
+                requires
+                    result as int == diff + total_borrow * base,
+                    0 <= result as int,
+                    (result as int) < base,
+                    total_borrow == 0 || total_borrow == 1,
+                    base > 0;
         }
         (result, bw1 + bw2)
     }
