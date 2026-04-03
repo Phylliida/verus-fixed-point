@@ -331,6 +331,132 @@ fn scalar_to_padded_vec(scalar: u32, n: usize) -> (out: Vec<u32>)
     result
 }
 
+///  Helper: proves the Mersenne fold chain f4 ≡ a*b (mod p).
+///  Extracted from mul_mod to stay under rlimit.
+proof fn lemma_mersenne_chain(
+    lp: int, p: nat, ci: int,
+    av: int, bv: int,       //  input values
+    lov: int, hiv: int,     //  product split
+    f1: int, c1: int, hct: int,  //  fold1 + (c1+hct)*lp == lo+hi*c
+    f2: int, cy2i: int,     //  fold2 + cy2*lp == f1 + hct*c
+    f3: int, cy3ai: int,    //  fold3a + cy3a*lp == f2 + c1*c
+    f3b: int, cy3bi: int,   //  fold3b + cy3b*lp == f3 + cy2*c
+    f4: int, cy4i: int,     //  fold4 + cy4*lp == f3b + cy_sum
+    cy_sum: int,             //  (cy3a+cy3b)*c
+)
+    requires
+        lp > 0, p > 0, ci > 0, (ci as int) < LIMB_BASE(),
+        p == (lp - ci) as nat,
+        //  Product: a*b == lo + hi*lp
+        av * bv == lov + hiv * lp,
+        //  Fold1: f1 + (c1+hct)*lp == lo + hi*c
+        f1 + (c1 + hct) * lp == lov + hiv * ci,
+        //  Fold chain
+        f2 + cy2i * lp == f1 + hct * ci,
+        f3 + cy3ai * lp == f2 + c1 * ci,
+        f3b + cy3bi * lp == f3 + cy2i * ci,
+        f4 + cy4i * lp == f3b + cy_sum,
+        cy_sum == (cy3ai + cy3bi) * ci,
+        //  Bounds
+        0 <= f4, f4 < lp,
+        0 <= f3b, f3b < lp,
+        0 <= cy_sum, cy_sum < 2 * LIMB_BASE(),
+        lp >= LIMB_BASE() * LIMB_BASE(),
+        cy4i >= 0,
+    ensures
+        (f4 + cy4i * ci) as nat % p == (av * bv) as nat % p,
+        cy4i >= 0,
+        cy4i <= 1,
+{
+    //  lp > ci (needed for Mersenne precondition: base_k > c)
+    assert(lp > ci) by(nonlinear_arith)
+        requires lp >= LIMB_BASE() * LIMB_BASE(), (ci as int) < LIMB_BASE(), ci > 0;
+
+    //  cy4 <= 1 from bounds
+    assert(cy4i <= 1) by(nonlinear_arith)
+        requires f4 + cy4i * lp == f3b + cy_sum,
+            0 <= f4, f4 < lp, 0 <= f3b, f3b < lp,
+            0 <= cy_sum, cy_sum < 2 * LIMB_BASE(),
+            lp >= LIMB_BASE() * LIMB_BASE(), lp > 0, cy4i >= 0;
+
+    //  Combine fold steps: f3 + (cy2+cy3a)*lp == f1 + (c1+hct)*c
+    assert(f3 + (cy2i + cy3ai) * lp == f1 + (c1 + hct) * ci) by(nonlinear_arith)
+        requires f2 + cy2i * lp == f1 + hct * ci,
+            f3 + cy3ai * lp == f2 + c1 * ci;
+
+    //  Step-by-step modular chain (each step trivial for Z3):
+    //  Start: a*b == lo + hi*lp
+    //  → (lo + hi*lp) % p == (lo + hi*c) % p  [Mersenne]
+    lemma_pseudo_mersenne_reduce(lov as nat, hiv as nat, lp as nat, ci as nat);
+    //  (lo + hi*c) == f1 + (c1+hct)*lp  [integer equality]
+    //  → (f1 + (c1+hct)*lp) % p == (f1 + (c1+hct)*c) % p  [Mersenne]
+    lemma_pseudo_mersenne_reduce(f1 as nat, (c1 + hct) as nat, lp as nat, ci as nat);
+    //  (f1 + (c1+hct)*c) == f3 + (cy2+cy3a)*lp  [integer equality, from combine above]
+    //  → (f3 + (cy2+cy3a)*lp) % p == (f3 + (cy2+cy3a)*c) % p  [Mersenne]
+    lemma_pseudo_mersenne_reduce(f3 as nat, (cy2i + cy3ai) as nat, lp as nat, ci as nat);
+
+    //  Mersenne on remaining carry positions
+    lemma_pseudo_mersenne_reduce(f4 as nat, cy4i as nat, lp as nat, ci as nat);
+
+    //  Step-by-step chain:
+    //  a*b == lo + hi*lp ≡ lo + hi*c == f1 + (c1+hct)*lp ≡ f1 + (c1+hct)*c
+    //       == f3 + (cy2+cy3a)*lp ≡ f3 + (cy2+cy3a)*c
+    //  f3 + (cy2+cy3a)*c = f3b + cy3b*lp + cy3a*c (from f3b+cy3b*lp=f3+cy2*c)
+    //  ≡ f3b + cy3b*c + cy3a*c = f3b + (cy3a+cy3b)*c = f4 + cy4*lp ≡ f4 + cy4*c
+
+    //  (1) a*b ≡ lo + hi*c (mod p)
+    assert((lov + hiv * lp) as nat % p == (lov + hiv * ci) as nat % p);
+    //  (2) lo + hi*c = f1 + (c1+hct)*lp ≡ f1 + (c1+hct)*c
+    assert((f1 + (c1 + hct) * lp) as nat % p == (f1 + (c1 + hct) * ci) as nat % p);
+    //  (3) f1 + (c1+hct)*c = f3 + (cy2+cy3a)*lp ≡ f3 + (cy2+cy3a)*c
+    assert((f3 + (cy2i + cy3ai) * lp) as nat % p == (f3 + (cy2i + cy3ai) * ci) as nat % p);
+    //  (4) f3 = f3b + cy3b*lp - cy2*c (from f3b+cy3b*lp=f3+cy2*c)
+    //      f3 + (cy2+cy3a)*c = f3b + cy3b*lp - cy2*c + cy2*c + cy3a*c
+    //                        = f3b + cy3b*lp + cy3a*c
+    assert(f3 + (cy2i + cy3ai) * ci == f3b + cy3bi * lp + cy3ai * ci) by(nonlinear_arith)
+        requires f3b + cy3bi * lp == f3 + cy2i * ci;
+    //  (5) Mersenne on cy3b: f3b + cy3a*c + cy3b*lp ≡ f3b + cy3a*c + cy3b*c
+    lemma_pseudo_mersenne_reduce((f3b + cy3ai * ci) as nat, cy3bi as nat, lp as nat, ci as nat);
+    //  (6) f3b + cy3a*c + cy3b*c = f3b + (cy3a+cy3b)*c = f3b + cy_sum
+    //      = f4 + cy4*lp ≡ f4 + cy4*c
+    assert(f3b + (cy3ai + cy3bi) * ci == f3b + cy_sum) by(nonlinear_arith)
+        requires cy_sum == (cy3ai + cy3bi) * ci;
+    assert(f3b + cy_sum == f4 + cy4i * lp);
+    assert((f4 + cy4i * lp) as nat % p == (f4 + cy4i * ci) as nat % p);
+}
+
+///  Helper: conditional subtract of p from a value < lp = p + c.
+///  Returns value mod p.
+proof fn lemma_cond_sub(val: int, diff: int, pv: int, lp: int, ci: int, borrow: int)
+    requires
+        diff + pv == val + borrow * lp,
+        pv == lp - ci,
+        0 <= val, val < lp,
+        0 <= diff, diff < lp,
+        borrow == 0 || borrow == 1,
+        ci > 0, lp > 0,
+        2 * ci <= lp,  //  ensures pv >= ci, so val-pv < ci < pv
+    ensures
+        borrow == 0 ==> (diff as nat == val as nat % (pv as nat) && 0 <= diff && (diff as int) < pv),
+        borrow == 1 ==> (val as nat == val as nat % (pv as nat) && 0 <= val && (val as int) < pv),
+{
+    if borrow == 0 {
+        assert(diff == val - pv) by(nonlinear_arith)
+            requires diff + pv == val + 0 * lp;
+        assert(val >= pv) by(nonlinear_arith)
+            requires diff == val - pv, diff >= 0;
+        assert(diff < pv) by(nonlinear_arith)
+            requires diff == val - pv, val < lp, pv == lp - ci;
+        assert(diff as nat == val as nat % (pv as nat)) by(nonlinear_arith)
+            requires diff == val - pv, 0 <= diff, (diff as int) < pv, pv > 0, val >= pv;
+    } else {
+        assert(val < pv) by(nonlinear_arith)
+            requires diff + pv == val + lp, 0 <= diff, diff < lp, pv == lp - ci, ci > 0;
+        assert(val as nat == val as nat % (pv as nat)) by(nonlinear_arith)
+            requires 0 <= val, (val as int) < pv, pv > 0;
+    }
+}
+
 impl RuntimePrimeField {
     pub open spec fn prime_spec(&self) -> nat {
         (limb_power(self.n_exec as nat) - self.c_exec as int) as nat
@@ -611,24 +737,45 @@ impl RuntimePrimeField {
         }
         let cy3a_c: u32 = cy3a * c;
         let cy3b_c: u32 = cy3b * c;
+        proof { assert((cy3a_c as int + cy3b_c as int) <= u32::MAX as int) by(nonlinear_arith)
+            requires cy3a as int <= 1, cy3b as int <= 1,
+                cy3a_c == cy3a * c, cy3b_c == cy3b * c,
+                (c as int) < LIMB_BASE(); }
         let cy3_vec = scalar_to_padded_vec(cy3a_c + cy3b_c, n);
         let (fold4, _cy4) = generic_add_limbs(&fold3b, &cy3_vec, n);
 
-        //  ── Step 7: Conditional subtract p (fold4 < lp ≈ p+c, one subtract suffices) ──
+        //  ── Step 7: One more fold — cy4*c (cy4 ≤ 1) ──
+        proof {
+            let lpl = limb_power(n as nat);
+            lemma_vec_val_bounded(fold4@);
+            lemma_vec_val_bounded(fold3b@);
+            assert(_cy4 as int <= 1) by(nonlinear_arith)
+                requires vec_val(fold4@) + _cy4 as int * lpl == vec_val(fold3b@) + (cy3a_c + cy3b_c) as int,
+                    0 <= vec_val(fold4@), vec_val(fold4@) < lpl,
+                    0 <= vec_val(fold3b@), vec_val(fold3b@) < lpl,
+                    0 <= (cy3a_c + cy3b_c) as int, ((cy3a_c + cy3b_c) as int) < 2 * LIMB_BASE(),
+                    lpl >= LIMB_BASE() * LIMB_BASE(), lpl > 0, _cy4 as int >= 0;
+            assert(_cy4 as int * (c as int) <= u32::MAX as int) by(nonlinear_arith)
+                requires _cy4 as int <= 1, (c as int) < LIMB_BASE();
+        }
+        let cy4_c: u32 = _cy4 * c;
+        let cy4v = scalar_to_padded_vec(cy4_c, n);
+        let (fold5, _cy5) = generic_add_limbs(&fold4, &cy4v, n);
+        //  cy5 == 0: fold4 < lp, cy4_c < BASE << lp for n≥2. fold5+cy5*lp = fold4+cy4_c < lp+BASE < 2*lp.
+        //  ── Step 8: Conditional subtract p ──
         let p_limbs = make_p_limbs(n, c);
-        let (d1, bw1) = generic_sub_limbs(&fold4, &p_limbs, n);
+        let (d1, bw1) = generic_sub_limbs(&fold5, &p_limbs, n);
         let use_d1: bool = bw1 == 0u32;
-        let r = if use_d1 { d1 } else { fold4 };
+        let r = if use_d1 { d1 } else { fold5 };
 
         proof {
             let lp: int = limb_power(n as nat);
             let p: nat = self.prime_spec();
-            let pi: int = p as int;
             let ci: int = c as int;
             let av: int = vec_val(self.limbs@);
             let bv: int = vec_val(other.limbs@);
 
-            //  ── Product == a*b (gc == 0) ──
+            //  ── gc == 0 → product == a*b ──
             lemma_vec_val_bounded(product@);
             lemma_vec_val_bounded(self.limbs@);
             lemma_vec_val_bounded(other.limbs@);
@@ -638,18 +785,13 @@ impl RuntimePrimeField {
             assert(_gc@ == 0int) by(nonlinear_arith)
                 requires prd + _gc@ * lp2 == av * bv, 0 <= prd, prd < lp2,
                     0 <= av, av < lp, 0 <= bv, bv < lp, lp2 == lp * lp, lp > 0;
-            assert(prd == av * bv) by(nonlinear_arith) requires prd + 0 * lp2 == av * bv, _gc@ == 0;
 
-            //  ── Split + Mersenne #1 ──
+            //  ── Split + fold1 chain: f1 + (carry1+hct)*lp == lo+hi*c ──
             lemma_vec_val_split(product@, n as nat);
             assert(sem_seq(lo@) =~= sem_seq(product@.subrange(0, n as int)));
             assert(sem_seq(hi@) =~= sem_seq(product@.subrange(n as int, (2*n) as int)));
             let lov: int = vec_val(lo@);
             let hiv: int = vec_val(hi@);
-            lemma_vec_val_bounded(lo@); lemma_vec_val_bounded(hi@);
-            lemma_pseudo_mersenne_reduce(lov as nat, hiv as nat, lp as nat, c as nat);
-
-            //  ── hi_c split + fold1 chain ──
             assert(vec_val(hi_c@) == hiv * ci);
             lemma_vec_val_split(hi_c@, n as nat);
             assert(sem_seq(hi_c_lo@) =~= sem_seq(hi_c@.subrange(0, n as int)));
@@ -659,98 +801,55 @@ impl RuntimePrimeField {
                 requires f1 + carry1 as int * lp == lov + vec_val(hi_c_lo@),
                     vec_val(hi_c_lo@) + hct * lp == hiv * ci;
 
-            //  ── Mersenne #2 ──
-            lemma_pseudo_mersenne_reduce(f1 as nat, (carry1 as int + hct) as nat, lp as nat, c as nat);
-
-            //  ── vec_val(prod_vec) = hct*c, vec_val(c1_vec) = carry1*c ──
+            //  ── Connect vec_vals of fold steps ──
             vstd::arithmetic::div_mod::lemma_fundamental_div_mod((hct * ci) as int, LIMB_BASE());
             assert(vec_val(prod_vec@) == hct * ci) by(nonlinear_arith)
                 requires vec_val(prod_vec@) == prod_lo as int + prod_hi as int * LIMB_BASE(),
                     prod_lo as int == (hct * ci) % LIMB_BASE(), prod_hi as int == (hct * ci) / LIMB_BASE(),
                     hct * ci == (hct * ci) / LIMB_BASE() * LIMB_BASE() + (hct * ci) % LIMB_BASE();
             assert(carry1_c as int == carry1 as int * ci);
-
-            //  ── fold3a + (cy2+cy3)*lp == f1 + (carry1+hct)*c ──
             let f2: int = vec_val(fold2@);
             let f3: int = vec_val(fold3a@);
-            assert(f2 + cy2 as int * lp == f1 + hct * ci);
-            assert(f3 + cy3a as int * lp == f2 + carry1 as int * ci);
-            assert(f3 + (cy2 as int + cy3a as int) * lp == f1 + (carry1 as int + hct) * ci)
-                by(nonlinear_arith)
-                requires f2 + cy2 as int * lp == f1 + hct * ci,
-                    f3 + cy3a as int * lp == f2 + carry1 as int * ci;
-
-            //  ── Mersenne #3 ──
-            lemma_pseudo_mersenne_reduce(f3 as nat, (cy2 as int + cy3a as int) as nat, lp as nat, c as nat);
-
-            //  ── fold3b + cy3b*lp == fold3a + cy2*c ──
             let f3b: int = vec_val(fold3b@);
-            assert(f3b + cy3b as int * lp == f3 + cy2 as int * ci);
-
-            //  ── fold4 + cy4*lp == fold3b + (cy3a+cy3b)*c ──
             let cy_sum: int = (cy3a_c + cy3b_c) as int;
             assert(cy_sum == (cy3a as int + cy3b as int) * ci) by(nonlinear_arith)
                 requires cy3a_c == cy3a * c, cy3b_c == cy3b * c;
-            assert(vec_val(cy3_vec@) == cy_sum);
             let f4: int = vec_val(fold4@);
-            assert(f4 + _cy4 as int * lp == f3b + cy_sum);
-
-            //  ── Mersenne #4 ──
-            lemma_pseudo_mersenne_reduce(f4 as nat, _cy4 as int as nat, lp as nat, c as nat);
-
-            //  ── Chain: f4 + cy4*c ≡ a*b (mod p) ──
-            //  f4+cy4*lp = f3b+(cy3a+cy3b)*c, f3b+cy3b*lp = f3+cy2*c,
-            //  f3+(cy2+cy3a)*lp = f1+(carry1+hct)*c, f1+(carry1+hct)*lp = lo+hi*c,
-            //  (lo+hi*lp)%p = (lo+hi*c)%p, lo+hi*lp = a*b
-            //  Each Mersenne: (x+y*lp)%p == (x+y*c)%p. Z3 chains the equalities.
-
-            //  ── cy4 == 0 (bounds) ──
             lemma_vec_val_bounded(fold4@);
             lemma_vec_val_bounded(fold3b@);
-            assert(_cy4 as int == 0) by(nonlinear_arith)
-                requires f4 + _cy4 as int * lp == f3b + cy_sum,
-                    0 <= f4, f4 < lp, 0 <= f3b, f3b < lp,
-                    0 <= cy_sum, cy_sum < 2 * LIMB_BASE(),
-                    lp >= LIMB_BASE() * LIMB_BASE(), lp > 0, _cy4 as int >= 0;
 
-            //  ── f4 % p == (a*b) % p (from chain + cy4==0) ──
-            assert(f4 as nat % p == (av * bv) as nat % p) by(nonlinear_arith)
-                requires
-                    (f4 + _cy4 as int * lp) as nat % p == (f4 + _cy4 as int * ci) as nat % p,
-                    f4 + _cy4 as int * lp == f3b + (cy3a as int + cy3b as int) * ci,
-                    f3b + cy3b as int * lp == f3 + cy2 as int * ci,
-                    (f3 + (cy2 as int + cy3a as int) * lp) as nat % p == (f3 + (cy2 as int + cy3a as int) * ci) as nat % p,
-                    f3 + (cy2 as int + cy3a as int) * lp == f1 + (carry1 as int + hct) * ci,
-                    (f1 + (carry1 as int + hct) * lp) as nat % p == (f1 + (carry1 as int + hct) * ci) as nat % p,
-                    f1 + (carry1 as int + hct) * lp == lov + hiv * ci,
-                    (lov + hiv * lp) as nat % p == (lov + hiv * ci) as nat % p,
-                    lov + hiv * lp == av * bv,
-                    _cy4 as int == 0;
+            //  ── Call chain lemma: (f4 + cy4*c) % p == (a*b) % p ──
+            lemma_mersenne_chain(lp, p, ci, av, bv, lov, hiv,
+                f1, carry1 as int, hct,
+                f2, cy2 as int,
+                f3, cy3a as int,
+                f3b, cy3b as int,
+                f4, _cy4 as int,
+                cy_sum);
+            //  chain gives: (f4 + _cy4*ci) % p == (av*bv) % p, _cy4 <= 1
 
-            //  ── Conditional subtract: r == f4 % p ──
+            //  ── fold5 = f4 + cy4*c, cy5 == 0 ──
+            let f5: int = vec_val(fold5@);
+            lemma_vec_val_bounded(fold5@);
+            assert(cy4_c as int == _cy4 as int * ci);
+            assert(f5 + _cy5 as int * lp == f4 + _cy4 as int * ci);
+            //  cy5 == 0: f4 < lp, cy4_c < BASE. f4 + cy4_c < lp + BASE < 2*lp.
+            assert(_cy5 as int == 0) by(nonlinear_arith)
+                requires f5 + _cy5 as int * lp == f4 + _cy4 as int * ci,
+                    0 <= f5, f5 < lp,
+                    0 <= f4, f4 < lp,
+                    _cy4 as int <= 1, (ci as int) < LIMB_BASE(),
+                    lp >= LIMB_BASE() * LIMB_BASE(),
+                    lp > 0, _cy5 as int >= 0;
+            //  f5 == f4 + cy4*c, and (f4+cy4*c) % p == (a*b) % p
+            //  So f5 % p == (a*b) % p
+            assert(f5 as nat % p == (av * bv) as nat % p) by(nonlinear_arith)
+                requires f5 == f4 + _cy4 as int * ci, _cy5 as int == 0,
+                    (f4 + _cy4 as int * ci) as nat % p == (av * bv) as nat % p;
+
+            //  ── Conditional subtract: r == f5 % p ──
             lemma_vec_val_bounded(d1@);
-            let dv: int = vec_val(d1@);
-            let rv: int = vec_val(r@);
-            if use_d1 {
-                //  bw1 == 0: f4 >= p, r = d1 = f4 - p
-                assert(dv + pi == f4 + bw1 as int * lp);
-                assert(bw1 as int == 0);
-                assert(dv == f4 - pi) by(nonlinear_arith) requires dv + pi == f4 + 0 * lp;
-                assert(dv < pi) by(nonlinear_arith) requires dv == f4 - pi, f4 < lp, pi == lp - ci;
-                assert(dv >= 0) by(nonlinear_arith) requires dv == f4 - pi, f4 >= pi;
-                assert(rv == dv);
-                assert(rv as nat == f4 as nat % p) by(nonlinear_arith)
-                    requires rv == f4 - pi, 0 <= rv, rv < pi, pi > 0, f4 >= pi;
-            } else {
-                //  bw1 == 1: f4 < p, r = f4
-                assert(bw1 as int == 1);
-                assert(f4 < pi) by(nonlinear_arith)
-                    requires dv + pi == f4 + lp, 0 <= dv, dv < lp, pi == lp - ci, ci > 0;
-                assert(rv == f4);
-                assert(rv as nat == f4 as nat % p) by(nonlinear_arith)
-                    requires rv == f4, 0 <= rv, rv < pi, pi > 0;
-            }
-            //  rv == f4 % p == (a*b) % p
+            lemma_cond_sub(f5, vec_val(d1@), p as int, lp, ci, bw1 as int);
         }
 
         RuntimePrimeField {
