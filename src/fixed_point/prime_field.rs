@@ -274,6 +274,63 @@ pub struct RuntimePrimeField {
     pub model: Ghost<nat>,
 }
 
+///  Build a 2-limb Vec<u32>, pad to n. vec_val == lo + hi * BASE.
+fn pair_to_padded_vec(lo: u32, hi: u32, n: usize) -> (out: Vec<u32>)
+    requires n >= 2,
+    ensures
+        out@.len() == n,
+        valid_limbs(out@),
+        vec_val(out@) == lo as int + hi as int * LIMB_BASE(),
+{
+    let mut v: Vec<u32> = Vec::new();
+    v.push(lo);
+    let ghost v1 = v@;
+    v.push(hi);
+    proof {
+        //  v@ == [lo, hi]. Prove vec_val([lo, hi]) == lo + hi * BASE.
+        //  sem_seq([lo, hi]) == [lo as int, hi as int]
+        //  limbs_val([lo_int, hi_int]) = lo_int + BASE * limbs_val([hi_int])
+        //                              = lo_int + BASE * (hi_int + BASE * 0)
+        //                              = lo_int + hi_int * BASE
+        assert(v@[0] == lo);
+        assert(v@[1] == hi);
+        assert(v@.len() == 2);
+        //  Unfold via push chain:
+        lemma_sem_seq_push(Seq::<u32>::empty(), lo);
+        lemma_limbs_val_push(Seq::<int>::empty(), lo as int);
+        reveal_with_fuel(limbs_val, 2);
+        //  vec_val([lo]) == lo as int
+        assert(vec_val(v1) == lo as int);
+        lemma_sem_seq_push(v1, hi);
+        lemma_limbs_val_push(sem_seq(v1), hi as int);
+        reveal_with_fuel(limb_power, 2);
+        //  vec_val([lo, hi]) == vec_val([lo]) + hi * limb_power(1) = lo + hi * BASE
+    }
+    let result = generic_pad_to_length(&v, n);
+    proof { lemma_vec_val_pad(v@, result@); }
+    result
+}
+
+///  Build a 1-limb Vec<u32>, pad to n. vec_val == scalar.
+fn scalar_to_padded_vec(scalar: u32, n: usize) -> (out: Vec<u32>)
+    requires n >= 1,
+    ensures
+        out@.len() == n,
+        valid_limbs(out@),
+        vec_val(out@) == scalar as int,
+{
+    let mut v: Vec<u32> = Vec::new();
+    v.push(scalar);
+    proof {
+        lemma_sem_seq_push(Seq::<u32>::empty(), scalar);
+        lemma_limbs_val_push(Seq::<int>::empty(), scalar as int);
+        reveal_with_fuel(limbs_val, 2);
+    }
+    let result = generic_pad_to_length(&v, n);
+    proof { lemma_vec_val_pad(v@, result@); }
+    result
+}
+
 impl RuntimePrimeField {
     pub open spec fn prime_spec(&self) -> nat {
         (limb_power(self.n_exec as nat) - self.c_exec as int) as nat
@@ -468,9 +525,7 @@ impl RuntimePrimeField {
     }
 
     ///  Modular multiplication: (a * b) mod p via Karatsuba + Mersenne reduction.
-    ///
-    ///  Strategy: Karatsuba → split hi/lo → add lo + hi_c_lo (n limbs each) →
-    ///  fold (carry + hi_c_top) * c → fold carry2 * c → conditional subtract.
+    ///  GPU-friendly: no u64 anywhere, only u32 LimbOps.
     pub fn mul_mod(&self, other: &Self) -> (out: Self)
         requires
             self.wf(), other.wf(), self.same_field(other),
@@ -500,53 +555,64 @@ impl RuntimePrimeField {
         //  carry1 ≤ 1, hi_c_top < BASE. So (carry1 + hi_c_top) < BASE + 1.
         //  (carry1 + hi_c_top) * c < (BASE+1) * BASE ≈ BASE^2, fits in u64.
 
-        //  ── Step 3: Fold 2 — add (carry1 + hi_c_top) * c to fold1 ──
-        //  Prove carry1 ≤ 1 (for u64 overflow safety)
-        proof {
-            lemma_vec_val_bounded(lo@);
-            lemma_vec_val_bounded(hi_c_lo@);
-            let lp_tmp: int = limb_power(n as nat);
-            assert(carry1 as int <= 1) by(nonlinear_arith)
-                requires
-                    vec_val(fold1@) + carry1 as int * lp_tmp == vec_val(lo@) + vec_val(hi_c_lo@),
-                    0 <= vec_val(fold1@),
-                    vec_val(lo@) < lp_tmp,
-                    vec_val(hi_c_lo@) < lp_tmp,
-                    lp_tmp > 0,
-                    carry1 as int >= 0;
-        }
-        let extra: u64 = (carry1 as u64 + hi_c_top as u64) * (c as u64);
-        let extra_lo: u32 = (extra & 0xFFFF_FFFFu64) as u32;
-        let extra_hi: u32 = (extra >> 32u64) as u32;
-        let mut e2: Vec<u32> = Vec::new();
-        e2.push(extra_lo);
-        e2.push(extra_hi);
-        let extra_vec = generic_pad_to_length(&e2, n);
-        let (fold2, carry2) = generic_add_limbs(&fold1, &extra_vec, n);
+        //  ── Step 3: Fold hi_c_top * c (2 limbs from mul2, add to fold1) ──
+        let (prod_lo, prod_hi) = hi_c_top.mul2(&c_limb);
+        let prod_vec = pair_to_padded_vec(prod_lo, prod_hi, n);
+        let (fold2, cy2) = generic_add_limbs(&fold1, &prod_vec, n);
 
-        //  ── Step 4: Fold 3 — add carry2 * c ──
-        //  carry2 ≤ 1 (fold1 < lp, extra < BASE^2 ≤ lp for n≥2, sum < 2*lp)
+        //  ── Step 4: Fold carry1 * c (scalar, carry1 ∈ {0,1}) ──
+        let carry1_c: u32 = if carry1 > 0u32 { c } else { 0u32 };
+        let c1_vec = scalar_to_padded_vec(carry1_c, n);
+        let (fold3a, cy3a) = generic_add_limbs(&fold2, &c1_vec, n);
+
+        //  ── Step 5: Fold cy2 * c (scalar, cy2 ≤ 1) ──
         proof {
-            let lp_local: int = limb_power(n as nat);
+            let lp_local = limb_power(n as nat);
             lemma_vec_val_bounded(fold1@);
             lemma_vec_val_bounded(fold2@);
-            lemma_vec_val_bounded(extra_vec@);
-            lemma_limb_power_add(1, 1);
-            reveal_with_fuel(limb_power, 2);
-            assert(carry2 as int <= 1) by(nonlinear_arith)
+            lemma_vec_val_bounded(prod_vec@);
+            assert(cy2 as int <= 1) by(nonlinear_arith)
                 requires
-                    vec_val(fold2@) + carry2 as int * lp_local == vec_val(fold1@) + vec_val(extra_vec@),
+                    vec_val(fold2@) + cy2 as int * lp_local == vec_val(fold1@) + vec_val(prod_vec@),
                     0 <= vec_val(fold2@), vec_val(fold2@) < lp_local,
                     0 <= vec_val(fold1@), vec_val(fold1@) < lp_local,
-                    0 <= vec_val(extra_vec@), vec_val(extra_vec@) < limb_power(2nat),
-                    limb_power(2nat) <= lp_local,
-                    lp_local > 0;
+                    0 <= vec_val(prod_vec@), vec_val(prod_vec@) < lp_local,
+                    lp_local > 0, cy2 as int >= 0;
+            assert(cy2 as int * (c as int) <= u32::MAX as int) by(nonlinear_arith)
+                requires cy2 as int <= 1, (c as int) < LIMB_BASE();
         }
-        let carry2_c: u32 = carry2 * c;
-        let mut e3: Vec<u32> = Vec::new();
-        e3.push(carry2_c);
-        let carry2_vec = generic_pad_to_length(&e3, n);
-        let (fold3, _carry3) = generic_add_limbs(&fold2, &carry2_vec, n);
+        let cy2_c: u32 = cy2 * c;
+        let cy2_vec = scalar_to_padded_vec(cy2_c, n);
+        let (fold3b, cy3b) = generic_add_limbs(&fold3a, &cy2_vec, n);
+
+        //  ── Step 6: Fold cy3a * c and cy3b * c ──
+        proof {
+            let lp_local = limb_power(n as nat);
+            lemma_vec_val_bounded(fold3a@);
+            lemma_vec_val_bounded(fold3b@);
+            assert(cy3a as int <= 1) by(nonlinear_arith)
+                requires
+                    vec_val(fold3a@) + cy3a as int * lp_local == vec_val(fold2@) + vec_val(c1_vec@),
+                    0 <= vec_val(fold3a@), vec_val(fold3a@) < lp_local,
+                    0 <= vec_val(fold2@), vec_val(fold2@) < lp_local,
+                    vec_val(c1_vec@) < LIMB_BASE(),
+                    lp_local >= LIMB_BASE(), lp_local > 0, cy3a as int >= 0;
+            assert(cy3a as int * (c as int) <= u32::MAX as int) by(nonlinear_arith)
+                requires cy3a as int <= 1, (c as int) < LIMB_BASE();
+            assert(cy3b as int <= 1) by(nonlinear_arith)
+                requires
+                    vec_val(fold3b@) + cy3b as int * lp_local == vec_val(fold3a@) + vec_val(cy2_vec@),
+                    0 <= vec_val(fold3b@), vec_val(fold3b@) < lp_local,
+                    0 <= vec_val(fold3a@), vec_val(fold3a@) < lp_local,
+                    vec_val(cy2_vec@) < LIMB_BASE(),
+                    lp_local >= LIMB_BASE(), lp_local > 0, cy3b as int >= 0;
+            assert(cy3b as int * (c as int) <= u32::MAX as int) by(nonlinear_arith)
+                requires cy3b as int <= 1, (c as int) < LIMB_BASE();
+        }
+        let cy3a_c: u32 = cy3a * c;
+        let cy3b_c: u32 = cy3b * c;
+        let cy3_vec = scalar_to_padded_vec(cy3a_c + cy3b_c, n);
+        let (fold4, _cy4) = generic_add_limbs(&fold3b, &cy3_vec, n);
 
         //  ── Step 5: Conditional subtract p (twice) ──
         let p_limbs = make_p_limbs(n, c);
@@ -564,7 +630,24 @@ impl RuntimePrimeField {
             let prod_val: int = vec_val(product@);
 
             //  ── (1) product == a * b ──
-            assert(prod_val == av * bvi);
+            //  Karatsuba gives: prod + gc * limb_power(2n) == a * b
+            //  gc == 0 because a,b < p < lp, so a*b < lp^2 = limb_power(2n)
+            //  and prod < limb_power(2n), so gc must be 0.
+            lemma_vec_val_bounded(product@);
+            lemma_vec_val_bounded(self.limbs@);
+            lemma_vec_val_bounded(other.limbs@);
+            lemma_limb_power_add(n as nat, n as nat);
+            let lp2: int = limb_power((2 * n) as nat);
+            assert(_gc@ == 0int) by(nonlinear_arith)
+                requires
+                    prod_val + _gc@ * lp2 == av * bvi,
+                    0 <= prod_val, prod_val < lp2,
+                    0 <= av, av < lp,
+                    0 <= bvi, bvi < lp,
+                    lp2 == lp * lp,
+                    lp > 0;
+            assert(prod_val == av * bvi) by(nonlinear_arith)
+                requires prod_val + 0int * lp2 == av * bvi, _gc@ == 0int;
 
             //  ── (2) product == lo_val + hi_val * lp ──
             lemma_vec_val_split(product@, n as nat);
@@ -606,27 +689,44 @@ impl RuntimePrimeField {
             lemma_pseudo_mersenne_reduce(f1 as nat, (c1 + hct_val) as nat, lp as nat, c as nat);
             //  So (f1 + (c1+hct)*lp) % p == (f1 + (c1+hct)*c) % p
 
-            //  ── (8) extra == (c1 + hct) * c ──
-            let extra_int: int = extra as int;
-            assert(extra_int == (c1 + hct_val) * ci) by {
-                assert(extra == (carry1 as u64 + hi_c_top as u64) * (c as u64));
-            }
-
-            //  ── (9) vec_val(extra_vec) == extra ──
-            //  e2 = [extra_lo, extra_hi]. vec_val = extra_lo + extra_hi * BASE = extra.
-            lemma_sem_seq_push(Seq::<u32>::empty(), extra_lo);
-            lemma_limbs_val_push(Seq::<int>::empty(), extra_lo as int);
-            reveal_with_fuel(limbs_val, 2);
-            assert(vec_val(e2@.subrange(0, 1)) == extra_lo as int);
-            lemma_sem_seq_push(e2@.subrange(0, 1), extra_hi);
-            lemma_limbs_val_push(sem_seq(e2@.subrange(0, 1)), extra_hi as int);
-            reveal_with_fuel(limb_power, 2);
-            assert(vec_val(e2@) == extra_lo as int + extra_hi as int * LIMB_BASE());
-            assert(extra_lo as u64 + extra_hi as u64 * 0x1_0000_0000u64 == extra) by(bit_vector)
+            //  ── (8) vec_val(extra_vec) == (c1 + hct) * c ──
+            //  From LimbOps: prod_lo + prod_hi * BASE == hct * c
+            //  carry1_c == c if c1 > 0, else 0. So carry1_c == c1 * c (since c1 ∈ {0,1}).
+            //  extra_lo + extra_carry * BASE == prod_lo + carry1_c (from add3)
+            //  extra_hi + 0 == prod_hi + extra_carry (from add3)
+            //  So extra_lo + extra_hi * BASE
+            //    == prod_lo + carry1_c + (prod_hi + extra_carry - extra_carry) * BASE ...
+            //    == prod_lo + carry1_c + prod_hi * BASE  (carry propagation)
+            //    == hct * c + c1 * c = (c1 + hct) * c
+            //  Connect mul2 postcondition: prod_lo + prod_hi * BASE == hct * c
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(
+                (hct_val * ci) as int, LIMB_BASE());
+            assert(prod_lo as int + prod_hi as int * LIMB_BASE() == hct_val * ci) by(nonlinear_arith)
                 requires
-                    extra_lo == (extra & 0xFFFF_FFFFu64) as u32,
-                    extra_hi == (extra >> 32u64) as u32;
-            lemma_vec_val_pad(e2@, extra_vec@);
+                    prod_lo as int == (hct_val * ci) % LIMB_BASE(),
+                    prod_hi as int == (hct_val * ci) / LIMB_BASE(),
+                    (hct_val * ci) == (hct_val * ci) / LIMB_BASE() * LIMB_BASE() + (hct_val * ci) % LIMB_BASE();
+            //  Connect add3 postcondition: extra_lo + extra_carry * BASE == prod_lo + carry1_c
+            assert(extra_lo as int + extra_carry as int * LIMB_BASE() == prod_lo as int + carry1_c as int) by(nonlinear_arith)
+                requires
+                    extra_lo as int == (prod_lo as int + carry1_c as int + 0) % LIMB_BASE(),
+                    extra_carry as int == (prod_lo as int + carry1_c as int + 0) / LIMB_BASE();
+            //  Connect add3 #2: extra_hi == prod_hi + extra_carry (no further carry since values small)
+            assert(extra_hi as int == prod_hi as int + extra_carry as int) by(nonlinear_arith)
+                requires
+                    extra_hi as int == (prod_hi as int + extra_carry as int + 0) % LIMB_BASE(),
+                    0 <= prod_hi as int,
+                    (prod_hi as int) < LIMB_BASE(),
+                    0 <= extra_carry as int,
+                    extra_carry as int <= 1;
+            let extra_int: int = extra_lo as int + extra_hi as int * LIMB_BASE();
+            assert(extra_int == (c1 + hct_val) * ci) by(nonlinear_arith)
+                requires
+                    prod_lo as int + prod_hi as int * LIMB_BASE() == hct_val * ci,
+                    extra_lo as int + extra_carry as int * LIMB_BASE() == prod_lo as int + carry1_c as int,
+                    extra_hi as int == prod_hi as int + extra_carry as int,
+                    carry1_c as int == c1 * ci;
+            //  pair_to_padded_vec ensures vec_val == lo + hi * BASE
             assert(vec_val(extra_vec@) == extra_int);
 
             //  ── (10) fold2 + carry2*lp == f1 + extra ──
