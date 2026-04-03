@@ -386,6 +386,85 @@ impl RuntimePrimeField {
             model: Ghost(((self.model@ + other.model@) % self.prime_spec()) as nat),
         }
     }
+    ///  Modular negation: (p - a) mod p.
+    ///  When a == 0: result is 0 (since p - 0 = p, and p mod p = 0).
+    ///  When a > 0: result is p - a (already in [0, p)).
+    pub fn neg_mod(&self) -> (out: Self)
+        requires self.wf(),
+        ensures out.wf(), out.same_field(self),
+            out.model@ == (if self.model@ == 0 { 0nat }
+                           else { (self.prime_spec() - self.model@) as nat }),
+    {
+        let n = self.n_exec;
+        let c = self.c_exec;
+        let p_limbs = make_p_limbs(n, c);
+        //  Compute p - self. Borrow is always 0 since self <= p.
+        let (raw, borrow) = generic_sub_limbs(&p_limbs, &self.limbs, n);
+        //  raw might equal p (when self == 0). Conditional subtract to reduce.
+        let (reduced, bw2) = generic_sub_limbs(&raw, &p_limbs, n);
+        let use_reduced: bool = bw2 == 0u32;
+        proof {
+            let sv: int = vec_val(self.limbs@);
+            let pv: int = self.prime_spec() as int;
+            let lp: int = limb_power(n as nat);
+            let rv: int = vec_val(raw@);
+            let dv: int = vec_val(reduced@);
+            lemma_vec_val_bounded(raw@);
+            lemma_vec_val_bounded(reduced@);
+            //  borrow == 0: self <= p, so p - self >= 0
+            assert(borrow.sem() == 0) by(nonlinear_arith)
+                requires
+                    rv + sv == pv + borrow.sem() * lp,
+                    0 <= rv, rv < lp, 0 <= sv, sv <= pv,
+                    pv == lp - c as int,
+                    borrow.sem() == 0 || borrow.sem() == 1,
+                    c > 0, lp > 0;
+            assert(rv == pv - sv) by(nonlinear_arith)
+                requires rv + sv == pv + 0 * lp;
+            //  rv is in [0, p]: either rv < p (self > 0) or rv == p (self == 0)
+            //  After conditional subtract: result == rv mod p
+            if use_reduced {
+                //  bw2 == 0: raw >= p, so rv == pv, meaning sv == 0
+                assert(dv + pv == rv + bw2.sem() * lp);
+                assert(bw2.sem() == 0);
+                assert(dv == rv - pv) by(nonlinear_arith)
+                    requires dv + pv == rv + 0 * lp;
+                assert(dv == 0) by(nonlinear_arith)
+                    requires dv == rv - pv, rv == pv - sv, sv >= 0, dv >= 0;
+                assert(sv == 0) by(nonlinear_arith)
+                    requires dv == 0, rv == pv - sv, dv == rv - pv;
+                assert(self.model@ == 0nat);
+            } else {
+                //  bw2 == 1: raw < p, so rv < pv, meaning sv > 0
+                assert(bw2.sem() == 1);
+                assert(rv < pv) by(nonlinear_arith)
+                    requires dv + pv == rv + lp, 0 <= dv, dv < lp,
+                        pv == lp - c as int, c > 0;
+                assert(sv > 0) by(nonlinear_arith)
+                    requires rv == pv - sv, rv < pv;
+                assert(self.model@ != 0nat);
+            }
+        }
+        let result_limbs = if use_reduced { reduced } else { raw };
+        RuntimePrimeField {
+            limbs: result_limbs,
+            n_exec: n,
+            c_exec: c,
+            model: Ghost(
+                if self.model@ == 0 { 0nat }
+                else { (self.prime_spec() - self.model@) as nat }
+            ),
+        }
+    }
+
+    ///  Modular subtraction: (a - b) mod p = a + neg(b).
+    pub fn sub_mod(&self, other: &Self) -> (out: Self)
+        requires self.wf(), other.wf(), self.same_field(other),
+        ensures out.wf(), out.same_field(self),
+    {
+        let neg_other = other.neg_mod();
+        self.add_mod(&neg_other)
+    }
 }
 
 } // verus!
