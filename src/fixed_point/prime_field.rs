@@ -221,7 +221,7 @@ fn make_p_limbs(n: usize, c: u32) -> (out: Vec<u32>)
         //  vec_val([first]) = first = BASE - c = limb_power(1) - c
         lemma_sem_seq_push(Seq::<u32>::empty(), first);
         lemma_limbs_val_push(Seq::<int>::empty(), first as int);
-        reveal_with_fuel(limbs_val, 1);
+        reveal_with_fuel(limbs_val, 2);
         reveal_with_fuel(limb_power, 2);
     }
     let mut i: usize = 1;
@@ -303,94 +303,78 @@ impl RuntimePrimeField {
         let n = self.n_exec;
         let c = self.c_exec;
         let (sum, carry) = generic_add_limbs(&self.limbs, &other.limbs, n);
-        //  sum + carry * limb_power(n) == a + b
-        //  If carry == 1 or sum >= p: subtract p. Since a,b < p: a+b < 2p, one sub suffices.
         let p_limbs = make_p_limbs(n, c);
         let (diff, borrow) = generic_sub_limbs(&sum, &p_limbs, n);
-        //  diff + p == sum + borrow * limb_power(n)
-        //  If borrow == 0: diff == sum - p >= 0, so sum >= p
-        //  If borrow == 1: sum < p
-        let use_diff: bool = carry.sem() > 0 || borrow.sem() == 0;
+        let use_diff: bool = carry > 0u32 || borrow == 0u32;
         proof {
             let av: int = vec_val(self.limbs@);
             let bv: int = vec_val(other.limbs@);
             let sv: int = vec_val(sum@);
             let dv: int = vec_val(diff@);
-            let pv: int = vec_val(p_limbs@);
+            let pv: int = self.prime_spec() as int;
             let lp: int = limb_power(n as nat);
-            //  From generic_add_limbs: sv + carry.sem() * lp == av + bv
-            //  From generic_sub_limbs: dv + pv == sv + borrow.sem() * lp
-            //  pv == lp - c
+            let cv: int = carry as int;
+            let bwv: int = borrow as int;
             lemma_vec_val_bounded(sum@);
             lemma_vec_val_bounded(diff@);
+            lemma_vec_val_bounded(self.limbs@);
+            lemma_vec_val_bounded(other.limbs@);
+            //  Key facts from postconditions:
+            //  sv + cv * lp == av + bv         (generic_add_limbs)
+            //  dv + pv == sv + bwv * lp        (generic_sub_limbs, pv = vec_val(p_limbs))
+            //  Carry <= 1 (from bounds: av + bv < 2*lp, sv >= 0)
+            assert(cv <= 1) by(nonlinear_arith)
+                requires sv + cv * lp == av + bv, av < lp, bv < lp, 0 <= sv, lp > 0, cv >= 0;
+            //  Assert carry.sem() == cv (bridge LimbOps::sem to our ghost var)
+            assert(carry.sem() == cv);
+            assert(borrow.sem() == bwv);
             if use_diff {
-                //  carry > 0 or borrow == 0 → sum >= p or sum wrapped
-                //  Result = diff = sum - p (when borrow == 0)
-                //  or diff = sum + lp - p = sum + c (when carry == 1, borrow may be 0 or 1)
-                //  In either case: result ≡ sum ≡ a + b (mod p)
-                //  Need: dv == (av + bv) % pv
-                assert(dv >= 0);
-                assert(dv < lp);
-                //  dv = sv - pv + borrow.sem() * lp
-                //  sv = av + bv - carry.sem() * lp
-                //  dv = av + bv - carry.sem() * lp - pv + borrow.sem() * lp
-                //     = av + bv - pv + (borrow.sem() - carry.sem()) * lp
-                //  pv = lp - c, so dv = av + bv - lp + c + (borrow - carry) * lp
-                //  We need to show dv == (av + bv) % pv
-                //  and dv < pv (so it's in [0, p))
-                assert(dv + pv == sv + borrow.sem() * lp);
-                assert(sv + carry.sem() * lp == av + bv);
-                //  dv = sv - pv + borrow.sem() * lp = (av + bv) - carry.sem()*lp - pv + borrow.sem()*lp
-                //     = (av + bv) - pv + (borrow.sem() - carry.sem()) * lp
-                //  Since pv = lp - c: dv = (av + bv) - (lp - c) + (borrow - carry)*lp
-                //  = (av + bv) + c - lp + (borrow - carry)*lp
-                //  For this to be in [0, pv): need dv < pv
-                //  General approach: we know av + bv < 2*pv (since av,bv < pv)
-                //  and dv = (av + bv) mod pv (we're subtracting pv once)
-                //  Since use_diff: the sum was >= pv (or carried), so dv = av+bv - pv (mod lp adjustments)
-                //  This is (av+bv) % pv since av+bv < 2*pv.
+                if carry > 0u32 {
+                    //  carry == 1: sv + lp == av + bv, so av+bv >= lp > pv
+                    //  borrow must be 1 (if 0, dv = sv-pv < 0 contradiction)
+                    assert(cv == 1);
+                    assert(sv + lp == av + bv) by(nonlinear_arith)
+                        requires sv + cv * lp == av + bv, cv == 1;
+                    assert(bwv == 1) by(nonlinear_arith)
+                        requires
+                            dv + pv == sv + bwv * lp,
+                            sv + lp == av + bv,
+                            av < pv, bv < pv, 0 <= dv,
+                            pv == lp - c as int,
+                            bwv == 0 || bwv == 1,
+                            c > 0, lp > 0;
+                    //  dv + pv == sv + lp == av + bv → dv == av + bv - pv
+                    assert(dv == av + bv - pv) by(nonlinear_arith)
+                        requires dv + pv == sv + lp, sv + lp == av + bv;
+                } else {
+                    //  carry == 0, borrow == 0: sv == av + bv, dv == sv - pv
+                    assert(cv == 0);
+                    assert(bwv == 0);
+                    assert(sv == av + bv) by(nonlinear_arith)
+                        requires sv + 0 * lp == av + bv;
+                    assert(dv == sv - pv) by(nonlinear_arith)
+                        requires dv + pv == sv + 0 * lp;
+                    assert(dv == av + bv - pv);
+                }
+                //  In both sub-cases: dv == av + bv - pv, and av+bv >= pv
+                assert(dv >= 0) by(nonlinear_arith)
+                    requires dv == av + bv - pv, av >= 0, bv >= 0,
+                        av + bv >= pv;
                 assert(dv < pv) by(nonlinear_arith)
-                    requires
-                        dv + pv == sv + borrow.sem() * lp,
-                        sv + carry.sem() * lp == av + bv,
-                        av < pv, bv < pv,
-                        0 <= dv, dv < lp,
-                        0 <= sv, sv < lp,
-                        pv == lp - c as int,
-                        carry.sem() == 0 || carry.sem() == 1,
-                        borrow.sem() == 0 || borrow.sem() == 1,
-                        c > 0,
-                        lp > 0;
-                assert(dv == (av + bv) - pv) by(nonlinear_arith)
-                    requires
-                        dv + pv == sv + borrow.sem() * lp,
-                        sv + carry.sem() * lp == av + bv,
-                        0 <= dv, dv < pv,
-                        0 <= sv, sv < lp,
-                        pv == lp - c as int,
-                        carry.sem() == 0 || carry.sem() == 1,
-                        borrow.sem() == 0 || borrow.sem() == 1,
-                        use_diff,
-                        c > 0,
-                        lp > 0;
-                assert(dv == (av + bv) % pv) by(nonlinear_arith)
-                    requires
-                        dv == (av + bv) - pv,
-                        0 <= dv, dv < pv,
-                        pv > 0;
+                    requires dv == av + bv - pv, av < pv, bv < pv;
+                assert(dv as nat == (av + bv) as nat % (pv as nat)) by(nonlinear_arith)
+                    requires dv == av + bv - pv, 0 <= dv, dv < pv, pv > 0,
+                        av >= 0, bv >= 0;
             } else {
-                //  carry == 0 and borrow == 1 → sum < p
-                //  Result = sum = a + b (no reduction needed)
-                assert(carry.sem() == 0);
-                assert(borrow.sem() == 1);
-                assert(sv == av + bv);
+                //  carry == 0, borrow == 1: sv == av+bv < pv, no reduction
+                assert(cv == 0);
+                assert(bwv == 1);
+                assert(sv == av + bv) by(nonlinear_arith)
+                    requires sv + 0 * lp == av + bv;
                 assert(sv < pv) by(nonlinear_arith)
-                    requires
-                        dv + pv == sv + 1 * lp,
-                        0 <= dv, dv < lp,
-                        pv == lp - c as int,
-                        c > 0, lp > 0;
-                assert(sv == (av + bv) % pv) by(nonlinear_arith)
+                    requires dv + pv == sv + lp, 0 <= dv, dv < lp,
+                        pv == lp - c as int, c > 0;
+                assert(sv as nat == (av + bv) as nat % (pv as nat)) by(nonlinear_arith)
                     requires sv == av + bv, 0 <= sv, sv < pv, pv > 0;
             }
         }
