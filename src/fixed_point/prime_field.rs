@@ -575,21 +575,36 @@ proof fn lemma_reduce_chain(
     //  B = b3+c4+c5+c6+c7 = s1+c2+c3+c4+c5+c6+c7 = wt+wcy*BASE+c2+c3+c4+c5+c6+c7
     //  A - hiv - B = (hiv+wt+wcy*BASE+...) - hiv - (wt+wcy*BASE+...) = 0
     //  So f8 = prd - (hiv+B)*(lp-ci) = prd - K*p where K = hiv+B ≥ 0.
-    let k: int = hiv + b3 + c4 + c5 + c6 + c7;
+    //  Compute A = a3+c2+c3+c4+c5+c6+c7 and B = b3+c4+c5+c6+c7 explicitly
+    let a_total: int = a3 + c2 + c3 + c4 + c5 + c6 + c7;
+    let b_total: int = b3 + c4 + c5 + c6 + c7;
+    //  A = hiv + wt + wcy*BASE + c2 + c3 + c4 + c5 + c6 + c7
+    assert(a3 == hiv + wt + wcy * LIMB_BASE()) by(nonlinear_arith)
+        requires a3 == a2 + wcy * LIMB_BASE(), a2 == s0 + wt, s0 == hiv;
+    assert(b3 == wt + wcy * LIMB_BASE() + c2 + c3) by(nonlinear_arith)
+        requires b3 == b2 + c3, b2 == s1 + c2, s1 == wt + wcy * LIMB_BASE();
+    //  a_total = a3 + c2..c7 = hiv + wt + wcy*BASE + c2..c7
+    //  b_total = b3 + c4..c7 = wt + wcy*BASE + c2 + c3 + c4..c7
+    //  a_total - hiv == b_total (both equal wt + wcy*BASE + c2 + c3 + c4 + c5 + c6 + c7)
+    assert(a_total == hiv + b_total) by(nonlinear_arith)
+        requires a_total == a3 + c2 + c3 + c4 + c5 + c6 + c7,
+            a3 == hiv + wt + wcy * LIMB_BASE(),
+            b_total == b3 + c4 + c5 + c6 + c7,
+            b3 == wt + wcy * LIMB_BASE() + c2 + c3;
+    //  f8 = lov + A*ci - B*lp. prd = lov + hiv*lp.
+    //  f8 + (hiv+B)*(lp-ci) = lov + A*ci - B*lp + (hiv+B)*lp - (hiv+B)*ci
+    //                        = lov + (A - hiv - B)*ci + hiv*lp = lov + hiv*lp = prd  (since A = hiv+B)
+    let k: int = hiv + b_total;
     assert(f8 + k * (lp - ci) == prd) by(nonlinear_arith)
-        requires f8 == lov + (a3+c2+c3+c4+c5+c6+c7) * ci - (b3+c4+c5+c6+c7) * lp,
+        requires f8 == lov + a_total * ci - b_total * lp,
             prd == lov + hiv * lp,
-            a3 == a2 + wcy * LIMB_BASE(),
-            a2 == s0 + wt,
-            s0 == hiv,
-            b3 == b2 + c3,
-            b2 == s1 + c2,
-            s1 == wt + wcy * LIMB_BASE();
-    //  f8 ≥ 0, k ≥ 0, lp > ci → f8 % p == prd % p
-    assert(k >= 0) by(nonlinear_arith)
-        requires hiv >= 0, b3 >= 0, c4 >= 0, c5 >= 0, c6 >= 0, c7 >= 0,
-            b3 == b2 + c3, b2 == s1 + c2, s1 == wt + wcy * LIMB_BASE(),
-            wt >= 0, wcy >= 0, c2 >= 0, c3 >= 0;
+            a_total == hiv + b_total,
+            k == hiv + b_total;
+    assert(b_total >= 0) by(nonlinear_arith)
+        requires b_total == b3 + c4 + c5 + c6 + c7,
+            b3 == wt + wcy * LIMB_BASE() + c2 + c3,
+            wt >= 0, wcy >= 0, c2 >= 0, c3 >= 0, c4 >= 0, c5 >= 0, c6 >= 0, c7 >= 0;
+    assert(k >= 0) by(nonlinear_arith) requires hiv >= 0, b_total >= 0, k == hiv + b_total;
     assert(lp > ci) by(nonlinear_arith)
         requires lp >= LIMB_BASE() * LIMB_BASE(), (ci) < LIMB_BASE(), ci > 0;
     assert(f8 >= 0);
