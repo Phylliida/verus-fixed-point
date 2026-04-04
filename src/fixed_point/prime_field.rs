@@ -697,7 +697,8 @@ impl RuntimePrimeField {
         proof {
             let lpl = limb_power(n as nat);
             let lpl1 = limb_power((n + 1) as nat);
-            lemma_vec_val_bounded(lo_pad@);
+            lemma_vec_val_pad(lo@, lo_pad@);
+            lemma_vec_val_bounded(lo@);
             lemma_vec_val_bounded(hi_c@);
             lemma_vec_val_bounded(wide@);
             lemma_limb_power_add(1, n as nat);
