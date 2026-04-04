@@ -714,18 +714,19 @@ fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
         //  cy6+cy7 ≤ 1: if cy6==1, fold6 < BASE, so fold7 = fold6+cy5_c < 2*BASE < lp, cy7=0.
         assert((_cy6 as int + cy7 as int) <= 1) by {
             let lpl = limb_power(n as nat);
-            lemma_vec_val_bounded(fold5@); lemma_vec_val_bounded(fold6@);
+            lemma_vec_val_bounded(fold5@); lemma_vec_val_bounded(fold6@); lemma_vec_val_bounded(fold7@);
             lemma_vec_val_bounded(cy4_vec@); lemma_vec_val_bounded(cy5_vec@);
+            lemma_limb_power_add(1, 1);
+            reveal_with_fuel(limb_power, 2);
             if _cy6 as int == 1 {
-                //  fold6 = fold5 + cy4_c - lp < lp + BASE - lp = BASE
                 assert(vec_val(fold6@) < LIMB_BASE()) by(nonlinear_arith)
                     requires vec_val(fold6@) + _cy6 as int * lpl == vec_val(fold5@) + vec_val(cy4_vec@),
                         vec_val(fold5@) < lpl, vec_val(cy4_vec@) < LIMB_BASE(), _cy6 as int == 1, lpl > 0;
-                //  fold7 + cy7*lp = fold6 + cy5_c < BASE + BASE = 2*BASE ≤ lp
                 assert(cy7 as int == 0) by(nonlinear_arith)
                     requires vec_val(fold7@) + cy7 as int * lpl == vec_val(fold6@) + vec_val(cy5_vec@),
                         vec_val(fold6@) < LIMB_BASE(), vec_val(cy5_vec@) < LIMB_BASE(),
-                        lpl >= LIMB_BASE() * LIMB_BASE(), lpl > 0, cy7 as int >= 0, 0 <= vec_val(fold7@);
+                        lpl >= limb_power(2nat), limb_power(2nat) == LIMB_BASE() * LIMB_BASE(),
+                        lpl > 0, cy7 as int >= 0, 0 <= vec_val(fold7@);
             }
         };
         assert((_cy6 as int + cy7 as int) * (c as int) <= u32::MAX as int) by(nonlinear_arith)
@@ -749,11 +750,22 @@ fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
         //  cy8 == 0
         lemma_vec_val_bounded(fold7@);
         lemma_vec_val_bounded(fold8@);
+        assert(final_c as int <= ci) by(nonlinear_arith)
+            requires final_c == _cy6 * c + cy7 * c,
+                (_cy6 as int + cy7 as int) <= 1,
+                (ci) == c as int;
+        lemma_limb_power_add(1, 1);
+        reveal_with_fuel(limb_power, 2);
+        assert(lp >= LIMB_BASE() * LIMB_BASE()) by {
+            lemma_limb_power_add(1, 1);
+            reveal_with_fuel(limb_power, 2);
+        };
         assert(_cy8 as int == 0) by(nonlinear_arith)
             requires vec_val(fold8@) + _cy8 as int * lp == vec_val(fold7@) + final_c as int,
                 0 <= vec_val(fold8@), vec_val(fold8@) < lp, 0 <= vec_val(fold7@), vec_val(fold7@) < lp,
                 0 <= final_c as int, final_c as int <= ci, (ci) < LIMB_BASE(),
-                lp >= LIMB_BASE() * LIMB_BASE(), lp > 0, _cy8 as int >= 0;
+                lp >= LIMB_BASE() * LIMB_BASE(),
+                lp > 0, _cy8 as int >= 0;
 
         //  Connect vec_vals for chain lemma call
         lemma_vec_val_split(product@, n as nat);
