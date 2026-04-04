@@ -613,43 +613,35 @@ proof fn lemma_reduce_chain(
 ///  Returns n-limb result with value ≡ vec_val(product) (mod p).
 ///  Extracted from mul_mod to stay under rlimit.
 ///  Carry fold phase: fold wcy*BASE*c + cy2*c + cascading carries, then conditional subtract.
-fn mersenne_carry_folds(
+///  Early carry folds: fold3-fold5 (wcy*BASE*c, cy2*c, cy3*c).
+///  Returns (fold5, cy4, cy5) for late phase.
+fn mersenne_carry_early(
     fold2: &Vec<u32>, cy2: u32, wide_cy: u32, n: usize, c: u32,
-) -> (out: Vec<u32>)
-    requires
-        fold2@.len() == n, valid_limbs(fold2@),
+) -> (out: (Vec<u32>, u32, u32))
+    requires fold2@.len() == n, valid_limbs(fold2@),
         n >= 2, c > 0, (c as int) < LIMB_BASE(),
         wide_cy as int <= 1, cy2 as int <= 1,
-    ensures
-        out@.len() == n, valid_limbs(out@),
-        //  Simplified postcondition: result < p and result ≡ fold2 + wcy*BASE*c + cy2*c (mod p)
-        //  (the modular chain connection is in the caller)
+    ensures out.0@.len() == n, valid_limbs(out.0@),
+        out.1 as int <= 1, out.2 as int <= 1,
 {
     let c_limb: u32 = c;
-    //  Fold wide_cy * BASE * c
     proof { lemma_carry_mul_fits(wide_cy as int, c as int); }
     let wcy_c: u32 = wide_cy * c;
     let wcy_vec = pair_to_padded_vec(0u32, wcy_c, n);
     let (fold3, cy3) = generic_add_limbs(fold2, &wcy_vec, n);
-    //  Fold cy2 * c
     proof { lemma_carry_mul_fits(cy2 as int, c as int); }
     let cy2_c: u32 = cy2 * c;
     let cy2_vec = scalar_to_padded_vec(cy2_c, n);
     let (fold4, cy4) = generic_add_limbs(&fold3, &cy2_vec, n);
-    //  Fold cy3 * c, cy4 * c, cy5 * c
     proof {
         assert(cy3 as int <= 1 && cy4 as int <= 1) by {
             let lpl = limb_power(n as nat);
-            lemma_vec_val_bounded(fold2@);
-            lemma_vec_val_bounded(fold3@);
-            lemma_vec_val_bounded(fold4@);
-            lemma_vec_val_bounded(wcy_vec@);
-            lemma_vec_val_bounded(cy2_vec@);
+            lemma_vec_val_bounded(fold2@); lemma_vec_val_bounded(fold3@); lemma_vec_val_bounded(fold4@);
+            lemma_vec_val_bounded(wcy_vec@); lemma_vec_val_bounded(cy2_vec@);
             lemma_scalar_carry_le_1(vec_val(fold3@), cy3 as int, lpl, vec_val(fold2@), vec_val(wcy_vec@));
             lemma_scalar_carry_le_1(vec_val(fold4@), cy4 as int, lpl, vec_val(fold3@), vec_val(cy2_vec@));
         };
         lemma_carry_mul_fits(cy3 as int, c as int);
-        lemma_carry_mul_fits(cy4 as int, c as int);
     }
     let cy3_c: u32 = cy3 * c;
     let cy3_vec = scalar_to_padded_vec(cy3_c, n);
@@ -657,21 +649,29 @@ fn mersenne_carry_folds(
     proof {
         assert(cy5 as int <= 1) by {
             let lpl = limb_power(n as nat);
-            lemma_vec_val_bounded(fold4@);
-            lemma_vec_val_bounded(fold5@);
-            lemma_vec_val_bounded(cy3_vec@);
+            lemma_vec_val_bounded(fold4@); lemma_vec_val_bounded(fold5@); lemma_vec_val_bounded(cy3_vec@);
             lemma_scalar_carry_le_1(vec_val(fold5@), cy5 as int, lpl, vec_val(fold4@), vec_val(cy3_vec@));
         };
-        lemma_carry_mul_fits(cy5 as int, c as int);
-        lemma_carry_mul_fits(cy4 as int, c as int);
     }
+    (fold5, cy4, cy5)
+}
+
+///  Late carry folds: fold6-fold9 + conditional subtract.
+fn mersenne_carry_late(
+    fold5: &Vec<u32>, cy4: u32, cy5: u32, n: usize, c: u32,
+) -> (out: Vec<u32>)
+    requires fold5@.len() == n, valid_limbs(fold5@),
+        n >= 2, c > 0, (c as int) < LIMB_BASE(),
+        cy4 as int <= 1, cy5 as int <= 1,
+    ensures out@.len() == n, valid_limbs(out@),
+{
+    proof { lemma_carry_mul_fits(cy4 as int, c as int); lemma_carry_mul_fits(cy5 as int, c as int); }
     let cy4_c: u32 = cy4 * c;
     let cy4_vec = scalar_to_padded_vec(cy4_c, n);
-    let (fold6, _cy6) = generic_add_limbs(&fold5, &cy4_vec, n);
+    let (fold6, _cy6) = generic_add_limbs(fold5, &cy4_vec, n);
     let cy5_c: u32 = cy5 * c;
     let cy5_vec = scalar_to_padded_vec(cy5_c, n);
     let (fold7, cy7) = generic_add_limbs(&fold6, &cy5_vec, n);
-    //  Final fold: (cy6+cy7)*c
     proof {
         assert(_cy6 as int <= 1 && cy7 as int <= 1) by {
             let lpl = limb_power(n as nat);
@@ -684,8 +684,7 @@ fn mersenne_carry_folds(
             let lpl = limb_power(n as nat);
             lemma_vec_val_bounded(fold5@); lemma_vec_val_bounded(fold6@); lemma_vec_val_bounded(fold7@);
             lemma_vec_val_bounded(cy4_vec@); lemma_vec_val_bounded(cy5_vec@);
-            lemma_limb_power_add(1, 1);
-            reveal_with_fuel(limb_power, 2);
+            lemma_limb_power_add(1, 1); reveal_with_fuel(limb_power, 2);
             if _cy6 as int == 1 {
                 assert(vec_val(fold6@) < LIMB_BASE()) by(nonlinear_arith)
                     requires vec_val(fold6@) + _cy6 as int * lpl == vec_val(fold5@) + vec_val(cy4_vec@),
@@ -697,13 +696,18 @@ fn mersenne_carry_folds(
                         lpl > 0, cy7 as int >= 0, 0 <= vec_val(fold7@);
             }
         };
+        lemma_carry_mul_fits(_cy6 as int, c as int);
+        lemma_carry_mul_fits(cy7 as int, c as int);
         assert((_cy6 as int + cy7 as int) * (c as int) <= u32::MAX as int) by(nonlinear_arith)
             requires (_cy6 as int + cy7 as int) <= 1, (c as int) < LIMB_BASE();
+        //  Individual overflow proofs for the addition
+        assert((_cy6 * c) as int + (cy7 * c) as int <= u32::MAX as int) by(nonlinear_arith)
+            requires (_cy6 as int + cy7 as int) * (c as int) <= u32::MAX as int,
+                _cy6 as int <= 1, cy7 as int <= 1, (c as int) < LIMB_BASE();
     }
     let final_c: u32 = _cy6 * c + cy7 * c;
     let final_vec = scalar_to_padded_vec(final_c, n);
     let (fold8, _cy8) = generic_add_limbs(&fold7, &final_vec, n);
-    //  One more: cy8*c
     proof {
         assert(_cy8 as int <= 1) by {
             lemma_vec_val_bounded(fold7@); lemma_vec_val_bounded(fold8@);
@@ -715,13 +719,25 @@ fn mersenne_carry_folds(
     let cy8_c: u32 = _cy8 * c;
     let cy8_vec = scalar_to_padded_vec(cy8_c, n);
     let (fold9, _cy9) = generic_add_limbs(&fold8, &cy8_vec, n);
-    //  Conditional subtract
     let p_limbs = make_p_limbs(n, c);
     let (d1, bw1) = generic_sub_limbs(&fold9, &p_limbs, n);
     let r1 = if bw1 == 0u32 { d1 } else { fold9 };
     let (d2, bw2) = generic_sub_limbs(&r1, &p_limbs, n);
-    let r = if bw2 == 0u32 { d2 } else { r1 };
-    r
+    if bw2 == 0u32 { d2 } else { r1 }
+}
+
+fn mersenne_carry_folds(
+    fold2: &Vec<u32>, cy2: u32, wide_cy: u32, n: usize, c: u32,
+) -> (out: Vec<u32>)
+    requires
+        fold2@.len() == n, valid_limbs(fold2@),
+        n >= 2, c > 0, (c as int) < LIMB_BASE(),
+        wide_cy as int <= 1, cy2 as int <= 1,
+    ensures
+        out@.len() == n, valid_limbs(out@),
+{
+    let (fold5, cy4, cy5) = mersenne_carry_early(fold2, cy2, wide_cy, n, c);
+    mersenne_carry_late(&fold5, cy4, cy5, n, c)
 }
 
 fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
