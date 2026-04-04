@@ -498,6 +498,106 @@ proof fn lemma_carry_mul_fits(cy: int, ci: int)
     ensures cy * ci <= u32::MAX as int,
 {}
 
+///  Chain proof for mersenne_reduce_exec: fold8 + k*p == product.
+///  Uses step-by-step substitution to stay under nonlinear_arith limits.
+proof fn lemma_reduce_chain(
+    lp: int, ci: int,
+    prd: int, lov: int, hiv: int,
+    wlo: int, wt: int, wcy: int,
+    f2: int, c2: int, f3: int, c3: int,
+    f4: int, c4: int, f5: int, c5: int,
+    f6: int, c6: int, f7: int, c7: int,
+    f8: int, c8: int, fc: int,
+)
+    requires
+        lp > 0, ci > 0, (ci) < LIMB_BASE(), lp >= LIMB_BASE() * LIMB_BASE(),
+        //  All values non-negative
+        lov >= 0, hiv >= 0, wlo >= 0, wt >= 0, wcy >= 0,
+        f2 >= 0, f3 >= 0, f4 >= 0, f5 >= 0, f6 >= 0, f7 >= 0, f8 >= 0,
+        c2 >= 0, c3 >= 0, c4 >= 0, c5 >= 0, c6 >= 0, c7 >= 0, c8 >= 0, fc >= 0,
+        //  Fold equations
+        prd == lov + hiv * lp,
+        wlo + (wt + wcy * LIMB_BASE()) * lp == lov + hiv * ci,
+        f2 + c2 * lp == wlo + wt * ci,
+        f3 + c3 * lp == f2 + wcy * ci * LIMB_BASE(),
+        f4 + c4 * lp == f3 + c2 * ci,
+        f5 + c5 * lp == f4 + c3 * ci,
+        f6 + c6 * lp == f5 + c4 * ci,
+        f7 + c7 * lp == f6 + c5 * ci,
+        f8 + c8 * lp == f7 + fc,
+        fc == (c6 + c7) * ci,
+        c8 == 0,
+    ensures
+        f8 as nat % ((lp - ci) as nat) == prd as nat % ((lp - ci) as nat),
+{
+    //  Step-by-step substitution (each ≤ 2 equations, manageable for nonlinear_arith):
+    let s0: int = hiv;
+    assert(wlo == lov + hiv * ci - (wt + wcy * LIMB_BASE()) * lp);
+    //  f2 in terms of lov
+    let s1: int = wt + wcy * LIMB_BASE();
+    assert(f2 == lov + s0 * ci - (s1 + c2) * lp + wt * ci) by(nonlinear_arith)
+        requires f2 + c2 * lp == wlo + wt * ci,
+            wlo == lov + hiv * ci - s1 * lp, s0 == hiv;
+    //  Simplify: f2 == lov + (s0 + wt)*ci - (s1 + c2)*lp
+    let a2: int = s0 + wt;
+    let b2: int = s1 + c2;
+    assert(f2 == lov + a2 * ci - b2 * lp) by(nonlinear_arith)
+        requires f2 == lov + s0 * ci - (s1 + c2) * lp + wt * ci, a2 == s0 + wt, b2 == s1 + c2;
+    //  f3
+    let a3: int = a2 + wcy * LIMB_BASE();
+    let b3: int = b2 + c3;
+    assert(f3 == lov + a3 * ci - b3 * lp) by(nonlinear_arith)
+        requires f3 + c3 * lp == f2 + wcy * ci * LIMB_BASE(),
+            f2 == lov + a2 * ci - b2 * lp, a3 == a2 + wcy * LIMB_BASE(), b3 == b2 + c3;
+    //  f4
+    assert(f4 == lov + (a3 + c2) * ci - (b3 + c4) * lp) by(nonlinear_arith)
+        requires f4 + c4 * lp == f3 + c2 * ci, f3 == lov + a3 * ci - b3 * lp;
+    //  f5
+    assert(f5 == lov + (a3+c2+c3) * ci - (b3+c4+c5) * lp) by(nonlinear_arith)
+        requires f5 + c5 * lp == f4 + c3 * ci, f4 == lov + (a3+c2) * ci - (b3+c4) * lp;
+    //  f6
+    assert(f6 == lov + (a3+c2+c3+c4) * ci - (b3+c4+c5+c6) * lp) by(nonlinear_arith)
+        requires f6 + c6 * lp == f5 + c4 * ci, f5 == lov + (a3+c2+c3) * ci - (b3+c4+c5) * lp;
+    //  f7
+    assert(f7 == lov + (a3+c2+c3+c4+c5) * ci - (b3+c4+c5+c6+c7) * lp) by(nonlinear_arith)
+        requires f7 + c7 * lp == f6 + c5 * ci, f6 == lov + (a3+c2+c3+c4) * ci - (b3+c4+c5+c6) * lp;
+    //  f8 = f7 + (c6+c7)*ci (since c8 == 0)
+    assert(f8 == lov + (a3+c2+c3+c4+c5+c6+c7) * ci - (b3+c4+c5+c6+c7) * lp) by(nonlinear_arith)
+        requires f8 + c8 * lp == f7 + fc, fc == (c6+c7) * ci, c8 == 0,
+            f7 == lov + (a3+c2+c3+c4+c5) * ci - (b3+c4+c5+c6+c7) * lp;
+    //  Now: f8 = lov + A*ci - B*lp where A,B are sums.
+    //  product = lov + hiv*lp. So lov = prd - hiv*lp.
+    //  f8 = prd - hiv*lp + A*ci - B*lp = prd + A*ci - (hiv+B)*lp
+    //     = prd + A*ci - (hiv+B)*(ci + (lp-ci))
+    //     = prd + A*ci - (hiv+B)*ci - (hiv+B)*(lp-ci)
+    //     = prd + (A - hiv - B)*ci - (hiv+B)*(lp-ci)
+    //  Now A = a3+c2+c3+c4+c5+c6+c7 = s0+wt+wcy*BASE+c2+c3+c4+c5+c6+c7 = hiv+wt+wcy*BASE+c2+c3+c4+c5+c6+c7
+    //  B = b3+c4+c5+c6+c7 = s1+c2+c3+c4+c5+c6+c7 = wt+wcy*BASE+c2+c3+c4+c5+c6+c7
+    //  A - hiv - B = (hiv+wt+wcy*BASE+...) - hiv - (wt+wcy*BASE+...) = 0
+    //  So f8 = prd - (hiv+B)*(lp-ci) = prd - K*p where K = hiv+B ≥ 0.
+    let k: int = hiv + b3 + c4 + c5 + c6 + c7;
+    assert(f8 + k * (lp - ci) == prd) by(nonlinear_arith)
+        requires f8 == lov + (a3+c2+c3+c4+c5+c6+c7) * ci - (b3+c4+c5+c6+c7) * lp,
+            prd == lov + hiv * lp,
+            a3 == a2 + wcy * LIMB_BASE(),
+            a2 == s0 + wt,
+            s0 == hiv,
+            b3 == b2 + c3,
+            b2 == s1 + c2,
+            s1 == wt + wcy * LIMB_BASE();
+    //  f8 ≥ 0, k ≥ 0, lp > ci → f8 % p == prd % p
+    assert(k >= 0) by(nonlinear_arith)
+        requires hiv >= 0, b3 >= 0, c4 >= 0, c5 >= 0, c6 >= 0, c7 >= 0,
+            b3 == b2 + c3, b2 == s1 + c2, s1 == wt + wcy * LIMB_BASE(),
+            wt >= 0, wcy >= 0, c2 >= 0, c3 >= 0;
+    assert(lp > ci) by(nonlinear_arith)
+        requires lp >= LIMB_BASE() * LIMB_BASE(), (ci) < LIMB_BASE(), ci > 0;
+    assert(f8 >= 0);
+    lemma_mod_add_left((k * (lp - ci)) as nat, f8 as nat, (lp - ci) as nat);
+    assert(((k * (lp - ci)) as nat) % ((lp - ci) as nat) == 0nat) by(nonlinear_arith)
+        requires lp > ci, k >= 0;
+}
+
 ///  Mersenne reduction: reduce a 2n-limb product mod p = limb_power(n) - c.
 ///  Returns n-limb result with value ≡ vec_val(product) (mod p).
 ///  Extracted from mul_mod to stay under rlimit.
@@ -586,20 +686,98 @@ fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
     let (fold6, _cy6) = generic_add_limbs(&fold5, &cy4_vec, n);
     let cy5_c: u32 = cy5 * c;
     let cy5_vec = scalar_to_padded_vec(cy5_c, n);
-    let (fold7, _cy7) = generic_add_limbs(&fold6, &cy5_vec, n);
+    let (fold7, cy7) = generic_add_limbs(&fold6, &cy5_vec, n);
+    //  Final fold: (cy6+cy7)*c. cy6+cy7 ≤ 1 (proved from decreasing fold values).
+    proof {
+        assert(_cy6 as int <= 1 && cy7 as int <= 1) by {
+            let lpl = limb_power(n as nat);
+            lemma_vec_val_bounded(fold5@); lemma_vec_val_bounded(fold6@); lemma_vec_val_bounded(fold7@);
+            lemma_vec_val_bounded(cy4_vec@); lemma_vec_val_bounded(cy5_vec@);
+            lemma_scalar_carry_le_1(vec_val(fold6@), _cy6 as int, lpl, vec_val(fold5@), vec_val(cy4_vec@));
+            lemma_scalar_carry_le_1(vec_val(fold7@), cy7 as int, lpl, vec_val(fold6@), vec_val(cy5_vec@));
+        };
+        //  cy6+cy7 ≤ 1: if cy6==1, fold6 < BASE, so fold7 = fold6+cy5_c < 2*BASE < lp, cy7=0.
+        assert((_cy6 as int + cy7 as int) <= 1) by {
+            let lpl = limb_power(n as nat);
+            lemma_vec_val_bounded(fold5@); lemma_vec_val_bounded(fold6@);
+            lemma_vec_val_bounded(cy4_vec@); lemma_vec_val_bounded(cy5_vec@);
+            if _cy6 as int == 1 {
+                //  fold6 = fold5 + cy4_c - lp < lp + BASE - lp = BASE
+                assert(vec_val(fold6@) < LIMB_BASE()) by(nonlinear_arith)
+                    requires vec_val(fold6@) + _cy6 as int * lpl == vec_val(fold5@) + vec_val(cy4_vec@),
+                        vec_val(fold5@) < lpl, vec_val(cy4_vec@) < LIMB_BASE(), _cy6 as int == 1, lpl > 0;
+                //  fold7 + cy7*lp = fold6 + cy5_c < BASE + BASE = 2*BASE ≤ lp
+                assert(cy7 as int == 0) by(nonlinear_arith)
+                    requires vec_val(fold7@) + cy7 as int * lpl == vec_val(fold6@) + vec_val(cy5_vec@),
+                        vec_val(fold6@) < LIMB_BASE(), vec_val(cy5_vec@) < LIMB_BASE(),
+                        lpl >= LIMB_BASE() * LIMB_BASE(), lpl > 0, cy7 as int >= 0, 0 <= vec_val(fold7@);
+            }
+        };
+        assert((_cy6 as int + cy7 as int) * (c as int) <= u32::MAX as int) by(nonlinear_arith)
+            requires (_cy6 as int + cy7 as int) <= 1, (c as int) < LIMB_BASE();
+    }
+    let final_c: u32 = _cy6 * c + cy7 * c;
+    let final_vec = scalar_to_padded_vec(final_c, n);
+    let (fold8, _cy8) = generic_add_limbs(&fold7, &final_vec, n);
+    //  cy8 == 0: fold7 < lp, final_c ≤ c < BASE << lp.
     //  Conditional subtract p (twice)
     let p_limbs = make_p_limbs(n, c);
-    let (d1, bw1) = generic_sub_limbs(&fold7, &p_limbs, n);
-    let r1 = if bw1 == 0u32 { d1 } else { fold7 };
+    let (d1, bw1) = generic_sub_limbs(&fold8, &p_limbs, n);
+    let r1 = if bw1 == 0u32 { d1 } else { fold8 };
     let (d2, bw2) = generic_sub_limbs(&r1, &p_limbs, n);
     let r = if bw2 == 0u32 { d2 } else { r1 };
     proof {
-        //  TODO: connect to lemma_mersenne_chain + lemma_cond_sub
-        //  The chain proves: fold_val ≡ product_val (mod p) after all folds.
-        //  The conditional subtract brings into [0, p).
-        assert(vec_val(r@) as nat % ((limb_power(n as nat) - c as int) as nat)
-            == vec_val(product@) as nat % ((limb_power(n as nat) - c as int) as nat));
-        assert((vec_val(r@) as nat) < ((limb_power(n as nat) - c as int) as nat));
+        let lp: int = limb_power(n as nat);
+        let ci: int = c as int;
+        let p: nat = ((lp - ci) as nat);
+
+        //  cy8 == 0
+        lemma_vec_val_bounded(fold7@);
+        lemma_vec_val_bounded(fold8@);
+        assert(_cy8 as int == 0) by(nonlinear_arith)
+            requires vec_val(fold8@) + _cy8 as int * lp == vec_val(fold7@) + final_c as int,
+                0 <= vec_val(fold8@), vec_val(fold8@) < lp, 0 <= vec_val(fold7@), vec_val(fold7@) < lp,
+                0 <= final_c as int, final_c as int <= ci, (ci) < LIMB_BASE(),
+                lp >= LIMB_BASE() * LIMB_BASE(), lp > 0, _cy8 as int >= 0;
+
+        //  Connect vec_vals for chain lemma call
+        lemma_vec_val_split(product@, n as nat);
+        assert(sem_seq(lo@) =~= sem_seq(product@.subrange(0, n as int)));
+        assert(sem_seq(hi@) =~= sem_seq(product@.subrange(n as int, (2*n) as int)));
+        lemma_vec_val_pad(lo@, lo_pad@);
+        lemma_vec_val_split(wide@, n as nat);
+        assert(sem_seq(wide_lo@) =~= sem_seq(wide@.subrange(0, n as int)));
+        lemma_limb_power_add(1, n as nat);
+        reveal_with_fuel(limb_power, 2);
+        assert(vec_val(wt_vec@) == wide_top as int * ci) by {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod((wide_top as int * ci) as int, LIMB_BASE());
+        };
+        //  Establish wide_lo + (wt+wcy*BASE)*lp == lo+hi*c
+        let wlo: int = vec_val(wide_lo@);
+        let wt: int = wide_top as int;
+        let wcy: int = wide_cy as int;
+        assert(wlo + (wt + wcy * LIMB_BASE()) * lp == vec_val(lo@) + vec_val(hi@) * ci) by(nonlinear_arith)
+            requires wlo + wt * lp + wcy * (LIMB_BASE() * lp)
+                == vec_val(lo_pad@) + vec_val(hi_c@),
+                vec_val(lo_pad@) == vec_val(lo@),
+                vec_val(hi_c@) == vec_val(hi@) * ci,
+                wlo + wt * lp == vec_val(wide@);
+        //  Call chain lemma
+        lemma_reduce_chain(lp, ci,
+            vec_val(product@), vec_val(lo@), vec_val(hi@),
+            wlo, wt, wcy,
+            vec_val(fold2@), cy2 as int,
+            vec_val(fold3@), cy3 as int,
+            vec_val(fold4@), cy4 as int,
+            vec_val(fold5@), cy5 as int,
+            vec_val(fold6@), _cy6 as int,
+            vec_val(fold7@), cy7 as int,
+            vec_val(fold8@), _cy8 as int,
+            final_c as int);
+        //  Conditional subtract
+        lemma_vec_val_bounded(d1@);
+        lemma_cond_sub(vec_val(fold8@), vec_val(d1@), p as int, lp, ci, bw1 as int);
+        if bw2 == 0u32 { lemma_vec_val_bounded(d2@); }
     }
     r
 }
