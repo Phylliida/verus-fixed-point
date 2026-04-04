@@ -735,11 +735,17 @@ fn mersenne_carry_folds(
         wide_cy as int <= 1, cy2 as int <= 1,
     ensures
         out@.len() == n, valid_limbs(out@),
+        //  Modular postcondition: result ≡ fold2 + wcy*BASE*c + cy2*c (mod p)
+        vec_val(out@) as nat % ((limb_power(n as nat) - c as int) as nat)
+            == (vec_val(fold2@) + wide_cy as int * LIMB_BASE() * (c as int) + cy2 as int * (c as int)) as nat
+                % ((limb_power(n as nat) - c as int) as nat),
+        (vec_val(out@) as nat) < ((limb_power(n as nat) - c as int) as nat),
 {
     let (fold5, cy4, cy5) = mersenne_carry_early(fold2, cy2, wide_cy, n, c);
     mersenne_carry_late(&fold5, cy4, cy5, n, c)
 }
 
+#[verifier::rlimit(20)]
 fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
     requires
         product@.len() == 2 * n,
@@ -787,12 +793,81 @@ fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
     //  Call carry fold phase
     let r = mersenne_carry_folds(&fold2, cy2, wide_cy, n, c);
     proof {
-        //  TODO: connect chain lemma to prove r % p == product % p
-        //  The chain lemma + carry fold proof handle this.
-        //  For now the exec is correct and all sub-lemmas verified.
-        assert(vec_val(r@) as nat % ((limb_power(n as nat) - c as int) as nat)
-            == vec_val(product@) as nat % ((limb_power(n as nat) - c as int) as nat));
-        assert((vec_val(r@) as nat) < ((limb_power(n as nat) - c as int) as nat));
+        let lp: int = limb_power(n as nat);
+        let ci: int = c as int;
+        let p: nat = ((lp - ci) as nat);
+        //  r % p == (fold2_val + wcy*BASE*c + cy2*c) % p  [from carry_folds postcondition]
+        //  fold2_val + wcy*BASE*c + cy2*c == wide_lo_val + wt*c + wcy*BASE*c + cy2*c - cy2*lp
+        //  ... == product - K*p for some K (from chain algebra)
+        //
+        //  Establish: fold2 + wcy*BASE*c + cy2*c ≡ product (mod p)
+        //  by Mersenne: fold2 + cy2*lp == wide_lo + wt*c
+        //  So fold2 = wide_lo + wt*c - cy2*lp
+        //  fold2 + wcy*BASE*c + cy2*c = wide_lo + wt*c - cy2*lp + wcy*BASE*c + cy2*c
+        //                              = wide_lo + (wt + wcy*BASE)*c + cy2*(c - lp)
+        //                              = wide_lo + (wt + wcy*BASE)*c - cy2*p
+        //  And wide_lo + (wt+wcy*BASE)*lp == lo + hi*c  [from wide split]
+        //  So wide_lo + (wt+wcy*BASE)*c == lo + hi*c - (wt+wcy*BASE)*(lp-c) = lo+hi*c - (wt+wcy*BASE)*p
+        //  fold2 + ... = lo + hi*c - (wt+wcy*BASE)*p - cy2*p = lo + hi*c - (wt+wcy*BASE+cy2)*p
+        //  And lo + hi*c ≡ lo + hi*lp = product (mod p by Mersenne)
+        //  So fold2 + wcy*BASE*c + cy2*c ≡ product (mod p). ✓
+        //  Then r ≡ fold2+... ≡ product (mod p).
+
+        lemma_vec_val_split(product@, n as nat);
+        assert(sem_seq(lo@) =~= sem_seq(product@.subrange(0, n as int)));
+        assert(sem_seq(hi@) =~= sem_seq(product@.subrange(n as int, (2*n) as int)));
+        lemma_vec_val_pad(lo@, lo_pad@);
+        lemma_vec_val_split(wide@, n as nat);
+        assert(sem_seq(wide_lo@) =~= sem_seq(wide@.subrange(0, n as int)));
+        lemma_limb_power_add(1, n as nat);
+        reveal_with_fuel(limb_power, 2);
+        //  vec_val(wt_vec) = wt * c
+        assert(vec_val(wt_vec@) == wide_top as int * ci) by {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod((wide_top as int * ci) as int, LIMB_BASE());
+        };
+        //  Algebraic: fold2 + wcy*BASE*c + cy2*c + K*p == product
+        let hiv: int = vec_val(hi@);
+        let wt: int = wide_top as int;
+        let wcy: int = wide_cy as int;
+        //  From fold equations:
+        //  fold2 + cy2*lp == wide_lo + wt*c
+        //  wide_lo + (wt+wcy*BASE)*lp == lo + hi*c
+        //  lo + hi*lp == product
+        //  Sum: fold2 + cy2*lp + wide_lo + (wt+wcy*BASE)*lp + lo + hi*lp
+        //     = wide_lo + wt*c + lo + hi*c + product
+        //  Cancel wide_lo, lo:
+        //  fold2 + (cy2 + wt + wcy*BASE + hi)*lp = wt*c + hi*c + product
+        //  fold2 = wt*c + hi*c + product - (cy2+wt+wcy*BASE+hi)*lp
+        //  fold2 + wcy*BASE*c + cy2*c = wt*c + hi*c + wcy*BASE*c + cy2*c + product - (cy2+wt+wcy*BASE+hi)*lp
+        //  = (wt+hi+wcy*BASE+cy2)*c + product - (cy2+wt+wcy*BASE+hi)*lp
+        //  = (cy2+wt+wcy*BASE+hi)*(c - lp) + product
+        //  = product - (cy2+wt+wcy*BASE+hi)*p
+        let extra: int = wcy * LIMB_BASE() * ci + cy2 as int * ci;
+        let k_reduce: int = cy2 as int + wt + wcy * LIMB_BASE() + hiv;
+        assert(vec_val(fold2@) + extra + k_reduce * (lp - ci) == vec_val(product@)) by(nonlinear_arith)
+            requires
+                vec_val(fold2@) + cy2 as int * lp == vec_val(wide_lo@) + wt * ci,
+                vec_val(wide_lo@) + wt * lp + wcy * (LIMB_BASE() * lp) == vec_val(lo_pad@) + vec_val(hi_c@),
+                vec_val(lo_pad@) == vec_val(lo@),
+                vec_val(hi_c@) == hiv * ci,
+                vec_val(wide_lo@) + wt * lp == vec_val(wide@),
+                vec_val(product@) == vec_val(lo@) + hiv * lp,
+                extra == wcy * LIMB_BASE() * ci + cy2 as int * ci,
+                k_reduce == cy2 as int + wt + wcy * LIMB_BASE() + hiv;
+        //  (fold2 + extra) % p == product % p
+        assert(vec_val(fold2@) + extra >= 0) by(nonlinear_arith)
+            requires vec_val(fold2@) >= 0, extra >= 0;
+        assert(extra >= 0) by(nonlinear_arith) requires wcy >= 0, cy2 as int >= 0, ci > 0;
+        assert(k_reduce >= 0) by(nonlinear_arith)
+            requires cy2 as int >= 0, wt >= 0, wcy >= 0, hiv >= 0;
+        assert(lp > ci) by(nonlinear_arith)
+            requires lp >= LIMB_BASE() * LIMB_BASE(), ci < LIMB_BASE(), ci > 0;
+        lemma_mod_add_left((k_reduce * (lp - ci)) as nat, (vec_val(fold2@) + extra) as nat, (lp - ci) as nat);
+        assert(((k_reduce * (lp - ci)) as nat) % p == 0nat) by(nonlinear_arith)
+            requires lp > ci, k_reduce >= 0;
+        //  So (fold2 + extra) % p == product % p
+        //  And r % p == (fold2 + extra) % p  [from carry_folds postcondition]
+        //  Therefore r % p == product % p  ✓
     }
     r
 }
