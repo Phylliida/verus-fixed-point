@@ -609,6 +609,47 @@ proof fn lemma_reduce_chain(
         requires lp > ci, k >= 0;
 }
 
+///  Telescoping carry proof for early fold rounds (fold3-fold5).
+///  Proves: (f5 + c4*ci + c5*ci) % p == (f2 + wbc + cy2c) % p
+///  where p = lp - ci.
+proof fn lemma_carry_early_mod(
+    lp: int, ci: int,
+    f2: int, wbc: int, cy2c: int,
+    f3: int, c3: int,
+    f4: int, c4: int,
+    f5: int, c5: int,
+)
+    requires
+        lp > 0, ci > 0, lp > ci,
+        f2 >= 0, f3 >= 0, f4 >= 0, f5 >= 0,
+        c3 >= 0, c4 >= 0, c5 >= 0, wbc >= 0, cy2c >= 0,
+        f3 + c3 * lp == f2 + wbc,
+        f4 + c4 * lp == f3 + cy2c,
+        f5 + c5 * lp == f4 + c3 * ci,
+    ensures
+        (f5 + c4 * ci + c5 * ci) as nat % ((lp - ci) as nat)
+            == (f2 + wbc + cy2c) as nat % ((lp - ci) as nat),
+{
+    let k: int = c3 + c4 + c5;
+    assert(f5 + c4 * ci + c5 * ci + k * (lp - ci) == f2 + wbc + cy2c)
+        by(nonlinear_arith)
+        requires
+            f3 + c3 * lp == f2 + wbc,
+            f4 + c4 * lp == f3 + cy2c,
+            f5 + c5 * lp == f4 + c3 * ci,
+            k == c3 + c4 + c5;
+    assert(f5 + c4 * ci + c5 * ci >= 0) by(nonlinear_arith)
+        requires f5 >= 0, c4 >= 0, c5 >= 0, ci >= 0;
+    assert(k >= 0) by(nonlinear_arith) requires c3 >= 0, c4 >= 0, c5 >= 0, k == c3 + c4 + c5;
+    lemma_mod_add_left(
+        (k * (lp - ci)) as nat,
+        (f5 + c4 * ci + c5 * ci) as nat,
+        (lp - ci) as nat,
+    );
+    assert(((k * (lp - ci)) as nat) % ((lp - ci) as nat) == 0nat)
+        by(nonlinear_arith) requires lp > ci, k >= 0;
+}
+
 ///  Mersenne reduction: reduce a 2n-limb product mod p = limb_power(n) - c.
 ///  Returns n-limb result with value ≡ vec_val(product) (mod p).
 ///  Extracted from mul_mod to stay under rlimit.
@@ -623,6 +664,11 @@ fn mersenne_carry_early(
         wide_cy as int <= 1, cy2 as int <= 1,
     ensures out.0@.len() == n, valid_limbs(out.0@),
         out.1 as int <= 1, out.2 as int <= 1,
+        //  Modular postcondition: (fold5 + cy4*c + cy5*c) ≡ (fold2 + wcy*BASE*c + cy2*c) (mod p)
+        (vec_val(out.0@) + out.1 as int * (c as int) + out.2 as int * (c as int)) as nat
+            % ((limb_power(n as nat) - c as int) as nat)
+        == (vec_val(fold2@) + wide_cy as int * LIMB_BASE() * (c as int) + cy2 as int * (c as int)) as nat
+            % ((limb_power(n as nat) - c as int) as nat),
 {
     let c_limb: u32 = c;
     proof { lemma_carry_mul_fits(wide_cy as int, c as int); }
@@ -653,7 +699,86 @@ fn mersenne_carry_early(
             lemma_scalar_carry_le_1(vec_val(fold5@), cy5 as int, lpl, vec_val(fold4@), vec_val(cy3_vec@));
         };
     }
+    proof {
+        //  Modular postcondition proof
+        let lp = limb_power(n as nat);
+        let ci = c as int;
+        lemma_vec_val_bounded(fold2@); lemma_vec_val_bounded(fold3@);
+        lemma_vec_val_bounded(fold4@); lemma_vec_val_bounded(fold5@);
+        //  Connect vec_val of padded vecs to scalar values
+        assert(vec_val(wcy_vec@) == wide_cy as int * ci * LIMB_BASE()) by(nonlinear_arith)
+            requires vec_val(wcy_vec@) == 0 + wcy_c as int * LIMB_BASE(),
+                wcy_c as int == wide_cy as int * ci;
+        assert(vec_val(cy2_vec@) == cy2 as int * ci) by(nonlinear_arith)
+            requires vec_val(cy2_vec@) == cy2_c as int, cy2_c as int == cy2 as int * ci;
+        assert(vec_val(cy3_vec@) == cy3 as int * ci) by(nonlinear_arith)
+            requires vec_val(cy3_vec@) == cy3_c as int, cy3_c as int == cy3 as int * ci;
+        //  Establish lp > ci
+        lemma_limb_power_add(1, (n - 1) as nat);
+        lemma_limb_power_add(1, (n - 2) as nat);
+        reveal_with_fuel(limb_power, 2);
+        assert(lp >= LIMB_BASE() * LIMB_BASE()) by(nonlinear_arith)
+            requires
+                lp == LIMB_BASE() * limb_power((n - 1) as nat),
+                limb_power((n - 1) as nat) == LIMB_BASE() * limb_power((n - 2) as nat),
+                lp > 0;
+        assert(lp > ci) by(nonlinear_arith)
+            requires lp >= LIMB_BASE() * LIMB_BASE(), ci < LIMB_BASE(), ci > 0;
+        //  Call telescoping lemma
+        lemma_carry_early_mod(lp, ci,
+            vec_val(fold2@), vec_val(wcy_vec@), vec_val(cy2_vec@),
+            vec_val(fold3@), cy3 as int,
+            vec_val(fold4@), cy4 as int,
+            vec_val(fold5@), cy5 as int);
+    }
     (fold5, cy4, cy5)
+}
+
+///  Telescoping carry proof for late fold rounds (fold6-fold9).
+///  Proves: f9 % p == (f5 + cy4c + cy5c) % p where p = lp - ci.
+proof fn lemma_carry_late_mod(
+    lp: int, ci: int,
+    f5: int, cy4c: int, cy5c: int,
+    f6: int, c6: int,
+    f7: int, c7: int,
+    f8: int, c8: int,
+    fc: int,
+    f9: int,
+)
+    requires
+        lp > 0, ci > 0, lp > ci,
+        f5 >= 0, f6 >= 0, f7 >= 0, f8 >= 0, f9 >= 0,
+        cy4c >= 0, cy5c >= 0, c6 >= 0, c7 >= 0, c8 >= 0, fc >= 0,
+        f6 + c6 * lp == f5 + cy4c,
+        f7 + c7 * lp == f6 + cy5c,
+        f8 + c8 * lp == f7 + fc,
+        fc == (c6 + c7) * ci,
+        f9 == f8 + c8 * ci,
+    ensures
+        f9 as nat % ((lp - ci) as nat)
+            == (f5 + cy4c + cy5c) as nat % ((lp - ci) as nat),
+{
+    let k: int = c6 + c7 + c8;
+    assert(f9 + k * (lp - ci) == f5 + cy4c + cy5c)
+        by(nonlinear_arith)
+        requires
+            f6 + c6 * lp == f5 + cy4c,
+            f7 + c7 * lp == f6 + cy5c,
+            f8 + c8 * lp == f7 + fc,
+            fc == (c6 + c7) * ci,
+            f9 == f8 + c8 * ci,
+            k == c6 + c7 + c8;
+    assert(f5 + cy4c + cy5c >= 0) by(nonlinear_arith)
+        requires f5 >= 0, cy4c >= 0, cy5c >= 0;
+    assert(k >= 0) by(nonlinear_arith)
+        requires c6 >= 0, c7 >= 0, c8 >= 0, k == c6 + c7 + c8;
+    lemma_mod_add_left(
+        (k * (lp - ci)) as nat,
+        f9 as nat,
+        (lp - ci) as nat,
+    );
+    assert(((k * (lp - ci)) as nat) % ((lp - ci) as nat) == 0nat)
+        by(nonlinear_arith) requires lp > ci, k >= 0;
 }
 
 ///  Late carry folds: fold6-fold9 + conditional subtract.
@@ -664,6 +789,11 @@ fn mersenne_carry_late(
         n >= 2, c > 0, (c as int) < LIMB_BASE(),
         cy4 as int <= 1, cy5 as int <= 1,
     ensures out@.len() == n, valid_limbs(out@),
+        //  Modular postcondition: result ≡ fold5 + cy4*c + cy5*c (mod p)
+        vec_val(out@) as nat % ((limb_power(n as nat) - c as int) as nat)
+            == (vec_val(fold5@) + cy4 as int * (c as int) + cy5 as int * (c as int)) as nat
+                % ((limb_power(n as nat) - c as int) as nat),
+        (vec_val(out@) as nat) < ((limb_power(n as nat) - c as int) as nat),
 {
     proof { lemma_carry_mul_fits(cy4 as int, c as int); lemma_carry_mul_fits(cy5 as int, c as int); }
     let cy4_c: u32 = cy4 * c;
@@ -719,10 +849,101 @@ fn mersenne_carry_late(
     let cy8_c: u32 = _cy8 * c;
     let cy8_vec = scalar_to_padded_vec(cy8_c, n);
     let (fold9, _cy9) = generic_add_limbs(&fold8, &cy8_vec, n);
+    proof {
+        let lp = limb_power(n as nat);
+        let ci = c as int;
+        let pv = lp - ci;
+        //  Establish lp >= BASE^2, lp > ci, 2*ci <= lp
+        lemma_limb_power_add(1, (n - 1) as nat);
+        lemma_limb_power_add(1, (n - 2) as nat);
+        reveal_with_fuel(limb_power, 2);
+        lemma_vec_val_bounded(fold5@);
+        assert(lp >= LIMB_BASE() * LIMB_BASE()) by(nonlinear_arith)
+            requires lp == LIMB_BASE() * limb_power((n - 1) as nat),
+                limb_power((n - 1) as nat) == LIMB_BASE() * limb_power((n - 2) as nat),
+                lp > 0;
+        assert(lp > ci) by(nonlinear_arith)
+            requires lp >= LIMB_BASE() * LIMB_BASE(), ci < LIMB_BASE(), ci > 0;
+        assert(2 * ci <= lp) by(nonlinear_arith)
+            requires lp >= LIMB_BASE() * LIMB_BASE(), ci < LIMB_BASE();
+        //  cy9 == 0
+        assert(_cy9 as int == 0) by {
+            lemma_vec_val_bounded(fold7@); lemma_vec_val_bounded(fold8@); lemma_vec_val_bounded(fold9@);
+            assert(final_c as int <= c as int) by(nonlinear_arith)
+                requires final_c as int == _cy6 as int * (c as int) + cy7 as int * (c as int),
+                    _cy6 as int >= 0, cy7 as int >= 0,
+                    (_cy6 as int + cy7 as int) <= 1, (c as int) > 0;
+            assert(cy8_c as int <= c as int) by(nonlinear_arith)
+                requires cy8_c as int == _cy8 as int * (c as int),
+                    _cy8 as int <= 1, (c as int) > 0;
+            if _cy8 as int == 1 {
+                assert(vec_val(fold8@) < LIMB_BASE()) by(nonlinear_arith)
+                    requires vec_val(fold8@) + _cy8 as int * lp == vec_val(fold7@) + final_c as int,
+                        _cy8 as int == 1,
+                        vec_val(fold7@) < lp, final_c as int <= c as int, (c as int) < LIMB_BASE(),
+                        lp > 0, vec_val(fold8@) >= 0;
+                assert(_cy9 as int == 0) by(nonlinear_arith)
+                    requires vec_val(fold9@) + _cy9 as int * lp == vec_val(fold8@) + cy8_c as int,
+                        vec_val(fold8@) < LIMB_BASE(), cy8_c as int <= c as int, (c as int) < LIMB_BASE(),
+                        lp >= LIMB_BASE() * LIMB_BASE(), lp > 0, _cy9 as int >= 0, vec_val(fold9@) >= 0;
+            } else {
+                assert(_cy9 as int == 0) by(nonlinear_arith)
+                    requires vec_val(fold9@) + _cy9 as int * lp == vec_val(fold8@) + cy8_c as int,
+                        vec_val(fold8@) < lp, _cy8 as int == 0, cy8_c == 0u32,
+                        lp > 0, _cy9 as int >= 0, vec_val(fold9@) >= 0;
+            }
+        };
+        //  Connect vec_val to scalars
+        assert(vec_val(cy4_vec@) == cy4 as int * ci) by(nonlinear_arith)
+            requires vec_val(cy4_vec@) == cy4_c as int, cy4_c as int == cy4 as int * ci;
+        assert(vec_val(cy5_vec@) == cy5 as int * ci) by(nonlinear_arith)
+            requires vec_val(cy5_vec@) == cy5_c as int, cy5_c as int == cy5 as int * ci;
+        assert(final_c as int == (_cy6 as int + cy7 as int) * ci) by(nonlinear_arith)
+            requires final_c as int == _cy6 as int * ci + cy7 as int * ci;
+        assert(vec_val(cy8_vec@) == _cy8 as int * ci) by(nonlinear_arith)
+            requires vec_val(cy8_vec@) == cy8_c as int, cy8_c as int == _cy8 as int * ci;
+        //  Telescoping: fold9 % p == (fold5 + cy4*c + cy5*c) % p
+        lemma_vec_val_bounded(fold6@); lemma_vec_val_bounded(fold7@);
+        lemma_vec_val_bounded(fold8@); lemma_vec_val_bounded(fold9@);
+        assert(vec_val(fold9@) == vec_val(fold8@) + _cy8 as int * ci) by(nonlinear_arith)
+            requires vec_val(fold9@) + _cy9 as int * lp == vec_val(fold8@) + vec_val(cy8_vec@),
+                _cy9 as int == 0, vec_val(cy8_vec@) == _cy8 as int * ci;
+        lemma_carry_late_mod(lp, ci,
+            vec_val(fold5@), vec_val(cy4_vec@), vec_val(cy5_vec@),
+            vec_val(fold6@), _cy6 as int,
+            vec_val(fold7@), cy7 as int,
+            vec_val(fold8@), _cy8 as int,
+            final_c as int,
+            vec_val(fold9@));
+    }
+    //  Conditional subtract
     let p_limbs = make_p_limbs(n, c);
     let (d1, bw1) = generic_sub_limbs(&fold9, &p_limbs, n);
     let r1 = if bw1 == 0u32 { d1 } else { fold9 };
     let (d2, bw2) = generic_sub_limbs(&r1, &p_limbs, n);
+    proof {
+        let lp = limb_power(n as nat);
+        let ci = c as int;
+        let pv = lp - ci;
+        lemma_vec_val_bounded(fold9@); lemma_vec_val_bounded(d1@);
+        //  First conditional subtract: r1 < p, r1%p == fold9%p
+        lemma_cond_sub(vec_val(fold9@), vec_val(d1@), pv, lp, ci, bw1.sem());
+        if bw1 == 0u32 {
+            //  d1 as nat == fold9 % p, d1 < p.  r1 = d1.
+            assert(vec_val(r1@) as nat == vec_val(fold9@) as nat % (pv as nat));
+            assert((vec_val(r1@) as int) < pv);
+        } else {
+            //  fold9 < p.  r1 = fold9.
+            assert(vec_val(r1@) as nat == vec_val(fold9@) as nat % (pv as nat));
+            assert((vec_val(r1@) as int) < pv);
+        }
+        //  Second conditional subtract
+        lemma_vec_val_bounded(r1@); lemma_vec_val_bounded(d2@);
+        lemma_cond_sub(vec_val(r1@), vec_val(d2@), pv, lp, ci, bw2.sem());
+        //  In both bw2 branches: out < p and out%p == r1%p
+        //  r1%p == fold9%p (from idempotence: r1 == fold9%p as value → r1%p == fold9%p)
+        //  fold9%p == target%p (from telescoping lemma above)
+    }
     if bw2 == 0u32 { d2 } else { r1 }
 }
 
