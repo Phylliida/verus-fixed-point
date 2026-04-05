@@ -966,7 +966,6 @@ fn mersenne_carry_folds(
     mersenne_carry_late(&fold5, cy4, cy5, n, c)
 }
 
-#[verifier::rlimit(20)]
 fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
     requires
         product@.len() == 2 * n,
@@ -981,13 +980,12 @@ fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
         (vec_val(out@) as nat) < ((limb_power(n as nat) - c as int) as nat),
 {
     let c_limb: u32 = c;
-    //  Split + first fold
+    //  Phase 1: split product into lo + hi*lp, fold hi*lp → hi*c, then fold wide_top*c
     let lo = generic_slice_vec(product, 0, n);
     let hi = generic_slice_vec(product, n, 2 * n);
     let hi_c = generic_mul_by_limb(&hi, &c_limb, n);
     let lo_pad = generic_pad_to_length(&lo, n + 1);
     let (wide, wide_cy) = generic_add_limbs(&lo_pad, &hi_c, n + 1);
-    //  Second fold: wide[n]*c + wide_cy*BASE*c
     let wide_lo = generic_slice_vec(&wide, 0, n);
     let wide_top: u32 = wide[n];
     let (wt_lo, wt_hi) = wide_top.mul2(&c_limb);
@@ -1011,131 +1009,14 @@ fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
                 vec_val(wide_lo@), vec_val(wt_vec@));
         };
     }
-    //  Carry fold phase (inlined with rlimit(30) to keep chain proof visible)
-    proof { lemma_carry_mul_fits(wide_cy as int, c as int); lemma_carry_mul_fits(cy2 as int, c as int); }
-    let wcy_c: u32 = wide_cy * c;
-    let wcy_vec = pair_to_padded_vec(0u32, wcy_c, n);
-    let (fold3, cy3) = generic_add_limbs(&fold2, &wcy_vec, n);
-    let cy2_c: u32 = cy2 * c;
-    let cy2_vec = scalar_to_padded_vec(cy2_c, n);
-    let (fold4, cy4) = generic_add_limbs(&fold3, &cy2_vec, n);
-    proof {
-        assert(cy3 as int <= 1 && cy4 as int <= 1) by {
-            let lpl = limb_power(n as nat);
-            lemma_vec_val_bounded(fold2@); lemma_vec_val_bounded(fold3@); lemma_vec_val_bounded(fold4@);
-            lemma_vec_val_bounded(wcy_vec@); lemma_vec_val_bounded(cy2_vec@);
-            lemma_scalar_carry_le_1(vec_val(fold3@), cy3 as int, lpl, vec_val(fold2@), vec_val(wcy_vec@));
-            lemma_scalar_carry_le_1(vec_val(fold4@), cy4 as int, lpl, vec_val(fold3@), vec_val(cy2_vec@));
-        };
-        lemma_carry_mul_fits(cy3 as int, c as int); lemma_carry_mul_fits(cy4 as int, c as int);
-    }
-    let cy3_c: u32 = cy3 * c;
-    let cy3_vec = scalar_to_padded_vec(cy3_c, n);
-    let (fold5, cy5) = generic_add_limbs(&fold4, &cy3_vec, n);
-    proof {
-        assert(cy5 as int <= 1) by {
-            let lpl = limb_power(n as nat);
-            lemma_vec_val_bounded(fold4@); lemma_vec_val_bounded(fold5@); lemma_vec_val_bounded(cy3_vec@);
-            lemma_scalar_carry_le_1(vec_val(fold5@), cy5 as int, lpl, vec_val(fold4@), vec_val(cy3_vec@));
-        };
-        lemma_carry_mul_fits(cy5 as int, c as int); lemma_carry_mul_fits(cy4 as int, c as int);
-    }
-    let cy4_c: u32 = cy4 * c;
-    let cy4_vec = scalar_to_padded_vec(cy4_c, n);
-    let (fold6, _cy6) = generic_add_limbs(&fold5, &cy4_vec, n);
-    let cy5_c: u32 = cy5 * c;
-    let cy5_vec = scalar_to_padded_vec(cy5_c, n);
-    let (fold7, cy7) = generic_add_limbs(&fold6, &cy5_vec, n);
-    proof {
-        assert(_cy6 as int <= 1 && cy7 as int <= 1 && (_cy6 as int + cy7 as int) <= 1) by {
-            let lpl = limb_power(n as nat);
-            lemma_vec_val_bounded(fold5@); lemma_vec_val_bounded(fold6@); lemma_vec_val_bounded(fold7@);
-            lemma_vec_val_bounded(cy4_vec@); lemma_vec_val_bounded(cy5_vec@);
-            lemma_scalar_carry_le_1(vec_val(fold6@), _cy6 as int, lpl, vec_val(fold5@), vec_val(cy4_vec@));
-            lemma_scalar_carry_le_1(vec_val(fold7@), cy7 as int, lpl, vec_val(fold6@), vec_val(cy5_vec@));
-            lemma_limb_power_add(1, 1); reveal_with_fuel(limb_power, 2);
-            if _cy6 as int == 1 {
-                assert(vec_val(fold6@) < LIMB_BASE()) by(nonlinear_arith)
-                    requires vec_val(fold6@) + lpl == vec_val(fold5@) + vec_val(cy4_vec@),
-                        vec_val(fold5@) < lpl, vec_val(cy4_vec@) < LIMB_BASE(), lpl > 0;
-                assert(cy7 as int == 0) by(nonlinear_arith)
-                    requires vec_val(fold7@) + cy7 as int * lpl == vec_val(fold6@) + vec_val(cy5_vec@),
-                        vec_val(fold6@) < LIMB_BASE(), vec_val(cy5_vec@) < LIMB_BASE(),
-                        lpl >= limb_power(2nat), limb_power(2nat) == LIMB_BASE() * LIMB_BASE(),
-                        lpl > 0, cy7 as int >= 0, 0 <= vec_val(fold7@);
-            }
-        };
-        lemma_carry_mul_fits(_cy6 as int, c as int); lemma_carry_mul_fits(cy7 as int, c as int);
-        assert((_cy6 as int + cy7 as int) * (c as int) <= u32::MAX as int) by(nonlinear_arith)
-            requires (_cy6 as int + cy7 as int) <= 1, (c as int) < LIMB_BASE();
-        assert((_cy6 * c) as int + (cy7 * c) as int <= u32::MAX as int) by(nonlinear_arith)
-            requires (_cy6 as int + cy7 as int) * (c as int) <= u32::MAX as int,
-                _cy6 as int <= 1, cy7 as int <= 1, (c as int) < LIMB_BASE();
-    }
-    let final_c: u32 = _cy6 * c + cy7 * c;
-    let final_vec = scalar_to_padded_vec(final_c, n);
-    let (fold8, _cy8) = generic_add_limbs(&fold7, &final_vec, n);
-    proof {
-        assert(_cy8 as int <= 1) by {
-            lemma_vec_val_bounded(fold7@); lemma_vec_val_bounded(fold8@);
-            lemma_scalar_carry_le_1(vec_val(fold8@), _cy8 as int, limb_power(n as nat),
-                vec_val(fold7@), vec_val(final_vec@));
-        };
-        lemma_carry_mul_fits(_cy8 as int, c as int);
-    }
-    let cy8_c: u32 = _cy8 * c;
-    let cy8_vec = scalar_to_padded_vec(cy8_c, n);
-    let (fold9, cy9) = generic_add_limbs(&fold8, &cy8_vec, n);
-    //  cy9 == 0 proof + chain + conditional subtract
-    proof {
-        //  cy9 == 0
-        lemma_vec_val_bounded(fold8@); lemma_vec_val_bounded(fold9@);
-        assert(cy9 as int == 0) by {
-            let lpl = limb_power(n as nat);
-            lemma_limb_power_add(1, 1); reveal_with_fuel(limb_power, 2);
-            if _cy8 as int == 1 {
-                assert(vec_val(fold8@) < LIMB_BASE()) by(nonlinear_arith)
-                    requires vec_val(fold8@) + lpl == vec_val(fold7@) + final_c as int,
-                        vec_val(fold7@) < lpl, final_c as int <= c as int, (c as int) < LIMB_BASE(),
-                        lpl > 0, vec_val(fold8@) >= 0;
-                assert(cy9 as int == 0) by(nonlinear_arith)
-                    requires vec_val(fold9@) + cy9 as int * lpl == vec_val(fold8@) + cy8_c as int,
-                        vec_val(fold8@) < LIMB_BASE(), cy8_c as int <= c as int, (c as int) < LIMB_BASE(),
-                        lpl >= LIMB_BASE() * LIMB_BASE(), lpl > 0, cy9 as int >= 0, vec_val(fold9@) >= 0;
-            } else {
-                assert(cy9 as int == 0) by(nonlinear_arith)
-                    requires vec_val(fold9@) + cy9 as int * lpl == vec_val(fold8@) + cy8_c as int,
-                        vec_val(fold8@) < lpl, _cy8 as int == 0, cy8_c == 0u32,
-                        lpl > 0, cy9 as int >= 0, vec_val(fold9@) >= 0;
-            }
-        };
-    }
-    //  Conditional subtract
-    let p_limbs = make_p_limbs(n, c);
-    let (d1, bw1) = generic_sub_limbs(&fold9, &p_limbs, n);
-    let r1 = if bw1 == 0u32 { d1 } else { fold9 };
-    let (d2, bw2) = generic_sub_limbs(&r1, &p_limbs, n);
-    let r = if bw2 == 0u32 { d2 } else { r1 };
+    //  Phase 2: carry fold + conditional subtract (delegates to helpers)
+    let r = mersenne_carry_folds(&fold2, cy2, wide_cy, n, c);
+    //  Phase 3: prove (fold2 + wcy*BASE*c + cy2*c) ≡ product (mod p)
+    //  Combined with carry_folds postcondition: r ≡ product (mod p).
     proof {
         let lp: int = limb_power(n as nat);
         let ci: int = c as int;
         let p: nat = ((lp - ci) as nat);
-        //  Chain proof: all fold vars are now visible.
-        //  ... == product - K*p for some K (from chain algebra)
-        //
-        //  Establish: fold2 + wcy*BASE*c + cy2*c ≡ product (mod p)
-        //  by Mersenne: fold2 + cy2*lp == wide_lo + wt*c
-        //  So fold2 = wide_lo + wt*c - cy2*lp
-        //  fold2 + wcy*BASE*c + cy2*c = wide_lo + wt*c - cy2*lp + wcy*BASE*c + cy2*c
-        //                              = wide_lo + (wt + wcy*BASE)*c + cy2*(c - lp)
-        //                              = wide_lo + (wt + wcy*BASE)*c - cy2*p
-        //  And wide_lo + (wt+wcy*BASE)*lp == lo + hi*c  [from wide split]
-        //  So wide_lo + (wt+wcy*BASE)*c == lo + hi*c - (wt+wcy*BASE)*(lp-c) = lo+hi*c - (wt+wcy*BASE)*p
-        //  fold2 + ... = lo + hi*c - (wt+wcy*BASE)*p - cy2*p = lo + hi*c - (wt+wcy*BASE+cy2)*p
-        //  And lo + hi*c ≡ lo + hi*lp = product (mod p by Mersenne)
-        //  So fold2 + wcy*BASE*c + cy2*c ≡ product (mod p). ✓
-        //  Then r ≡ fold2+... ≡ product (mod p).
-
         lemma_vec_val_split(product@, n as nat);
         assert(sem_seq(lo@) =~= sem_seq(product@.subrange(0, n as int)));
         assert(sem_seq(hi@) =~= sem_seq(product@.subrange(n as int, (2*n) as int)));
@@ -1143,30 +1024,19 @@ fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
         lemma_vec_val_split(wide@, n as nat);
         assert(sem_seq(wide_lo@) =~= sem_seq(wide@.subrange(0, n as int)));
         lemma_limb_power_add(1, n as nat);
+        lemma_limb_power_add(1, (n - 1) as nat);
+        lemma_limb_power_add(1, (n - 2) as nat);
         reveal_with_fuel(limb_power, 2);
-        //  vec_val(wt_vec) = wt * c
+        lemma_vec_val_bounded(fold2@);
         assert(vec_val(wt_vec@) == wide_top as int * ci) by {
             vstd::arithmetic::div_mod::lemma_fundamental_div_mod((wide_top as int * ci) as int, LIMB_BASE());
         };
-        //  Algebraic: fold2 + wcy*BASE*c + cy2*c + K*p == product
         let hiv: int = vec_val(hi@);
         let wt: int = wide_top as int;
         let wcy: int = wide_cy as int;
-        //  From fold equations:
-        //  fold2 + cy2*lp == wide_lo + wt*c
-        //  wide_lo + (wt+wcy*BASE)*lp == lo + hi*c
-        //  lo + hi*lp == product
-        //  Sum: fold2 + cy2*lp + wide_lo + (wt+wcy*BASE)*lp + lo + hi*lp
-        //     = wide_lo + wt*c + lo + hi*c + product
-        //  Cancel wide_lo, lo:
-        //  fold2 + (cy2 + wt + wcy*BASE + hi)*lp = wt*c + hi*c + product
-        //  fold2 = wt*c + hi*c + product - (cy2+wt+wcy*BASE+hi)*lp
-        //  fold2 + wcy*BASE*c + cy2*c = wt*c + hi*c + wcy*BASE*c + cy2*c + product - (cy2+wt+wcy*BASE+hi)*lp
-        //  = (wt+hi+wcy*BASE+cy2)*c + product - (cy2+wt+wcy*BASE+hi)*lp
-        //  = (cy2+wt+wcy*BASE+hi)*(c - lp) + product
-        //  = product - (cy2+wt+wcy*BASE+hi)*p
         let extra: int = wcy * LIMB_BASE() * ci + cy2 as int * ci;
         let k_reduce: int = cy2 as int + wt + wcy * LIMB_BASE() + hiv;
+        //  Algebraic: fold2 + extra + K*p == product
         assert(vec_val(fold2@) + extra + k_reduce * (lp - ci) == vec_val(product@)) by(nonlinear_arith)
             requires
                 vec_val(fold2@) + cy2 as int * lp == vec_val(wide_lo@) + wt * ci,
@@ -1177,20 +1047,27 @@ fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
                 vec_val(product@) == vec_val(lo@) + hiv * lp,
                 extra == wcy * LIMB_BASE() * ci + cy2 as int * ci,
                 k_reduce == cy2 as int + wt + wcy * LIMB_BASE() + hiv;
-        //  (fold2 + extra) % p == product % p
+        //  Modular conclusion: (fold2 + extra) % p == product % p
+        assert(extra >= 0) by(nonlinear_arith)
+            requires wcy >= 0, cy2 as int >= 0, ci > 0,
+                extra == wcy * LIMB_BASE() * ci + cy2 as int * ci;
         assert(vec_val(fold2@) + extra >= 0) by(nonlinear_arith)
             requires vec_val(fold2@) >= 0, extra >= 0;
-        assert(extra >= 0) by(nonlinear_arith) requires wcy >= 0, cy2 as int >= 0, ci > 0;
         assert(k_reduce >= 0) by(nonlinear_arith)
-            requires cy2 as int >= 0, wt >= 0, wcy >= 0, hiv >= 0;
+            requires cy2 as int >= 0, wt >= 0, wcy >= 0, hiv >= 0,
+                k_reduce == cy2 as int + wt + wcy * LIMB_BASE() + hiv;
+        assert(lp >= LIMB_BASE() * LIMB_BASE()) by(nonlinear_arith)
+            requires lp == LIMB_BASE() * limb_power((n - 1) as nat),
+                limb_power((n - 1) as nat) == LIMB_BASE() * limb_power((n - 2) as nat),
+                lp > 0;
         assert(lp > ci) by(nonlinear_arith)
             requires lp >= LIMB_BASE() * LIMB_BASE(), ci < LIMB_BASE(), ci > 0;
         lemma_mod_add_left((k_reduce * (lp - ci)) as nat, (vec_val(fold2@) + extra) as nat, (lp - ci) as nat);
         assert(((k_reduce * (lp - ci)) as nat) % p == 0nat) by(nonlinear_arith)
             requires lp > ci, k_reduce >= 0;
-        //  So (fold2 + extra) % p == product % p
-        //  And r % p == (fold2 + extra) % p  [from carry_folds postcondition]
-        //  Therefore r % p == product % p  ✓
+        //  Phase 1: (fold2 + extra) % p == product % p
+        //  carry_folds: r % p == (fold2 + extra) % p
+        //  Transitivity: r % p == product % p  ✓
     }
     r
 }
