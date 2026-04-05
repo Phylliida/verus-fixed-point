@@ -1028,6 +1028,8 @@ fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
         lemma_limb_power_add(1, (n - 2) as nat);
         reveal_with_fuel(limb_power, 2);
         lemma_vec_val_bounded(fold2@);
+        lemma_vec_val_bounded(hi@);
+        lemma_vec_val_bounded(lo@);
         assert(vec_val(wt_vec@) == wide_top as int * ci) by {
             vstd::arithmetic::div_mod::lemma_fundamental_div_mod((wide_top as int * ci) as int, LIMB_BASE());
         };
@@ -1036,6 +1038,18 @@ fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
         let wcy: int = wide_cy as int;
         let extra: int = wcy * LIMB_BASE() * ci + cy2 as int * ci;
         let k_reduce: int = cy2 as int + wt + wcy * LIMB_BASE() + hiv;
+        //  Connect split to concrete variables (Z3 needs help with 1-element subrange)
+        reveal_with_fuel(limbs_val, 2);
+        assert(vec_val(wide_lo@) + wt * lp == vec_val(wide@)) by {
+            let hi_sub = wide@.subrange(n as int, (n + 1) as int);
+            assert(hi_sub.len() == 1);
+            assert(hi_sub[0] == wide_top);
+        };
+        assert(vec_val(wide_lo@) + wt * lp + wcy * (LIMB_BASE() * lp) == vec_val(lo_pad@) + vec_val(hi_c@))
+            by(nonlinear_arith)
+            requires
+                vec_val(wide@) + wcy * (LIMB_BASE() * lp) == vec_val(lo_pad@) + vec_val(hi_c@),
+                vec_val(wide@) == vec_val(wide_lo@) + wt * lp;
         //  Algebraic: fold2 + extra + K*p == product
         assert(vec_val(fold2@) + extra + k_reduce * (lp - ci) == vec_val(product@)) by(nonlinear_arith)
             requires
@@ -1043,7 +1057,6 @@ fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
                 vec_val(wide_lo@) + wt * lp + wcy * (LIMB_BASE() * lp) == vec_val(lo_pad@) + vec_val(hi_c@),
                 vec_val(lo_pad@) == vec_val(lo@),
                 vec_val(hi_c@) == hiv * ci,
-                vec_val(wide_lo@) + wt * lp == vec_val(wide@),
                 vec_val(product@) == vec_val(lo@) + hiv * lp,
                 extra == wcy * LIMB_BASE() * ci + cy2 as int * ci,
                 k_reduce == cy2 as int + wt + wcy * LIMB_BASE() + hiv;
@@ -1063,8 +1076,16 @@ fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
         assert(lp > ci) by(nonlinear_arith)
             requires lp >= LIMB_BASE() * LIMB_BASE(), ci < LIMB_BASE(), ci > 0;
         lemma_mod_add_left((k_reduce * (lp - ci)) as nat, (vec_val(fold2@) + extra) as nat, (lp - ci) as nat);
+        //  (k * p) % p == 0: use fundamental_div_mod to feed Z3 the division identity
+        assert(k_reduce * (lp - ci) >= 0) by(nonlinear_arith) requires k_reduce >= 0, lp > ci;
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(k_reduce * (lp - ci), lp - ci);
         assert(((k_reduce * (lp - ci)) as nat) % p == 0nat) by(nonlinear_arith)
-            requires lp > ci, k_reduce >= 0;
+            requires
+                k_reduce * (lp - ci) == (lp - ci) * ((k_reduce * (lp - ci)) / (lp - ci))
+                    + (k_reduce * (lp - ci)) % (lp - ci),
+                0 <= (k_reduce * (lp - ci)) % (lp - ci),
+                (k_reduce * (lp - ci)) % (lp - ci) < lp - ci,
+                k_reduce >= 0, lp > ci, p == (lp - ci) as nat;
         //  Phase 1: (fold2 + extra) % p == product % p
         //  carry_folds: r % p == (fold2 + extra) % p
         //  Transitivity: r % p == product % p  ✓
@@ -1291,6 +1312,23 @@ impl RuntimePrimeField {
                     0 <= vec_val(self.limbs@), vec_val(self.limbs@) < lp,
                     0 <= vec_val(other.limbs@), vec_val(other.limbs@) < lp,
                     limb_power((2*n) as nat) == lp * lp, lp > 0;
+            //  Connect product to model values
+            assert(vec_val(product@) == vec_val(self.limbs@) * vec_val(other.limbs@)) by(nonlinear_arith)
+                requires vec_val(product@) + _gc@ * limb_power((2*n) as nat)
+                    == vec_val(self.limbs@) * vec_val(other.limbs@), _gc@ == 0int;
+            assert(vec_val(product@) as nat == self.model@ * other.model@) by(nonlinear_arith)
+                requires vec_val(product@) == vec_val(self.limbs@) * vec_val(other.limbs@),
+                    self.model@ == vec_val(self.limbs@) as nat,
+                    other.model@ == vec_val(other.limbs@) as nat,
+                    vec_val(self.limbs@) >= 0, vec_val(other.limbs@) >= 0;
+            //  r < p and r ≡ product (mod p) → r == product % p == (a*b) % p
+            let p = self.prime_spec();
+            lemma_vec_val_bounded(r@);
+            assert(vec_val(r@) as nat % p == vec_val(product@) as nat % p);
+            assert(vec_val(r@) as nat == (self.model@ * other.model@) % p) by(nonlinear_arith)
+                requires vec_val(r@) as nat % p == vec_val(product@) as nat % p,
+                    vec_val(product@) as nat == self.model@ * other.model@,
+                    (vec_val(r@) as nat) < p, p > 0;
         }
         RuntimePrimeField {
             limbs: r,
