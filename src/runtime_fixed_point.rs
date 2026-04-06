@@ -300,6 +300,9 @@ impl<T: LimbOps> GenericFixedPoint<T> {
             self.n_exec > 0, self.n_exec <= 0x1FFF_FFFF,
             self.frac_exec % 32 == 0,
         ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
+            // Sign is XOR of input signs (positive * positive = positive, etc.)
+            (self.sign.sem() == other.sign.sem()) ==> out.sign.sem() == 0,
+            (self.sign.sem() != other.sign.sem()) ==> out.sign.sem() == 1,
     {
         use crate::fixed_point::limb_ops::{generic_mul_karatsuba, generic_slice_vec};
         let n = self.n_exec;
@@ -309,6 +312,20 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         // Sign XOR via select: if sign_a==0 → result=sign_b, if sign_a==1 → result=flip(sign_b)
         let sign_b_flipped = T::select_limb(&other.sign, T::const_u32(1u32), T::zero_val());
         let result_sign = T::select_limb(&self.sign, other.sign.clone_limb(), sign_b_flipped);
+
+        proof {
+            let sa = self.sign.sem();
+            let sb = other.sign.sem();
+            assert(sa == 0 || sa == 1);
+            assert(sb == 0 || sb == 1);
+            // sign_b_flipped: if sb==0 → 1, if sb==1 → 0 (flip)
+            // result_sign: if sa==0 → sb, if sa==1 → flipped_sb
+            // sa==0, sb==0: result=0 ✓ (pos*pos=pos)
+            // sa==0, sb==1: result=1 ✓ (pos*neg=neg)
+            // sa==1, sb==0: result=1 ✓ (neg*pos=neg, flipped 0→1)
+            // sa==1, sb==1: result=0 ✓ (neg*neg=pos, flipped 1→0)
+        }
+
         GenericFixedPoint {
             limbs: truncated,
             sign: result_sign,
