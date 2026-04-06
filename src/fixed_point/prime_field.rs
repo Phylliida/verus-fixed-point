@@ -206,7 +206,7 @@ pub proof fn lemma_pseudo_mersenne_reduce(lo: nat, hi: nat, base_k: nat, c: nat)
 
 ///  Construct the limbs of p = 2^(n*32) - c = [BASE-c, MAX, MAX, ..., MAX].
 ///  Proved: vec_val(result) == limb_power(n) - c.
-fn make_p_limbs(n: usize, c: u32) -> (out: Vec<u32>)
+pub fn make_p_limbs(n: usize, c: u32) -> (out: Vec<u32>)
     requires n > 0, c > 0, (c as int) < LIMB_BASE(),
     ensures
         out@.len() == n,
