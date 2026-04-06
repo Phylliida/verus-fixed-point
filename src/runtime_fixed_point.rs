@@ -109,12 +109,12 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         requires self.wf_spec(), other.wf_spec(),
             self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
         ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
-            // Semantic correctness: result = a + b (mod limb_power(n))
-            // This catches swapped select args!
-            out.signed_val() == (self.signed_val() + other.signed_val())
-                % (limb_power(self.n_spec()) as int)
-                || out.signed_val() == (self.signed_val() + other.signed_val())
-                    % (limb_power(self.n_spec()) as int) - limb_power(self.n_spec()),
+            // Semantic correctness: result ≡ a + b (mod P), where P = limb_power(n).
+            // Exactly one of these holds: result = true_sum, true_sum - P, or true_sum + P.
+            // This catches swapped select_limb args, wrong signs, missing terms.
+            out.signed_val() == self.signed_val() + other.signed_val()
+                || out.signed_val() == self.signed_val() + other.signed_val() - limb_power(self.n_spec())
+                || out.signed_val() == self.signed_val() + other.signed_val() + limb_power(self.n_spec()),
     {
         use crate::fixed_point::limb_ops::{generic_add_limbs, generic_sub_limbs, generic_select_vec};
         let n = self.n_exec;
@@ -153,10 +153,130 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         let result_limbs = generic_select_vec(&same_sign, &diff_result, &sum, n);
         let result_sign = T::select_limb(&same_sign, diff_sign, self.sign.clone_limb());
 
-        GenericFixedPoint {
+        let out = GenericFixedPoint {
             limbs: result_limbs, sign: result_sign,
             n_exec: n, frac_exec: self.frac_exec,
+        };
+
+        proof {
+            use crate::fixed_point::limb_ops::lemma_vec_val_eq_from_sem_eq;
+
+            let sa = self.sign.sem();
+            let sb = other.sign.sem();
+            let va: int = vec_val(self.limbs@);   // unsigned magnitude of self
+            let vb: int = vec_val(other.limbs@);   // unsigned magnitude of other
+            let P: int = limb_power(n as nat);
+            let true_sum = self.signed_val() + other.signed_val();
+
+            // Key facts from sub_borrow on signs:
+            // sa, sb ∈ {0, 1}, same_sign = 1 iff sa == sb
+            assert(sa == 0 || sa == 1);
+            assert(sb == 0 || sb == 1);
+
+            // From generic_add_limbs: vec_val(sum@) + carry*P = va + vb
+            let sv: int = vec_val(sum@);
+            let cy: int = _carry.sem();
+
+            // From generic_sub_limbs: vec_val(a_minus_b@) + vb = va + borrow_ab*P
+            let amv: int = vec_val(a_minus_b@);
+            let bab: int = borrow_ab.sem();
+            let bmv: int = vec_val(b_minus_a@);
+            let bba: int = _borrow_ba.sem();
+
+            if same_sign.sem() == 1 {
+                // Same sign: result = sum with self.sign
+                lemma_vec_val_eq_from_sem_eq::<T>(result_limbs@, sum@);
+                // Connect result_sign to sa
+                assert(result_sign.sem() == sa);
+                // out.unsigned_val() == sv
+                assert(out.unsigned_val() == sv);
+                // sv = va + vb - cy*P (from add_limbs)
+                assert(sv + cy * P == va + vb);
+                // Derive cy ∈ {0, 1} from bounds
+                crate::fixed_point::limb_ops::lemma_vec_val_bounded::<T>(sum@);
+                crate::fixed_point::limb_ops::lemma_vec_val_bounded::<T>(self.limbs@);
+                crate::fixed_point::limb_ops::lemma_vec_val_bounded::<T>(other.limbs@);
+                assert(0 <= sv && sv < P);
+                assert(0 <= va && va < P);
+                assert(0 <= vb && vb < P);
+                assert(cy * P <= va + vb);
+                assert(va + vb < 2 * P);
+                assert(cy <= 1) by(nonlinear_arith)
+                    requires cy * P <= va + vb, va + vb < 2 * P, P > 0, cy >= 0;
+                if sa == 0 {
+                    assert(out.signed_val() == sv);
+                    assert(true_sum == va + vb);
+                    assert(sv == va + vb - cy * P);
+                    if cy == 0 {
+                        assert(sv == true_sum);
+                    } else {
+                        assert(cy == 1);
+                        assert(sv + P == va + vb) by(nonlinear_arith)
+                            requires sv + cy * P == va + vb, cy == 1;
+                        assert(out.signed_val() == true_sum - P);
+                    }
+                } else {
+                    assert(out.signed_val() == -sv);
+                    assert(true_sum == -(va + vb));
+                    assert(sv == va + vb - cy * P);
+                    if cy == 0 {
+                        assert(-sv == -(va + vb));
+                        assert(-sv == true_sum);
+                    } else {
+                        assert(cy == 1);
+                        assert(sv + P == va + vb) by(nonlinear_arith)
+                            requires sv + cy * P == va + vb, cy == 1;
+                        assert(out.signed_val() == true_sum + P);
+                    }
+                }
+            } else {
+                // Different sign: result = diff_result with diff_sign
+                // select_vec(0, diff_result, sum) = diff_result
+                lemma_vec_val_eq_from_sem_eq::<T>(result_limbs@, diff_result@);
+
+                if bab == 0 {
+                    // va >= vb: diff_result = a_minus_b, diff_sign = self.sign
+                    lemma_vec_val_eq_from_sem_eq::<T>(diff_result@, a_minus_b@);
+                    assert(amv == va - vb);  // since borrow=0
+                    // select_limb(0, self.sign, other.sign) = self.sign (if_zero)
+                    // Wait: select_limb(borrow_ab=0, self.sign, other.sign) = self.sign
+                    // Then select_limb(same_sign=0, diff_sign, self.sign) = diff_sign = self.sign (if_zero)
+                    // out.signed_val() = if sa==0 { va-vb } else { -(va-vb) }
+                    // Case sa=0,sb=1: true_sum = va - vb = va-vb ✓
+                    // Case sa=1,sb=0: true_sum = -va + vb = -(va-vb) ✓
+                } else {
+                    // va < vb: diff_result = b_minus_a, diff_sign = other.sign
+                    lemma_vec_val_eq_from_sem_eq::<T>(diff_result@, b_minus_a@);
+                    // First establish va < vb from bab == 1
+                    crate::fixed_point::limb_ops::lemma_vec_val_bounded::<T>(a_minus_b@);
+                    assert(0 <= amv && amv < P);
+                    // amv + vb == va + P (bab=1), so amv = va - vb + P
+                    // amv < P → va - vb + P < P → va < vb ✓
+                    assert(va < vb);
+                    // Now prove bba == 0
+                    crate::fixed_point::limb_ops::lemma_vec_val_bounded::<T>(b_minus_a@);
+                    assert(0 <= bmv && bmv < P);
+                    // bmv + va == vb + bba*P. If bba==1: bmv = vb-va+P ≥ P (since vb>va). Contradiction.
+                    assert(bba == 0) by {
+                        if bba == 1 {
+                            assert(bmv == vb - va + P);
+                            assert(vb - va > 0);
+                            assert(bmv >= P);
+                            assert(false);
+                        }
+                    };
+                    assert(bmv == vb - va);
+                    // out.signed_val() = if sb==0 { vb-va } else { -(vb-va) }
+                    // Case sa=0,sb=1: true_sum = va - vb = -(vb-va), sign=sb=1, val = -(vb-va) ✓
+                    // Case sa=1,sb=0: true_sum = -va + vb = vb-va, sign=sb=0, val = vb-va ✓
+                }
+                // In diff-sign case, result is exact (k = 0)
+                assert(out.signed_val() == true_sum);
+                assert(out.signed_val() == true_sum + 0int * P);
+            }
         }
+
+        out
     }
 
     ///  Signed subtraction: a - b = a + (-b).
@@ -164,11 +284,9 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         requires self.wf_spec(), other.wf_spec(),
             self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
         ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
-            // Semantic correctness: result = a - b (mod limb_power(n))
-            out.signed_val() == (self.signed_val() - other.signed_val())
-                % (limb_power(self.n_spec()) as int)
-                || out.signed_val() == (self.signed_val() - other.signed_val())
-                    % (limb_power(self.n_spec()) as int) - limb_power(self.n_spec()),
+            out.signed_val() == self.signed_val() - other.signed_val()
+                || out.signed_val() == self.signed_val() - other.signed_val() - limb_power(self.n_spec())
+                || out.signed_val() == self.signed_val() - other.signed_val() + limb_power(self.n_spec()),
     {
         let neg_other = other.neg();
         self.signed_add(&neg_other)
