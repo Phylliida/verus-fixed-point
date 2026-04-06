@@ -223,17 +223,15 @@ pub fn make_p_limbs<T: LimbOps>(n: usize, c: u32) -> (out: Vec<T>)
         reveal_with_fuel(limbs_val, 2);
         reveal_with_fuel(limb_power, 2);
     }
-    let mut i: usize = 1;
     let max_limb: T = T::const_u32(0xFFFF_FFFFu32);
-    while i < n
+    for i in 1..n
         invariant
-            1 <= i <= n, n > 0,
+            n > 0,
             c > 0, (c as int) < LIMB_BASE(),
             p@.len() == i,
             valid_limbs(p@),
             vec_val(p@) == limb_power(i as nat) - c as int,
             max_limb.sem() == 0xFFFF_FFFFint,
-        decreases n - i,
     {
         let pushed: T = max_limb.clone_limb();
         proof {
@@ -258,7 +256,6 @@ pub fn make_p_limbs<T: LimbOps>(n: usize, c: u32) -> (out: Vec<T>)
                     limb_power(1 + i as nat) == limb_power(1nat) * limb_power(i as nat),
                     limb_power(1nat) == LIMB_BASE();
         }
-        i = i + 1;
     }
     p
 }

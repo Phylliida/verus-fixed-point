@@ -664,13 +664,11 @@ pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
 {
     let mut out: Vec<T> = Vec::new();
     let mut carry: T = T::zero_val();
-    let mut i: usize = 0;
     let ghost sa = sem_seq(a@);
     let ghost sb = sem_seq(b@);
 
-    while i < n
+    for i in 0..n
         invariant
-            i <= n,
             a@.len() == n,
             b@.len() == n,
             out@.len() == i as int,
@@ -682,11 +680,9 @@ pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
             limbs_val(sem_seq(out@)) + carry.sem() * limb_power(i as nat)
                 == limbs_val(sa.subrange(0, i as int))
                     + limbs_val(sb.subrange(0, i as int)),
-        decreases n - i,
     {
         let (digit, next_carry) = a[i].add3(&b[i], &carry);
         proof {
-            //  Carry validity: next_carry = sum / BASE. sum >= 0, sum < 3*BASE, so 0 <= carry < 3 < BASE
             let sum = a@[i as int].sem() + b@[i as int].sem() + carry.sem();
             assert(0 <= next_carry.sem() && next_carry.sem() < LIMB_BASE()) by(nonlinear_arith)
                 requires
@@ -694,7 +690,6 @@ pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
                     sum >= 0,
                     sum < 3 * LIMB_BASE(),
                     LIMB_BASE() > 0;
-            //  div_mod identity
             let x = a@[i as int].sem() + b@[i as int].sem() + carry.sem();
             assert(digit.sem() + next_carry.sem() * LIMB_BASE() == x) by(nonlinear_arith)
                 requires
@@ -702,22 +697,18 @@ pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
                     next_carry.sem() == x / LIMB_BASE(),
                     LIMB_BASE() > 0;
 
-            //  limb_power(i+1) == BASE * limb_power(i)
             reveal_with_fuel(limb_power, 2);
             let p = limb_power(i as nat);
             let p_next = limb_power((i + 1) as nat);
             assert(p_next == LIMB_BASE() * p);
 
-            //  sem_seq(out.push(digit)) =~= sem_seq(out).push(digit.sem())
             lemma_sem_seq_push(out@, digit);
             lemma_limbs_val_push(sem_seq(out@), digit.sem());
-            //  subrange extend for a and b
             assert(sa[i as int] == a@[i as int].sem());
             assert(sb[i as int] == b@[i as int].sem());
             lemma_limbs_val_subrange_extend(sa, i as nat);
             lemma_limbs_val_subrange_extend(sb, i as nat);
 
-            //  Telescope
             assert(
                 limbs_val(sem_seq(out@)) + digit.sem() * p + next_carry.sem() * p_next
                 == limbs_val(sa.subrange(0, i as int)) + sa[i as int] * p
@@ -734,7 +725,6 @@ pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
 
         out.push(digit);
         carry = next_carry;
-        i = i + 1;
     }
 
     proof {
@@ -764,12 +754,10 @@ pub fn generic_mul_by_limb<T: LimbOps>(a: &Vec<T>, scalar: &T, n: usize) -> (res
 {
     let mut out: Vec<T> = Vec::new();
     let mut carry: T = T::zero_val();
-    let mut i: usize = 0;
     let ghost sa = sem_seq(a@);
 
-    while i < n
+    for i in 0..n
         invariant
-            i <= n,
             a@.len() == n,
             out@.len() == i as int,
             valid_limbs(out@),
@@ -779,7 +767,6 @@ pub fn generic_mul_by_limb<T: LimbOps>(a: &Vec<T>, scalar: &T, n: usize) -> (res
             sa == sem_seq(a@),
             limbs_val(sem_seq(out@)) + carry.sem() * limb_power(i as nat)
                 == limbs_val(sa.subrange(0, i as int)) * scalar.sem(),
-        decreases n - i,
     {
         let (digit, next_carry) = a[i].mul_add_carry(scalar, &T::zero_val(), &carry);
         proof {
@@ -831,7 +818,6 @@ pub fn generic_mul_by_limb<T: LimbOps>(a: &Vec<T>, scalar: &T, n: usize) -> (res
 
         out.push(digit);
         carry = next_carry;
-        i = i + 1;
     }
 
     //  Push final carry as the (n+1)-th limb
@@ -914,13 +900,11 @@ pub fn generic_sub_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
 {
     let mut out: Vec<T> = Vec::new();
     let mut borrow: T = T::zero_val();
-    let mut i: usize = 0;
     let ghost sa = sem_seq(a@);
     let ghost sb = sem_seq(b@);
 
-    while i < n
+    for i in 0..n
         invariant
-            i <= n,
             a@.len() == n, b@.len() == n,
             out@.len() == i as int,
             valid_limbs(out@),
@@ -930,7 +914,6 @@ pub fn generic_sub_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
             limbs_val(sem_seq(out@)) + limbs_val(sb.subrange(0, i as int))
                 == limbs_val(sa.subrange(0, i as int))
                     + borrow.sem() * limb_power(i as nat),
-        decreases n - i,
     {
         let (digit, next_borrow) = a[i].sub_borrow(&b[i], &borrow);
         proof {
@@ -995,7 +978,6 @@ pub fn generic_sub_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
 
         out.push(digit);
         borrow = next_borrow;
-        i = i + 1;
     }
 
     proof {
@@ -1018,14 +1000,11 @@ pub fn generic_zero_vec<T: LimbOps>(n: usize) -> (result: Vec<T>)
         forall |j: int| 0 <= j < n ==> (#[trigger] result@[j]).sem() == 0int,
 {
     let mut out: Vec<T> = Vec::new();
-    let mut i: usize = 0;
-    while i < n
-        invariant i <= n, out@.len() == i as int,
+    for i in 0..n
+        invariant out@.len() == i as int,
             forall |j: int| 0 <= j < i ==> (#[trigger] out@[j]).sem() == 0int,
-        decreases n - i,
     {
         out.push(T::zero_val());
-        i = i + 1;
     }
     out
 }
@@ -1037,15 +1016,12 @@ pub fn generic_slice_vec<T: LimbOps>(a: &Vec<T>, start: usize, end: usize) -> (r
         forall |j: int| 0 <= j < result@.len() ==> (#[trigger] result@[j]).sem() == a@[(start + j) as int].sem(),
 {
     let mut out: Vec<T> = Vec::new();
-    let mut i: usize = start;
-    while i < end
-        invariant start <= i, i <= end, end <= a@.len(),
+    for i in start..end
+        invariant start <= end, end <= a@.len(),
             out@.len() == (i - start) as int,
             forall |j: int| 0 <= j < out@.len() ==> (#[trigger] out@[j]).sem() == a@[(start + j) as int].sem(),
-        decreases end - i,
     {
         out.push(a[i].clone_limb());
-        i = i + 1;
     }
     out
 }
@@ -1063,20 +1039,17 @@ pub fn generic_select_vec<T: LimbOps>(cond: &T, if_zero: &Vec<T>, if_nonzero: &V
         cond.sem() == 1 ==> vec_val(result@) == vec_val(if_nonzero@),
 {
     let mut out: Vec<T> = Vec::new();
-    let mut i: usize = 0;
-    while i < n
-        invariant i <= n, cond.sem() == 0 || cond.sem() == 1,
+    for i in 0..n
+        invariant cond.sem() == 0 || cond.sem() == 1,
             if_zero@.len() == n, if_nonzero@.len() == n,
             valid_limbs(if_zero@), valid_limbs(if_nonzero@),
             out@.len() == i as int,
             forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[j]).sem() < LIMB_BASE(),
             cond.sem() == 0 ==> (forall |j: int| 0 <= j < i ==> (#[trigger] out@[j]).sem() == if_zero@[j].sem()),
             cond.sem() == 1 ==> (forall |j: int| 0 <= j < i ==> (#[trigger] out@[j]).sem() == if_nonzero@[j].sem()),
-        decreases n - i,
     {
         let selected = T::select_limb(cond, if_zero[i].clone_limb(), if_nonzero[i].clone_limb());
         out.push(selected);
-        i = i + 1;
     }
     proof {
         //  Prove vec_val equality by extensional equality on sem_seq
@@ -1097,25 +1070,20 @@ pub fn generic_pad_to_length<T: LimbOps>(a: &Vec<T>, target: usize) -> (result: 
         forall |j: int| a@.len() <= j < target ==> (#[trigger] result@[j]).sem() == 0int,
 {
     let mut out: Vec<T> = Vec::new();
-    let mut i: usize = 0;
-    while i < a.len()
-        invariant i <= a@.len(), target >= a@.len(),
+    for i in 0..a.len()
+        invariant target >= a@.len(),
             out@.len() == i as int,
             forall |j: int| 0 <= j < i ==> (#[trigger] out@[j]).sem() == a@[j].sem(),
-        decreases a@.len() - i,
     {
         out.push(a[i].clone_limb());
-        i = i + 1;
     }
-    while i < target
-        invariant a@.len() <= i, i <= target,
+    for i in (a.len())..target
+        invariant a@.len() <= target,
             out@.len() == i as int,
             forall |j: int| 0 <= j < a@.len() ==> (#[trigger] out@[j]).sem() == a@[j].sem(),
             forall |j: int| a@.len() <= j < i ==> (#[trigger] out@[j]).sem() == 0int,
-        decreases target - i,
     {
         out.push(T::zero_val());
-        i = i + 1;
     }
     out
 }
@@ -1129,26 +1097,20 @@ pub fn generic_shift_left<T: LimbOps>(a: &Vec<T>, offset: usize) -> (result: Vec
         forall |j: int| 0 <= j < a@.len() ==> (#[trigger] result@[(offset + j) as int]).sem() == a@[j].sem(),
 {
     let mut out: Vec<T> = Vec::new();
-    let mut i: usize = 0;
-    while i < offset
-        invariant i <= offset, out@.len() == i as int,
+    for i in 0..offset
+        invariant out@.len() == i as int,
             valid_limbs(out@),
             forall |j: int| 0 <= j < i ==> (#[trigger] out@[j]).sem() == 0int,
-        decreases offset - i,
     {
         out.push(T::zero_val());
-        i = i + 1;
     }
-    let mut k: usize = 0;
-    while k < a.len()
-        invariant k <= a@.len(), out@.len() == (offset + k) as int,
+    for k in 0..a.len()
+        invariant out@.len() == (offset + k) as int,
             valid_limbs(out@), valid_limbs(a@),
             forall |j: int| 0 <= j < offset ==> (#[trigger] out@[j]).sem() == 0int,
             forall |j: int| 0 <= j < k ==> (#[trigger] out@[(offset + j) as int]).sem() == a@[j].sem(),
-        decreases a@.len() - k,
     {
         out.push(a[k].clone_limb());
-        k = k + 1;
     }
     out
 }
@@ -1449,15 +1411,13 @@ pub fn generic_mul_schoolbook<T: LimbOps>(
 {
     let nn: usize = 2 * n;
     let mut acc = generic_zero_vec::<T>(nn);
-    let mut i: usize = 0;
     let ghost sb = sem_seq(b@);
     let ghost mut ghost_carry: int = 0int;
 
     proof { lemma_vec_val_zeros(acc@); }
 
-    while i < n
+    for i in 0..n
         invariant
-            i <= n,
             a@.len() == n, b@.len() == n,
             nn == 2 * n, n <= 0x3FFF_FFFF,
             acc@.len() == nn,
@@ -1466,7 +1426,6 @@ pub fn generic_mul_schoolbook<T: LimbOps>(
             sb == sem_seq(b@),
             vec_val(acc@) + ghost_carry * limb_power(nn as nat)
                 == vec_val(a@) * limbs_val(sb.subrange(0, i as int)),
-        decreases n - i,
     {
         let ghost acc_old_val = vec_val(acc@);
         let ghost gc_old = ghost_carry;
@@ -1511,7 +1470,6 @@ pub fn generic_mul_schoolbook<T: LimbOps>(
 
         proof { ghost_carry = ghost_carry + carry.sem(); }
         acc = new_acc;
-        i = i + 1;
     }
 
     proof {
