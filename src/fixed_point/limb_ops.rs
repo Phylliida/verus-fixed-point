@@ -771,6 +771,7 @@ pub fn add_limbs_to<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usi
     ensures
         out@.len() == old(out)@.len(),
         0 <= carry.sem() < LIMB_BASE(),
+        forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[j]).sem() < LIMB_BASE(),
 {
     let ghost out_len = out@.len();
     let mut carry: T = T::zero_val();
@@ -780,6 +781,7 @@ pub fn add_limbs_to<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usi
             out@.len() == out_len, out_len >= n,
             valid_limbs(a@), valid_limbs(b@),
             0 <= carry.sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[j]).sem() < LIMB_BASE(),
     {
         let (digit, next_carry) = a[i].add3(&b[i], &carry);
         out.set(i, digit);
@@ -796,6 +798,7 @@ pub fn sub_limbs_to<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usi
     ensures
         out@.len() == old(out)@.len(),
         borrow.sem() == 0 || borrow.sem() == 1,
+        forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[j]).sem() < LIMB_BASE(),
 {
     let ghost out_len = out@.len();
     let mut borrow: T = T::zero_val();
@@ -805,6 +808,7 @@ pub fn sub_limbs_to<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usi
             out@.len() == out_len, out_len >= n,
             valid_limbs(a@), valid_limbs(b@),
             borrow.sem() == 0 || borrow.sem() == 1,
+            forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[j]).sem() < LIMB_BASE(),
     {
         let (digit, next_borrow) = a[i].sub_borrow(&b[i], &borrow);
         out.set(i, digit);
@@ -865,76 +869,92 @@ pub fn slice_vec_to<T: LimbOps>(a: &Vec<T>, start: usize, end: usize, out: &mut 
     }
 }
 
-///  Signed addition writing to output buffer. GPU-compatible (branchless via select).
-///  a has sign a_sign (0=pos, 1=neg), b has sign b_sign. Result in out with returned sign.
-///  Same algorithm as GenericFixedPoint::signed_add but with output parameters.
+///  Signed addition writing to output buffer. GPU-compatible (no Vec::new).
+///  Uses tmp1, tmp2, tmp3 as scratch (each >= n limbs).
+///  a has sign a_sign (0=pos, 1=neg), b has sign b_sign. Result in out.
 pub fn signed_add_to<T: LimbOps>(
     a: &Vec<T>, a_sign: &T, b: &Vec<T>, b_sign: &T,
-    out: &mut Vec<T>, n: usize,
+    out: &mut Vec<T>, tmp1: &mut Vec<T>, tmp2: &mut Vec<T>,
+    n: usize,
 ) -> (out_sign: T)
     requires
-        a@.len() == n, b@.len() == n, old(out)@.len() >= n,
+        a@.len() == n, b@.len() == n,
+        old(out)@.len() >= n, old(tmp1)@.len() >= n, old(tmp2)@.len() >= n,
         valid_limbs(a@), valid_limbs(b@),
         a_sign.sem() == 0 || a_sign.sem() == 1,
         b_sign.sem() == 0 || b_sign.sem() == 1,
     ensures out@.len() == old(out)@.len(),
+        tmp1@.len() == old(tmp1)@.len(), tmp2@.len() == old(tmp2)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
 {
-    let ghost out_len = out@.len();
+    // Compute a + b (unsigned) → tmp1
+    let _sum_carry = add_limbs_to(a, b, tmp1, n);
+    // Compute a - b → tmp2
+    let borrow_ab = sub_limbs_to(a, b, tmp2, n);
+    // Compute b - a → out (will be overwritten later if not used)
+    let _borrow_ba = sub_limbs_to(b, a, out, n);
 
-    // Compute sum (for same-sign case)
-    let (sum, _sum_carry) = generic_add_limbs(a, b, n);
-    // Compute a - b
-    let (a_minus_b, borrow_ab) = generic_sub_limbs(a, b, n);
-    // Compute b - a
-    let (b_minus_a, _borrow_ba) = generic_sub_limbs(b, a, n);
-
-    // same_sign indicator: is_zero(sign_diff) AND is_zero(sign_borrow)
+    // same_sign indicator
     let (sign_diff, sign_borrow) = a_sign.sub_borrow(b_sign, &T::zero_val());
     let diff_zero = sign_diff.is_zero_limb();
     let borrow_zero = sign_borrow.is_zero_limb();
     let (same_sign, _) = diff_zero.mul2(&borrow_zero);
 
-    // diff_sign result: select based on borrow_ab (which magnitude is larger)
-    let diff_result = generic_select_vec(&borrow_ab, &a_minus_b, &b_minus_a, n);
+    // diff_sign result: select a-b (tmp2) or b-a (out) based on borrow_ab
+    // Write to tmp1 (reuse since sum is no longer needed after final select)
+    // Wait — tmp1 has the sum, which we still need for same_sign case.
+    // We need all three alive: sum(tmp1), a-b(tmp2), b-a(out).
+    // Then: diff_selected = select(borrow_ab, tmp2, out) → can't write to tmp2 or out.
+    // Solution: do the TWO selects in sequence, writing directly to out.
+    //
+    // Step 1: If same_sign, out = tmp1 (sum). If diff_sign, out = select(borrow, tmp2, out).
+    // But we can't read out and write out simultaneously.
+    //
+    // Simplest: do element-wise select in a loop.
     let diff_sign = T::select_limb(&borrow_ab, a_sign.clone_limb(), b_sign.clone_limb());
-
-    // Final select: same_sign → sum, diff_sign → diff_result
-    let final_result = generic_select_vec(&same_sign, &sum, &diff_result, n);
     let result_sign = T::select_limb(&same_sign, a_sign.clone_limb(), diff_sign);
 
-    // Copy to output
+    // Element-wise double select: out[i] = select(same, sum[i], select(borrow, a-b[i], b-a[i]))
+    let ghost out_len = out@.len();
     for i in 0..n
-        invariant out@.len() == out_len, out_len >= n,
-            final_result@.len() == n,
+        invariant
+            out@.len() == out_len, out_len >= n,
+            tmp1@.len() >= n, tmp2@.len() >= n,
+            same_sign.sem() == 0 || same_sign.sem() == 1,
+            borrow_ab.sem() == 0 || borrow_ab.sem() == 1,
+            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] tmp1@[j]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] tmp2@[j]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[j]).sem() < LIMB_BASE(),
     {
-        out.set(i, final_result[i].clone_limb());
+        let diff_val = T::select_limb(&borrow_ab, tmp2[i].clone_limb(), out[i].clone_limb());
+        let final_val = T::select_limb(&same_sign, tmp1[i].clone_limb(), diff_val);
+        out.set(i, final_val);
     }
 
     result_sign
 }
 
-///  Signed subtraction writing to output buffer: a - b = a + (-b).
+///  Signed subtraction: a - b = a + (-b). No Vec::new.
 pub fn signed_sub_to<T: LimbOps>(
     a: &Vec<T>, a_sign: &T, b: &Vec<T>, b_sign: &T,
-    out: &mut Vec<T>, n: usize,
+    out: &mut Vec<T>, tmp1: &mut Vec<T>, tmp2: &mut Vec<T>,
+    n: usize,
 ) -> (out_sign: T)
     requires
-        a@.len() == n, b@.len() == n, old(out)@.len() >= n,
+        a@.len() == n, b@.len() == n,
+        old(out)@.len() >= n, old(tmp1)@.len() >= n, old(tmp2)@.len() >= n,
         valid_limbs(a@), valid_limbs(b@),
         a_sign.sem() == 0 || a_sign.sem() == 1,
         b_sign.sem() == 0 || b_sign.sem() == 1,
     ensures out@.len() == old(out)@.len(),
+        tmp1@.len() == old(tmp1)@.len(), tmp2@.len() == old(tmp2)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
 {
-    // Flip b's sign: 0→1, 1→0
     let neg_b_sign = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
-    signed_add_to(a, a_sign, b, &neg_b_sign, out, n)
+    signed_add_to(a, a_sign, b, &neg_b_sign, out, tmp1, tmp2, n)
 }
 
-///  Signed fixed-point multiply writing to output buffer.
-///  Product goes to prod (must be >= 2n), result extracted to out.
-///  Sign = XOR of input signs.
+///  Signed fixed-point multiply. No Vec::new.
 pub fn signed_mul_to<T: LimbOps>(
     a: &Vec<T>, a_sign: &T, b: &Vec<T>, b_sign: &T,
     out: &mut Vec<T>, prod: &mut Vec<T>,
@@ -954,13 +974,8 @@ pub fn signed_mul_to<T: LimbOps>(
         prod@.len() == old(prod)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
 {
-    // Multiply magnitudes
     mul_schoolbook_to(a, b, prod, n);
-
-    // Extract fixed-point result
     slice_vec_to(prod, frac_limbs, frac_limbs + n, out, 0);
-
-    // Sign XOR via select
     let sign_b_flipped = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
     T::select_limb(a_sign, b_sign.clone_limb(), sign_b_flipped)
 }
