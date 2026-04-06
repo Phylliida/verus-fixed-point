@@ -1050,14 +1050,27 @@ fn mersenne_reduce_exec(product: &Vec<u32>, n: usize, c: u32) -> (out: Vec<u32>)
             requires
                 vec_val(wide@) + wcy * (LIMB_BASE() * lp) == vec_val(lo_pad@) + vec_val(hi_c@),
                 vec_val(wide@) == vec_val(wide_lo@) + wt * lp;
-        //  Algebraic: fold2 + extra + K*p == product
-        assert(vec_val(fold2@) + extra + k_reduce * (lp - ci) == vec_val(product@)) by(nonlinear_arith)
+        //  Algebraic: fold2 + extra + K*p == product (split into 2 steps for rlimit)
+        let s: int = cy2 as int + wt + wcy * LIMB_BASE();
+        assert(vec_val(fold2@) + s * lp == vec_val(lo@) + (wt + hiv) * ci) by(nonlinear_arith)
             requires
                 vec_val(fold2@) + cy2 as int * lp == vec_val(wide_lo@) + wt * ci,
                 vec_val(wide_lo@) + wt * lp + wcy * (LIMB_BASE() * lp) == vec_val(lo_pad@) + vec_val(hi_c@),
                 vec_val(lo_pad@) == vec_val(lo@),
                 vec_val(hi_c@) == hiv * ci,
+                s == cy2 as int + wt + wcy * LIMB_BASE();
+        //  Step 2a: fold2 + k_reduce*lp == product + (wt+hiv)*ci
+        assert(vec_val(fold2@) + k_reduce * lp == vec_val(product@) + (wt + hiv) * ci)
+            by(nonlinear_arith)
+            requires
+                vec_val(fold2@) + s * lp == vec_val(lo@) + (wt + hiv) * ci,
                 vec_val(product@) == vec_val(lo@) + hiv * lp,
+                k_reduce == s + hiv;
+        //  Step 2b: fold2 + extra + k_reduce*(lp-ci) == product
+        assert(vec_val(fold2@) + extra + k_reduce * (lp - ci) == vec_val(product@))
+            by(nonlinear_arith)
+            requires
+                vec_val(fold2@) + k_reduce * lp == vec_val(product@) + (wt + hiv) * ci,
                 extra == wcy * LIMB_BASE() * ci + cy2 as int * ci,
                 k_reduce == cy2 as int + wt + wcy * LIMB_BASE() + hiv;
         //  Modular conclusion: (fold2 + extra) % p == product % p

@@ -2488,9 +2488,11 @@ impl RuntimeFixedPointInterval {
                     let bx_rem = (b_int * x_int) % s;
                     //  b*x = bx_val*S + bx_rem, bx_val ≤ S+1
                     let bx_prod: nat = b_int * x_int;
-                    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(
-                        bx_prod as int, s as int);
-                    assert(bx_prod == bx_val * s + bx_rem);
+                    //  Scope to reduce Z3 context pollution
+                    assert(bx_prod == bx_val * s + bx_rem) by {
+                        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(
+                            bx_prod as int, s as int);
+                    };
                     assert(b_int * x_int < (s + 2) * s) by (nonlinear_arith)
                         requires b_int * x_int == bx_val * s + bx_rem,
                                  bx_val <= s + 1, bx_rem < s as int, s > 0;
