@@ -74,6 +74,16 @@ pub trait LimbOps : Sized {
     ///  Clone preserving semantic value.
     fn clone_limb(&self) -> (out: Self)
         ensures out.sem() == self.sem();
+
+    ///  Conditional select: if cond.sem() == 0 return if_zero, else return if_nonzero.
+    ///  For u32: a branch. For ArithLimb: builds a select expression node.
+    fn select_limb(cond: &Self, if_zero: Self, if_nonzero: Self) -> (out: Self)
+        requires cond.sem() == 0 || cond.sem() == 1,
+            0 <= if_zero.sem() < LIMB_BASE(),
+            0 <= if_nonzero.sem() < LIMB_BASE(),
+        ensures
+            out.sem() == if cond.sem() == 0 { if_zero.sem() } else { if_nonzero.sem() },
+            0 <= out.sem() < LIMB_BASE();
 }
 
 //  ══════════════════════════════════════════════════════════════
@@ -482,6 +492,10 @@ impl LimbOps for u32 {
     fn const_u32(c: u32) -> (out: Self) { c }
 
     fn clone_limb(&self) -> (out: Self) { *self }
+
+    fn select_limb(cond: &Self, if_zero: Self, if_nonzero: Self) -> (out: Self) {
+        if *cond == 0u32 { if_zero } else { if_nonzero }
+    }
 }
 
 //  ══════════════════════════════════════════════════════════════
@@ -1032,6 +1046,45 @@ pub fn generic_slice_vec<T: LimbOps>(a: &Vec<T>, start: usize, end: usize) -> (r
     {
         out.push(a[i].clone_limb());
         i = i + 1;
+    }
+    out
+}
+
+///  Conditional select between two Vecs based on a limb condition.
+///  If cond.sem() == 0, returns a copy of if_zero; else returns a copy of if_nonzero.
+pub fn generic_select_vec<T: LimbOps>(cond: &T, if_zero: &Vec<T>, if_nonzero: &Vec<T>, n: usize) -> (result: Vec<T>)
+    requires cond.sem() == 0 || cond.sem() == 1,
+        if_zero@.len() == n, if_nonzero@.len() == n,
+        valid_limbs(if_zero@), valid_limbs(if_nonzero@),
+    ensures result@.len() == n, valid_limbs(result@),
+        cond.sem() == 0 ==> (forall |j: int| 0 <= j < n ==> (#[trigger] result@[j]).sem() == if_zero@[j].sem()),
+        cond.sem() == 1 ==> (forall |j: int| 0 <= j < n ==> (#[trigger] result@[j]).sem() == if_nonzero@[j].sem()),
+        cond.sem() == 0 ==> vec_val(result@) == vec_val(if_zero@),
+        cond.sem() == 1 ==> vec_val(result@) == vec_val(if_nonzero@),
+{
+    let mut out: Vec<T> = Vec::new();
+    let mut i: usize = 0;
+    while i < n
+        invariant i <= n, cond.sem() == 0 || cond.sem() == 1,
+            if_zero@.len() == n, if_nonzero@.len() == n,
+            valid_limbs(if_zero@), valid_limbs(if_nonzero@),
+            out@.len() == i as int,
+            forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[j]).sem() < LIMB_BASE(),
+            cond.sem() == 0 ==> (forall |j: int| 0 <= j < i ==> (#[trigger] out@[j]).sem() == if_zero@[j].sem()),
+            cond.sem() == 1 ==> (forall |j: int| 0 <= j < i ==> (#[trigger] out@[j]).sem() == if_nonzero@[j].sem()),
+        decreases n - i,
+    {
+        let selected = T::select_limb(cond, if_zero[i].clone_limb(), if_nonzero[i].clone_limb());
+        out.push(selected);
+        i = i + 1;
+    }
+    proof {
+        //  Prove vec_val equality by extensional equality on sem_seq
+        if cond.sem() == 0 {
+            assert(sem_seq(out@) =~= sem_seq(if_zero@));
+        } else {
+            assert(sem_seq(out@) =~= sem_seq(if_nonzero@));
+        }
     }
     out
 }
