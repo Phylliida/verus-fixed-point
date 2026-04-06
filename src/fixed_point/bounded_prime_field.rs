@@ -260,7 +260,7 @@ pub proof fn lemma_centered_bounded(a: nat, p: nat)
 ///  Const generics N (limbs) and C (Mersenne constant) fix the prime p = 2^(32*N) - C,
 ///  guaranteeing all wf values share the same field (critical for eq/le correctness).
 pub struct BoundedPrimeField<const N: usize, const C: u32> {
-    pub inner: RuntimePrimeField,
+    pub inner: RuntimePrimeField<u32>,
     pub bound: Ghost<nat>,
 }
 
@@ -329,7 +329,7 @@ fn limbs_equal(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (out: bool)
 ///  For now: just check if the first n limbs represent a value > (p-1)/2.
 ///  We use: a > (p-1)/2 iff 2*a > p - 1 iff 2*a >= p (since p odd).
 ///  Equivalently: a + a >= p, which we can check via generic_add + carry.
-fn is_negative_centered(val: &RuntimePrimeField) -> (out: bool)
+fn is_negative_centered(val: &RuntimePrimeField<u32>) -> (out: bool)
     requires val.wf(), val.n_exec >= 2, val.prime_spec() > 2, val.prime_spec() % 2 == 1,
     ensures out == (centered(val.model@, val.prime_spec()) < 0),
 {
@@ -377,7 +377,7 @@ fn is_negative_centered(val: &RuntimePrimeField) -> (out: bool)
         }
         true
     } else {
-        let p_limbs = make_p_limbs(n, val.c_exec);
+        let p_limbs: Vec<u32> = make_p_limbs(n, val.c_exec);
         let (_diff, borrow) = generic_sub_limbs(&sum, &p_limbs, n);
         let result = borrow == 0u32;
         proof {
@@ -578,7 +578,7 @@ impl<const N: usize, const C: u32> verus_algebra::traits::runtime::RuntimeOrdere
 
     fn zero_like(&self) -> (out: Self)
     {
-        let limbs = generic_zero_vec(N);
+        let limbs: Vec<u32> = generic_zero_vec(N);
         proof {
             lemma_vec_val_zeros(limbs@);
             lemma_centered_zero(Self::prime_spec());
@@ -593,7 +593,7 @@ impl<const N: usize, const C: u32> verus_algebra::traits::runtime::RuntimeOrdere
 
     fn one_like(&self) -> (out: Self)
     {
-        let limbs = scalar_to_padded_vec(1u32, N);
+        let limbs: Vec<u32> = scalar_to_padded_vec(1u32, N);
         proof {
             //  scalar_to_padded_vec ensures vec_val == 1, valid_limbs, len == N
             //  centered(1, p) == 1 since 1 <= half (half >= 1 for p > 2)
