@@ -1371,6 +1371,15 @@ pub open spec fn vec_val<T: LimbOps>(v: Seq<T>) -> int {
     limbs_val(sem_seq(v))
 }
 
+///  Two sequences with equal sem() at every position have equal vec_val.
+pub proof fn lemma_vec_val_eq_from_sem_eq<T: LimbOps>(a: Seq<T>, b: Seq<T>)
+    requires a.len() == b.len(),
+        forall |j: int| 0 <= j < a.len() ==> (#[trigger] a[j]).sem() == b[j].sem(),
+    ensures vec_val(a) == vec_val(b)
+{
+    assert(sem_seq(a) =~= sem_seq(b));
+}
+
 ///  limbs_val of all-zeros is 0.
 pub proof fn lemma_limbs_val_zeros(n: nat)
     ensures limbs_val(Seq::new(n, |_i: int| 0int)) == 0int,
