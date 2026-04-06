@@ -865,6 +865,106 @@ pub fn slice_vec_to<T: LimbOps>(a: &Vec<T>, start: usize, end: usize, out: &mut 
     }
 }
 
+///  Signed addition writing to output buffer. GPU-compatible (branchless via select).
+///  a has sign a_sign (0=pos, 1=neg), b has sign b_sign. Result in out with returned sign.
+///  Same algorithm as GenericFixedPoint::signed_add but with output parameters.
+pub fn signed_add_to<T: LimbOps>(
+    a: &Vec<T>, a_sign: &T, b: &Vec<T>, b_sign: &T,
+    out: &mut Vec<T>, n: usize,
+) -> (out_sign: T)
+    requires
+        a@.len() == n, b@.len() == n, old(out)@.len() >= n,
+        valid_limbs(a@), valid_limbs(b@),
+        a_sign.sem() == 0 || a_sign.sem() == 1,
+        b_sign.sem() == 0 || b_sign.sem() == 1,
+    ensures out@.len() == old(out)@.len(),
+        out_sign.sem() == 0 || out_sign.sem() == 1,
+{
+    let ghost out_len = out@.len();
+
+    // Compute sum (for same-sign case)
+    let (sum, _sum_carry) = generic_add_limbs(a, b, n);
+    // Compute a - b
+    let (a_minus_b, borrow_ab) = generic_sub_limbs(a, b, n);
+    // Compute b - a
+    let (b_minus_a, _borrow_ba) = generic_sub_limbs(b, a, n);
+
+    // same_sign indicator: is_zero(sign_diff) AND is_zero(sign_borrow)
+    let (sign_diff, sign_borrow) = a_sign.sub_borrow(b_sign, &T::zero_val());
+    let diff_zero = sign_diff.is_zero_limb();
+    let borrow_zero = sign_borrow.is_zero_limb();
+    let (same_sign, _) = diff_zero.mul2(&borrow_zero);
+
+    // diff_sign result: select based on borrow_ab (which magnitude is larger)
+    let diff_result = generic_select_vec(&borrow_ab, &a_minus_b, &b_minus_a, n);
+    let diff_sign = T::select_limb(&borrow_ab, a_sign.clone_limb(), b_sign.clone_limb());
+
+    // Final select: same_sign → sum, diff_sign → diff_result
+    let final_result = generic_select_vec(&same_sign, &sum, &diff_result, n);
+    let result_sign = T::select_limb(&same_sign, a_sign.clone_limb(), diff_sign);
+
+    // Copy to output
+    for i in 0..n
+        invariant out@.len() == out_len, out_len >= n,
+            final_result@.len() == n,
+    {
+        out.set(i, final_result[i].clone_limb());
+    }
+
+    result_sign
+}
+
+///  Signed subtraction writing to output buffer: a - b = a + (-b).
+pub fn signed_sub_to<T: LimbOps>(
+    a: &Vec<T>, a_sign: &T, b: &Vec<T>, b_sign: &T,
+    out: &mut Vec<T>, n: usize,
+) -> (out_sign: T)
+    requires
+        a@.len() == n, b@.len() == n, old(out)@.len() >= n,
+        valid_limbs(a@), valid_limbs(b@),
+        a_sign.sem() == 0 || a_sign.sem() == 1,
+        b_sign.sem() == 0 || b_sign.sem() == 1,
+    ensures out@.len() == old(out)@.len(),
+        out_sign.sem() == 0 || out_sign.sem() == 1,
+{
+    // Flip b's sign: 0→1, 1→0
+    let neg_b_sign = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
+    signed_add_to(a, a_sign, b, &neg_b_sign, out, n)
+}
+
+///  Signed fixed-point multiply writing to output buffer.
+///  Product goes to prod (must be >= 2n), result extracted to out.
+///  Sign = XOR of input signs.
+pub fn signed_mul_to<T: LimbOps>(
+    a: &Vec<T>, a_sign: &T, b: &Vec<T>, b_sign: &T,
+    out: &mut Vec<T>, prod: &mut Vec<T>,
+    n: usize, frac_limbs: usize,
+) -> (out_sign: T)
+    requires
+        a@.len() == n, b@.len() == n,
+        n > 0, n <= 0x1FFF_FFFF,
+        valid_limbs(a@), valid_limbs(b@),
+        old(out)@.len() >= n,
+        old(prod)@.len() >= 2 * n,
+        frac_limbs + n <= 2 * n,
+        frac_limbs + n < usize::MAX,
+        a_sign.sem() == 0 || a_sign.sem() == 1,
+        b_sign.sem() == 0 || b_sign.sem() == 1,
+    ensures out@.len() == old(out)@.len(),
+        prod@.len() == old(prod)@.len(),
+        out_sign.sem() == 0 || out_sign.sem() == 1,
+{
+    // Multiply magnitudes
+    mul_schoolbook_to(a, b, prod, n);
+
+    // Extract fixed-point result
+    slice_vec_to(prod, frac_limbs, frac_limbs + n, out, 0);
+
+    // Sign XOR via select
+    let sign_b_flipped = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
+    T::select_limb(a_sign, b_sign.clone_limb(), sign_b_flipped)
+}
+
 //  ══════════════════════════════════════════════════════════════
 //  Generic scalar multiplication (a * scalar)
 //  ══════════════════════════════════════════════════════════════
