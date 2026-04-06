@@ -40,6 +40,12 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         &&& (self.sign.sem() == 0 || self.sign.sem() == 1)
     }
 
+    /// The truncated fixed-point product: floor(a * b / scale) mod P.
+    /// This is what signed_mul computes for the magnitude.
+    pub open spec fn truncated_product_spec(a_val: int, b_val: int, frac_limbs: nat, n: nat) -> int {
+        ((a_val * b_val) / limb_power(frac_limbs)) % limb_power(n)
+    }
+
     ///  The unsigned limb value (before sign).
     pub open spec fn unsigned_val(&self) -> int {
         vec_val(self.limbs@)
@@ -197,11 +203,14 @@ impl<T: LimbOps> GenericFixedPoint<T> {
             // Sign is XOR of input signs (positive * positive = positive, etc.)
             (self.sign.sem() == other.sign.sem()) ==> out.sign.sem() == 0,
             (self.sign.sem() != other.sign.sem()) ==> out.sign.sem() == 1,
-            // Magnitude: the Karatsuba product has no ghost carry (gc == 0),
-            // meaning the 2n-limb product exactly equals a * b.
-            // The output is then the correct slice of this exact product.
-            // This catches wrong product algorithm or overflow.
+            // Magnitude: product fits in 2n limbs (no overflow)
             self.unsigned_val() * other.unsigned_val() < limb_power((2 * self.n_exec) as nat),
+            // Magnitude: output is the truncated product.
+            // a*b = lo + out*scale + hi*P*scale, where 0 <= lo < scale.
+            // This catches wrong slice offset and wrong product algorithm.
+            out.unsigned_val() == Self::truncated_product_spec(
+                self.unsigned_val(), other.unsigned_val(),
+                (self.frac_exec / 32) as nat, self.n_spec()),
     {
         use crate::fixed_point::limb_ops::{generic_mul_karatsuba, generic_slice_vec};
         let n = self.n_exec;
@@ -217,8 +226,17 @@ impl<T: LimbOps> GenericFixedPoint<T> {
             assert(sa == 0 || sa == 1);
             assert(sb == 0 || sb == 1);
 
+            // Prove gc == 0 (product fits in 2n limbs)
             Self::lemma_signed_mul_magnitude(
                 &self.limbs, &other.limbs, &product, &_gc, &truncated,
+                n, frac_limbs,
+            );
+            // Now vec_val(product@) == a * b
+            assert(vec_val(product@) == vec_val(self.limbs@) * vec_val(other.limbs@));
+
+            // Prove truncated == floor(a*b/scale) mod P
+            Self::lemma_truncated_product(
+                &self.limbs, &other.limbs, &product, &truncated,
                 n, frac_limbs,
             );
         }
@@ -393,6 +411,8 @@ impl<T: LimbOps> GenericFixedPoint<T> {
             n > 0,
         ensures
             vec_val(a_limbs@) * vec_val(b_limbs@) < limb_power((2 * n) as nat),
+            vec_val(product@) == vec_val(a_limbs@) * vec_val(b_limbs@),
+            gc@ == 0,
     {
         use crate::fixed_point::limb_ops::lemma_vec_val_bounded;
         let P = limb_power(n as nat);
@@ -414,6 +434,96 @@ impl<T: LimbOps> GenericFixedPoint<T> {
                 vec_val(a_limbs@) * vec_val(b_limbs@) < P * P,
                 P > 0;
     }
+    /// Proof helper: truncated product equals floor(a*b/scale) mod P.
+    /// Decomposes product via lemma_vec_val_split, then derives div/mod.
+    proof fn lemma_truncated_product(
+        a_limbs: &Vec<T>, b_limbs: &Vec<T>,
+        product: &Vec<T>, truncated: &Vec<T>,
+        n: usize, frac_limbs: usize,
+    )
+        requires
+            a_limbs@.len() == n, b_limbs@.len() == n,
+            valid_limbs(a_limbs@), valid_limbs(b_limbs@),
+            product@.len() == 2 * n, valid_limbs(product@),
+            // product == a * b (gc == 0, from lemma_signed_mul_magnitude)
+            vec_val(product@) == vec_val(a_limbs@) * vec_val(b_limbs@),
+            // truncated = product[frac_limbs..frac_limbs+n]
+            truncated@.len() == n,
+            valid_limbs(truncated@),
+            forall |j: int| 0 <= j < n as int ==>
+                (#[trigger] truncated@[j]).sem() == product@[(frac_limbs + j) as int].sem(),
+            frac_limbs + n <= 2 * n,
+            frac_limbs <= n,
+            n > 0,
+        ensures
+            vec_val(truncated@) == Self::truncated_product_spec(
+                vec_val(a_limbs@), vec_val(b_limbs@), frac_limbs as nat, n as nat),
+    {
+        use crate::fixed_point::limb_ops::{lemma_vec_val_split, lemma_vec_val_bounded,
+            lemma_vec_val_eq_from_sem_eq};
+
+        let scale = limb_power(frac_limbs as nat);
+        let P = limb_power(n as nat);
+        let ab = vec_val(a_limbs@) * vec_val(b_limbs@);
+
+        // Step 1: Split product at frac_limbs → lo + upper * scale
+        lemma_vec_val_split::<T>(product@, frac_limbs as nat);
+        let lo = vec_val(product@.subrange(0, frac_limbs as int));
+        let upper_seq = product@.subrange(frac_limbs as int, product@.len() as int);
+
+        // Step 2: Split upper at n → mid + hi * P
+        lemma_vec_val_split::<T>(upper_seq, n as nat);
+        let mid = vec_val(upper_seq.subrange(0, n as int));
+        let hi = vec_val(upper_seq.subrange(n as int, upper_seq.len() as int));
+
+        // Step 3: truncated == mid (same limbs)
+        lemma_vec_val_eq_from_sem_eq::<T>(truncated@, upper_seq.subrange(0, n as int));
+        assert(vec_val(truncated@) == mid);
+
+        // Step 4: Bounds
+        lemma_vec_val_bounded::<T>(product@.subrange(0, frac_limbs as int));
+        assert(0 <= lo && lo < scale);
+        lemma_vec_val_bounded::<T>(truncated@);
+        assert(0 <= mid && mid < P);
+        lemma_vec_val_bounded::<T>(upper_seq.subrange(n as int, upper_seq.len() as int));
+        assert(hi >= 0);
+
+        // Step 5: ab = lo + (mid + hi*P) * scale
+        assert(ab == lo + (mid + hi * P) * scale) by(nonlinear_arith)
+            requires
+                ab == lo + vec_val(upper_seq) * scale,
+                vec_val(upper_seq) == mid + hi * P;
+
+        // Step 6: ab % scale == lo
+        // ab = (mid + hi*P)*scale + lo, with 0 <= lo < scale
+        // lemma_mod_multiples_vanish: (scale * a + b) % scale == b % scale
+        assert(ab % scale == lo) by {
+            assert(ab == scale * (mid + hi * P) + lo) by(nonlinear_arith)
+                requires ab == lo + (mid + hi * P) * scale;
+            vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(mid + hi * P, lo, scale);
+            vstd::arithmetic::div_mod::lemma_small_mod(lo as nat, scale as nat);
+        };
+
+        // Step 7: ab / scale == mid + hi * P
+        // Rewrite step 5 in commuted form for nonlinear_arith
+        assert(ab == scale * (mid + hi * P) + lo) by(nonlinear_arith)
+            requires ab == lo + (mid + hi * P) * scale;
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(ab, scale);
+        assert(ab / scale == mid + hi * P) by(nonlinear_arith)
+            requires
+                ab == scale * (ab / scale) + ab % scale,
+                ab % scale == lo,
+                ab == scale * (mid + hi * P) + lo,
+                scale > 0;
+
+        // Step 8: (mid + hi*P) % P == mid
+        assert((mid + hi * P) % P == mid) by {
+            assert(mid + hi * P == P * hi + mid) by(nonlinear_arith);
+            vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(hi, mid, P);
+            vstd::arithmetic::div_mod::lemma_small_mod(mid as nat, P as nat);
+        };
+    }
+
     ///  Check if all limbs are zero. Returns a T limb: 1 if zero, 0 if nonzero.
     ///  GPU-friendly: uses or_limb to accumulate, then is_zero_limb.
     pub fn is_zero_indicator(&self) -> (out: T)
