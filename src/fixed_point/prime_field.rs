@@ -1423,6 +1423,56 @@ impl<T: LimbOps> RuntimePrimeField<T> {
         }
     }
 
+    ///  Modular multiplication using schoolbook multiply (GPU-compatible, no recursion).
+    ///  Same result as mul_mod but uses O(n²) schoolbook instead of Karatsuba.
+    pub fn mul_mod_schoolbook(&self, other: &Self) -> (out: Self)
+        requires
+            self.wf(), other.wf(), self.same_field(other),
+            self.n_exec >= 2, self.n_exec <= 0x1FFF_FFFF,
+        ensures
+            out.wf(), out.same_field(self),
+            out.model@ == ((self.model@ * other.model@) % self.prime_spec()),
+    {
+        let n = self.n_exec;
+        let c = self.c_exec;
+        let (product, _gc) = generic_mul_schoolbook(&self.limbs, &other.limbs, n);
+        let r = mersenne_reduce_exec(&product, n, c);
+        proof {
+            lemma_vec_val_bounded(product@);
+            lemma_vec_val_bounded(self.limbs@);
+            lemma_vec_val_bounded(other.limbs@);
+            lemma_limb_power_add(n as nat, n as nat);
+            let lp = limb_power(n as nat);
+            assert(_gc@ == 0int) by(nonlinear_arith)
+                requires vec_val(product@) + _gc@ * limb_power((2*n) as nat) == vec_val(self.limbs@) * vec_val(other.limbs@),
+                    0 <= vec_val(product@), vec_val(product@) < limb_power((2*n) as nat),
+                    0 <= vec_val(self.limbs@), vec_val(self.limbs@) < lp,
+                    0 <= vec_val(other.limbs@), vec_val(other.limbs@) < lp,
+                    limb_power((2*n) as nat) == lp * lp, lp > 0;
+            assert(vec_val(product@) == vec_val(self.limbs@) * vec_val(other.limbs@)) by(nonlinear_arith)
+                requires vec_val(product@) + _gc@ * limb_power((2*n) as nat)
+                    == vec_val(self.limbs@) * vec_val(other.limbs@), _gc@ == 0int;
+            assert(vec_val(product@) as nat == self.model@ * other.model@) by(nonlinear_arith)
+                requires vec_val(product@) == vec_val(self.limbs@) * vec_val(other.limbs@),
+                    self.model@ == vec_val(self.limbs@) as nat,
+                    other.model@ == vec_val(other.limbs@) as nat,
+                    vec_val(self.limbs@) >= 0, vec_val(other.limbs@) >= 0;
+            let p = self.prime_spec();
+            lemma_vec_val_bounded(r@);
+            assert(vec_val(r@) as nat % p == vec_val(product@) as nat % p);
+            assert(vec_val(r@) as nat == (self.model@ * other.model@) % p) by(nonlinear_arith)
+                requires vec_val(r@) as nat % p == vec_val(product@) as nat % p,
+                    vec_val(product@) as nat == self.model@ * other.model@,
+                    (vec_val(r@) as nat) < p, p > 0;
+        }
+        RuntimePrimeField {
+            limbs: r,
+            n_exec: n,
+            c_exec: c,
+            model: Ghost(((self.model@ * other.model@) % self.prime_spec()) as nat),
+        }
+    }
+
 }
 
 } // verus!
