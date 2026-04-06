@@ -193,17 +193,17 @@ impl<T: LimbOps> GenericFixedPoint<T> {
             // Sign is XOR of input signs (positive * positive = positive, etc.)
             (self.sign.sem() == other.sign.sem()) ==> out.sign.sem() == 0,
             (self.sign.sem() != other.sign.sem()) ==> out.sign.sem() == 1,
-            // Magnitude: output limbs are the product limbs at offset frac_limbs.
-            // This catches wrong slice offset in the truncation.
-            // Full magnitude proof (out = floor(a*b/scale) mod P) deferred:
-            // involves division/mod that Z3 times out on.
+            // Magnitude: the Karatsuba product has no ghost carry (gc == 0),
+            // meaning the 2n-limb product exactly equals a * b.
+            // The output is then the correct slice of this exact product.
+            // This catches wrong product algorithm or overflow.
+            self.unsigned_val() * other.unsigned_val() < limb_power((2 * self.n_exec) as nat),
     {
         use crate::fixed_point::limb_ops::{generic_mul_karatsuba, generic_slice_vec};
         let n = self.n_exec;
         let frac_limbs = self.frac_exec / 32;
         let (product, _gc) = generic_mul_karatsuba(&self.limbs, &other.limbs, n);
         let truncated = generic_slice_vec(&product, frac_limbs, frac_limbs + n);
-        // Sign XOR via select: if sign_a==0 → result=sign_b, if sign_a==1 → result=flip(sign_b)
         let sign_b_flipped = T::select_limb(&other.sign, T::const_u32(1u32), T::zero_val());
         let result_sign = T::select_limb(&self.sign, other.sign.clone_limb(), sign_b_flipped);
 
@@ -212,6 +212,11 @@ impl<T: LimbOps> GenericFixedPoint<T> {
             let sb = other.sign.sem();
             assert(sa == 0 || sa == 1);
             assert(sb == 0 || sb == 1);
+
+            Self::lemma_signed_mul_magnitude(
+                &self.limbs, &other.limbs, &product, &_gc, &truncated,
+                n, frac_limbs,
+            );
         }
 
         GenericFixedPoint {
@@ -322,6 +327,45 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         }
     }
 
+    /// Proof helper: product of two n-limb values fits in 2n limbs (gc == 0).
+    proof fn lemma_signed_mul_magnitude(
+        a_limbs: &Vec<T>, b_limbs: &Vec<T>,
+        product: &Vec<T>, gc: &Ghost<int>, truncated: &Vec<T>,
+        n: usize, frac_limbs: usize,
+    )
+        requires
+            a_limbs@.len() == n, b_limbs@.len() == n,
+            valid_limbs(a_limbs@), valid_limbs(b_limbs@),
+            product@.len() == 2 * n, valid_limbs(product@),
+            vec_val(product@) + gc@ * limb_power((2 * n) as nat) == vec_val(a_limbs@) * vec_val(b_limbs@),
+            truncated@.len() == n,
+            forall |j: int| 0 <= j < n as int ==>
+                (#[trigger] truncated@[j]).sem() == product@[(frac_limbs + j) as int].sem(),
+            frac_limbs + n <= 2 * n,
+            n > 0,
+        ensures
+            vec_val(a_limbs@) * vec_val(b_limbs@) < limb_power((2 * n) as nat),
+    {
+        use crate::fixed_point::limb_ops::lemma_vec_val_bounded;
+        let P = limb_power(n as nat);
+        lemma_vec_val_bounded::<T>(a_limbs@);
+        lemma_vec_val_bounded::<T>(b_limbs@);
+        lemma_vec_val_bounded::<T>(product@);
+        assert(vec_val(a_limbs@) * vec_val(b_limbs@) < P * P) by(nonlinear_arith)
+            requires 0 <= vec_val(a_limbs@), vec_val(a_limbs@) < P,
+                     0 <= vec_val(b_limbs@), vec_val(b_limbs@) < P, P > 0;
+        // limb_power(2n) == P * P
+        crate::fixed_point::limb_ops::lemma_limb_power_add(n as nat, n as nat);
+        assert(limb_power((2 * n) as nat) == P * P);
+        // gc == 0: product_val + gc*P² == a*b, both in [0, P²)
+        assert(gc@ == 0) by(nonlinear_arith)
+            requires
+                vec_val(product@) + gc@ * (P * P) == vec_val(a_limbs@) * vec_val(b_limbs@),
+                0 <= vec_val(product@), vec_val(product@) < P * P,
+                vec_val(a_limbs@) * vec_val(b_limbs@) >= 0,
+                vec_val(a_limbs@) * vec_val(b_limbs@) < P * P,
+                P > 0;
+    }
     ///  Check if all limbs are zero. Returns a T limb: 1 if zero, 0 if nonzero.
     ///  GPU-friendly: uses or_limb to accumulate, then is_zero_limb.
     pub fn is_zero_indicator(&self) -> (out: T)
