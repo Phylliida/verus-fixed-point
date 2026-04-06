@@ -682,6 +682,8 @@ pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
         result.0@.len() == n,
         valid_limbs(result.0@),
         0 <= result.1.sem() < LIMB_BASE(),
+        // Strengthened: carry is exactly 0 or 1 (not just < LIMB_BASE)
+        result.1.sem() == 0 || result.1.sem() == 1,
         limbs_val(sem_seq(result.0@)) + result.1.sem() * limb_power(n as nat)
             == limbs_val(sem_seq(a@)) + limbs_val(sem_seq(b@)),
 {
@@ -753,6 +755,23 @@ pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
     proof {
         assert(sa.subrange(0, sa.len() as int) =~= sa);
         assert(sb.subrange(0, sb.len() as int) =~= sb);
+        // Derive carry ≤ 1: result < P, a < P, b < P → a+b < 2P
+        // result + carry*P = a+b < 2P, result >= 0 → carry*P < 2P → carry < 2
+        lemma_vec_val_bounded::<T>(out@);
+        lemma_vec_val_bounded::<T>(a@);
+        lemma_vec_val_bounded::<T>(b@);
+        let P = limb_power(n as nat);
+        // vec_val == limbs_val(sem_seq(...))
+        assert(vec_val(out@) == limbs_val(sem_seq(out@)));
+        assert(vec_val(a@) == limbs_val(sa));
+        assert(vec_val(b@) == limbs_val(sb));
+        assert(carry.sem() <= 1) by(nonlinear_arith)
+            requires
+                vec_val(out@) + carry.sem() * P == vec_val(a@) + vec_val(b@),
+                0 <= vec_val(out@) && vec_val(out@) < P,
+                0 <= vec_val(a@) && vec_val(a@) < P,
+                0 <= vec_val(b@) && vec_val(b@) < P,
+                carry.sem() >= 0, P > 0;
     }
 
     (out, carry)
