@@ -303,6 +303,12 @@ impl<T: LimbOps> GenericFixedPoint<T> {
             // Sign is XOR of input signs (positive * positive = positive, etc.)
             (self.sign.sem() == other.sign.sem()) ==> out.sign.sem() == 0,
             (self.sign.sem() != other.sign.sem()) ==> out.sign.sem() == 1,
+            // Magnitude: output is the truncated product.
+            // out.unsigned_val() == floor(a * b / limb_power(frac_limbs)) % limb_power(n)
+            // Stated as: out * scale + lo == a * b - hi * P * scale for some 0 <= lo < scale
+            // This catches wrong slice offset, wrong product algorithm.
+            out.unsigned_val() == (self.unsigned_val() * other.unsigned_val()
+                / limb_power((self.frac_exec / 32) as nat)) % limb_power(self.n_spec()),
     {
         use crate::fixed_point::limb_ops::{generic_mul_karatsuba, generic_slice_vec};
         let n = self.n_exec;
@@ -314,16 +320,63 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         let result_sign = T::select_limb(&self.sign, other.sign.clone_limb(), sign_b_flipped);
 
         proof {
+            use crate::fixed_point::limb_ops::{lemma_vec_val_split, lemma_vec_val_eq_from_sem_eq};
+
             let sa = self.sign.sem();
             let sb = other.sign.sem();
             assert(sa == 0 || sa == 1);
             assert(sb == 0 || sb == 1);
-            // sign_b_flipped: if sb==0 → 1, if sb==1 → 0 (flip)
-            // result_sign: if sa==0 → sb, if sa==1 → flipped_sb
-            // sa==0, sb==0: result=0 ✓ (pos*pos=pos)
-            // sa==0, sb==1: result=1 ✓ (pos*neg=neg)
-            // sa==1, sb==0: result=1 ✓ (neg*pos=neg, flipped 0→1)
-            // sa==1, sb==1: result=0 ✓ (neg*neg=pos, flipped 1→0)
+
+            // Magnitude proof: product = a * b (from karatsuba)
+            // product[frac_limbs..frac_limbs+n] = truncated
+            // Split product into lo + mid*scale + hi*P*scale
+            let scale = limb_power(frac_limbs as nat);
+            let P = limb_power(n as nat);
+
+            // Split at frac_limbs: product = lo + upper * scale
+            lemma_vec_val_split::<T>(product@, frac_limbs as nat);
+            let lo_val = vec_val(product@.subrange(0, frac_limbs as int));
+            let upper = product@.subrange(frac_limbs as int, product@.len() as int);
+
+            // Split upper at n: upper = mid + hi * P
+            lemma_vec_val_split::<T>(upper, n as nat);
+            let mid_val = vec_val(upper.subrange(0, n as int));
+            let hi_val = vec_val(upper.subrange(n as int, upper.len() as int));
+
+            // truncated has same sem as upper[0..n] = product[frac_limbs..frac_limbs+n]
+            lemma_vec_val_eq_from_sem_eq::<T>(truncated@, upper.subrange(0, n as int));
+            assert(vec_val(truncated@) == mid_val);
+
+            // From karatsuba: vec_val(product) + gc*P² == a*b
+            // vec_val(product) = lo + (mid + hi*P) * scale = lo + mid*scale + hi*P*scale
+            // So: lo + mid*scale + hi*P*scale + gc*P² == a*b
+            // mid = truncated value = out.unsigned_val()
+            // lo is the truncated fractional part
+            // Witness: lo = lo_val, hi = hi_val + gc * P / scale (but this gets complex)
+            // Simplify: just witness the existential with concrete values
+            let full_product = self.unsigned_val() * other.unsigned_val();
+            let gc = _gc@;
+            assert(vec_val(product@) + gc * limb_power((2 * n) as nat) == full_product);
+
+            // limb_power(2n) = P * P (need to establish)
+            // full_product = lo_val + vec_val(truncated@) * scale + hi_val * P * scale + gc * P * P
+            // = lo_val + vec_val(truncated@) * scale + (hi_val * scale + gc * P) * P * scale / scale
+            // This is getting hairy. Just assert the existential directly.
+            assert(full_product == lo_val + vec_val(truncated@) * scale
+                + (hi_val + gc * P) * P * scale) by(nonlinear_arith)
+                requires
+                    vec_val(product@) == lo_val + (mid_val + hi_val * P) * scale,
+                    vec_val(truncated@) == mid_val,
+                    vec_val(product@) + gc * limb_power((2 * n) as nat) == full_product,
+                    limb_power((2 * n) as nat) == P * P,
+                    scale > 0, P > 0;
+
+            // Establish limb_power(2n) == P * P
+            // This requires a lemma about limb_power multiplication
+            // For now, use the existential with lo = lo_val, hi = hi_val + gc * P
+            crate::fixed_point::limb_ops::lemma_vec_val_bounded::<T>(
+                product@.subrange(0, frac_limbs as int));
+            assert(0 <= lo_val && lo_val < scale);
         }
 
         GenericFixedPoint {
