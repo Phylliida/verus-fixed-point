@@ -16,6 +16,7 @@ pub mod ntt;
 pub mod newton_convergence;
 pub mod limb_ops;
 pub mod prime_field;
+pub mod bounded_prime_field;
 
 verus! {
 
