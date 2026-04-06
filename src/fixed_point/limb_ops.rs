@@ -84,6 +84,18 @@ pub trait LimbOps : Sized {
         ensures
             out.sem() == if cond.sem() == 0 { if_zero.sem() } else { if_nonzero.sem() },
             0 <= out.sem() < LIMB_BASE();
+
+    ///  Check if limb is zero. Returns 1 if zero, 0 if nonzero. GPU-friendly (branchless).
+    fn is_zero_limb(&self) -> (out: Self)
+        ensures
+            out.sem() == if self.sem() == 0 { 1int } else { 0int },
+            out.sem() == 0 || out.sem() == 1;
+
+    ///  Bitwise OR of two limbs. For accumulating "any nonzero" checks.
+    fn or_limb(&self, other: &Self) -> (out: Self)
+        ensures out.sem() == 0 ==> (self.sem() == 0 && other.sem() == 0),
+            (self.sem() != 0 || other.sem() != 0) ==> out.sem() != 0,
+            0 <= out.sem() < LIMB_BASE();
 }
 
 //  ══════════════════════════════════════════════════════════════
@@ -495,6 +507,17 @@ impl LimbOps for u32 {
 
     fn select_limb(cond: &Self, if_zero: Self, if_nonzero: Self) -> (out: Self) {
         if *cond == 0u32 { if_zero } else { if_nonzero }
+    }
+
+    fn is_zero_limb(&self) -> (out: Self) {
+        if *self == 0u32 { 1u32 } else { 0u32 }
+    }
+
+    fn or_limb(&self, other: &Self) -> (out: Self) {
+        proof {
+            assert((*self | *other) == 0u32 <==> (*self == 0u32 && *other == 0u32)) by(bit_vector);
+        }
+        *self | *other
     }
 }
 

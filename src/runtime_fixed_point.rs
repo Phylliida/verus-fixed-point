@@ -20,9 +20,10 @@ verus! {
 use crate::fixed_point::limb_ops::{LimbOps, valid_limbs, vec_val, LIMB_BASE, limb_power};
 
 ///  Generic exec-level fixed-point number over any LimbOps type.
+///  Sign is a T limb (0 = positive, 1 = negative) for GPU compatibility.
 pub struct GenericFixedPoint<T: LimbOps> {
     pub limbs: Vec<T>,
-    pub sign: bool,
+    pub sign: T,           // 0 = positive, 1 = negative (as a limb, not bool)
     pub n_exec: usize,
     pub frac_exec: usize,
 }
@@ -36,6 +37,7 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         &&& self.n_exec > 0
         &&& self.frac_exec <= self.n_exec * 32
         &&& valid_limbs(self.limbs@)
+        &&& (self.sign.sem() == 0 || self.sign.sem() == 1)
     }
 
     ///  The unsigned limb value (before sign).
@@ -51,98 +53,24 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         use crate::fixed_point::limb_ops::generic_zero_vec;
         GenericFixedPoint {
             limbs: generic_zero_vec(n),
-            sign: false,
+            sign: T::zero_val(),
             n_exec: n,
             frac_exec: frac,
         }
     }
 
-    ///  Add (same format, unsigned, modular — carry is dropped).
-    pub fn add(&self, other: &Self) -> (out: Self)
-        requires self.wf_spec(), other.wf_spec(),
-            self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
+    ///  Negate: flip sign (0→1, 1→0) using XOR with 1.
+    pub fn neg(&self) -> (out: Self)
+        requires self.wf_spec(),
         ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
-            out.unsigned_val() == (self.unsigned_val() + other.unsigned_val()) % limb_power(self.n_spec()),
     {
-        use crate::fixed_point::limb_ops::{generic_add_limbs, lemma_vec_val_bounded as lvb};
-        let (sum, carry) = generic_add_limbs(&self.limbs, &other.limbs, self.n_exec);
-        proof {
-            lvb(sum@);
-            let lp = limb_power(self.n_exec as nat);
-            assert(vec_val(sum@) == (vec_val(self.limbs@) + vec_val(other.limbs@)) % lp)
-                by(nonlinear_arith)
-                requires
-                    vec_val(sum@) + carry.sem() * lp
-                        == vec_val(self.limbs@) + vec_val(other.limbs@),
-                    0 <= vec_val(sum@),
-                    vec_val(sum@) < lp,
-                    carry.sem() >= 0,
-                    lp > 0;
-        }
+        use crate::fixed_point::limb_ops::generic_slice_vec;
+        // Flip: select_limb(sign, 1, 0) — if sign==0 return 1, if sign==1 return 0
+        let new_sign = T::select_limb(&self.sign, T::const_u32(1u32), T::zero_val());
         GenericFixedPoint {
-            limbs: sum,
-            sign: false,
+            limbs: generic_slice_vec(&self.limbs, 0, self.n_exec),
+            sign: new_sign,
             n_exec: self.n_exec,
-            frac_exec: self.frac_exec,
-        }
-    }
-
-    ///  Subtract (same format, unsigned, modular — borrow is dropped).
-    pub fn sub(&self, other: &Self) -> (out: Self)
-        requires self.wf_spec(), other.wf_spec(),
-            self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
-        ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
-            out.unsigned_val() == (self.unsigned_val() - other.unsigned_val() + limb_power(self.n_spec())) % limb_power(self.n_spec()),
-    {
-        use crate::fixed_point::limb_ops::{generic_sub_limbs, lemma_vec_val_bounded as lvb};
-        let (diff, borrow) = generic_sub_limbs(&self.limbs, &other.limbs, self.n_exec);
-        proof {
-            lvb(diff@);
-            let lp = limb_power(self.n_exec as nat);
-            //  generic_sub_limbs: vec_val(diff) + vec_val(b) == vec_val(a) + borrow * lp
-            //  → vec_val(diff) == vec_val(a) - vec_val(b) + borrow * lp
-            //  borrow is 0 or 1, 0 <= vec_val(diff) < lp
-            //  → vec_val(diff) == (vec_val(a) - vec_val(b) + lp) % lp
-            assert(vec_val(diff@) == (vec_val(self.limbs@) - vec_val(other.limbs@) + lp) % lp)
-                by(nonlinear_arith)
-                requires
-                    vec_val(diff@) + vec_val(other.limbs@)
-                        == vec_val(self.limbs@) + borrow.sem() * lp,
-                    0 <= vec_val(diff@),
-                    vec_val(diff@) < lp,
-                    borrow.sem() == 0 || borrow.sem() == 1,
-                    lp > 0;
-        }
-        GenericFixedPoint {
-            limbs: diff,
-            sign: false,
-            n_exec: self.n_exec,
-            frac_exec: self.frac_exec,
-        }
-    }
-
-    ///  Multiply with fixed-point truncation.
-    ///  a * b → 2n limbs → take limbs frac_limbs..frac_limbs+n (shift right by frac).
-    ///  Result value = (a * b / limb_power(frac_limbs)) mod limb_power(n).
-    pub fn mul(&self, other: &Self) -> (out: Self)
-        requires self.wf_spec(), other.wf_spec(),
-            self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
-            self.n_exec > 0, self.n_exec <= 0x1FFF_FFFF,
-            self.frac_exec % 32 == 0,
-        ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
-            //  Full product is exact: gc == 0, so vec_val(product) == a_val * b_val
-            //  Truncation extracts limbs frac_limbs..frac_limbs+n
-    {
-        use crate::fixed_point::limb_ops::{generic_mul_karatsuba, generic_slice_vec};
-        let n = self.n_exec;
-        let frac_limbs = self.frac_exec / 32;
-        let (product, _gc) = generic_mul_karatsuba(&self.limbs, &other.limbs, n);
-        //  Fixed-point truncation: take limbs frac_limbs..frac_limbs+n from 2n product
-        let truncated = generic_slice_vec(&product, frac_limbs, frac_limbs + n);
-        GenericFixedPoint {
-            limbs: truncated,
-            sign: false,
-            n_exec: n,
             frac_exec: self.frac_exec,
         }
     }
@@ -154,10 +82,194 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         use crate::fixed_point::limb_ops::generic_slice_vec;
         GenericFixedPoint {
             limbs: generic_slice_vec(&self.limbs, 0, self.n_exec),
-            sign: self.sign,
+            sign: self.sign.clone_limb(),
             n_exec: self.n_exec,
             frac_exec: self.frac_exec,
         }
+    }
+
+    ///  Signed addition using branchless select. GPU-compatible.
+    ///  (+a) + (+b) = +(a + b)      same sign: add magnitudes
+    ///  (+a) + (-b) = ±(|a| - |b|)  diff sign: sub, sign from larger
+    pub fn signed_add(&self, other: &Self) -> (out: Self)
+        requires self.wf_spec(), other.wf_spec(),
+            self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
+        ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
+    {
+        use crate::fixed_point::limb_ops::{generic_add_limbs, generic_sub_limbs, generic_select_vec};
+        let n = self.n_exec;
+
+        // Compute both add and sub results (branchless)
+        let (sum, _carry) = generic_add_limbs(&self.limbs, &other.limbs, n);
+        let (a_minus_b, borrow_ab) = generic_sub_limbs(&self.limbs, &other.limbs, n);
+        let (b_minus_a, _borrow_ba) = generic_sub_limbs(&other.limbs, &self.limbs, n);
+
+        // same_sign indicator: 1 if signs equal, 0 if different
+        // signs equal iff (sign_a XOR sign_b) == 0
+        // XOR via: (a - b) borrow or (a + b - 1) overflow... simpler:
+        // same_sign = is_zero(sign_a - sign_b + BASE) % BASE ≈ sign_a == sign_b
+        // Use: sub_borrow(sign_a, sign_b, 0). If borrow=0 and diff=0, they're equal.
+        // If borrow=0 and diff=1, sign_a=1 sign_b=0. If borrow=1, sign_a=0 sign_b=1.
+        let (sign_diff, sign_borrow) = self.sign.sub_borrow(&other.sign, &T::zero_val());
+        // same_sign = is_zero(sign_diff) AND is_zero(sign_borrow)
+        let diff_zero = sign_diff.is_zero_limb();
+        let borrow_zero = sign_borrow.is_zero_limb();
+        // same_sign = diff_zero AND borrow_zero. Both are 0 or 1.
+        // AND via mul2: a*b where a,b ∈ {0,1} → lo = a*b, hi = 0
+        let (same_sign, _) = diff_zero.mul2(&borrow_zero);
+
+        // If same_sign: result = sum with self.sign
+        // If diff_sign: result = |bigger| - |smaller|
+        //   borrow_ab==0 → |self|>=|other|, use a_minus_b with self.sign
+        //   borrow_ab==1 → |other|>|self|, use b_minus_a with other.sign
+
+        // diff_sign result limbs: select based on borrow_ab
+        let diff_result = generic_select_vec(&borrow_ab, &a_minus_b, &b_minus_a, n);
+        // diff_sign result sign: select_limb(borrow_ab, self.sign, other.sign)
+        let diff_sign = T::select_limb(&borrow_ab, self.sign.clone_limb(), other.sign.clone_limb());
+
+        // Final: select between same-sign and diff-sign results
+        let result_limbs = generic_select_vec(&same_sign, &sum, &diff_result, n);
+        let result_sign = T::select_limb(&same_sign, self.sign.clone_limb(), diff_sign);
+
+        GenericFixedPoint {
+            limbs: result_limbs, sign: result_sign,
+            n_exec: n, frac_exec: self.frac_exec,
+        }
+    }
+
+    ///  Signed subtraction: a - b = a + (-b).
+    pub fn signed_sub(&self, other: &Self) -> (out: Self)
+        requires self.wf_spec(), other.wf_spec(),
+            self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
+        ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
+    {
+        let neg_other = other.neg();
+        self.signed_add(&neg_other)
+    }
+
+    ///  Signed multiply with fixed-point truncation. Karatsuba + shift.
+    ///  Sign = XOR of input signs.
+    pub fn signed_mul(&self, other: &Self) -> (out: Self)
+        requires self.wf_spec(), other.wf_spec(),
+            self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
+            self.n_exec > 0, self.n_exec <= 0x1FFF_FFFF,
+            self.frac_exec % 32 == 0,
+        ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
+    {
+        use crate::fixed_point::limb_ops::{generic_mul_karatsuba, generic_slice_vec};
+        let n = self.n_exec;
+        let frac_limbs = self.frac_exec / 32;
+        let (product, _gc) = generic_mul_karatsuba(&self.limbs, &other.limbs, n);
+        let truncated = generic_slice_vec(&product, frac_limbs, frac_limbs + n);
+        // Sign XOR via select: if sign_a==0 → result=sign_b, if sign_a==1 → result=flip(sign_b)
+        let sign_b_flipped = T::select_limb(&other.sign, T::const_u32(1u32), T::zero_val());
+        let result_sign = T::select_limb(&self.sign, other.sign.clone_limb(), sign_b_flipped);
+        GenericFixedPoint {
+            limbs: truncated,
+            sign: result_sign,
+            n_exec: n,
+            frac_exec: self.frac_exec,
+        }
+    }
+
+    ///  Check if all limbs are zero. Returns a T limb: 1 if zero, 0 if nonzero.
+    ///  GPU-friendly: uses or_limb to accumulate, then is_zero_limb.
+    pub fn is_zero_indicator(&self) -> (out: T)
+        requires self.wf_spec(), self.n_exec > 0,
+        ensures out.sem() == 0 || out.sem() == 1,
+    {
+        // OR all limbs together: if any is nonzero, result is nonzero
+        // Use subtraction from zero to check: 0 - self gives borrow=1 iff self > 0.
+        use crate::fixed_point::limb_ops::{generic_sub_limbs, generic_zero_vec};
+        let zeros: Vec<T> = generic_zero_vec(self.n_exec);
+        let (_diff, borrow) = generic_sub_limbs(&zeros, &self.limbs, self.n_exec);
+        // borrow.sem() == 0 iff self == 0 (since 0 - 0 = 0 with no borrow)
+        // borrow.sem() == 1 iff self > 0 (since 0 < self, borrow occurs)
+        // We want: 1 if zero, 0 if nonzero → flip borrow
+        T::select_limb(&borrow, T::const_u32(1u32), T::zero_val())
+    }
+
+    ///  Unsigned less-than indicator: returns T limb that's 1 if self < other, 0 otherwise.
+    ///  GPU-friendly (branchless).
+    pub fn unsigned_lt_indicator(&self, other: &Self) -> (out: T)
+        requires self.wf_spec(), other.wf_spec(),
+            self.n_exec == other.n_exec,
+        ensures out.sem() == 0 || out.sem() == 1,
+    {
+        use crate::fixed_point::limb_ops::generic_sub_limbs;
+        let (_diff, borrow) = generic_sub_limbs(&self.limbs, &other.limbs, self.n_exec);
+        // borrow.sem() == 1 iff self < other (unsigned)
+        borrow
+    }
+
+    ///  Unsigned greater-than indicator: returns T limb that's 1 if self > other, 0 otherwise.
+    pub fn unsigned_gt_indicator(&self, other: &Self) -> (out: T)
+        requires self.wf_spec(), other.wf_spec(),
+            self.n_exec == other.n_exec,
+        ensures out.sem() == 0 || out.sem() == 1,
+    {
+        other.unsigned_lt_indicator(self)
+    }
+
+    ///  Signed less-than indicator (GPU-friendly, returns T limb: 1 if self < other, 0 otherwise).
+    ///  Fully branchless using select_limb.
+    pub fn signed_lt_indicator(&self, other: &Self) -> (out: T)
+        requires self.wf_spec(), other.wf_spec(),
+            self.n_exec == other.n_exec, self.n_exec > 0,
+        ensures out.sem() == 0 || out.sem() == 1,
+    {
+        use crate::fixed_point::limb_ops::generic_sub_limbs;
+        // Cases:
+        //   self_neg && !other_neg → true (unless both zero)
+        //   !self_neg && other_neg → false (unless both zero)
+        //   same sign, positive → magnitude comparison
+        //   same sign, negative → reversed magnitude comparison
+
+        let self_zero = self.is_zero_indicator();
+        let other_zero = other.is_zero_indicator();
+        // both_zero: mul to AND
+        let (both_zero, _) = self_zero.mul2(&other_zero);
+
+        // Magnitude comparison: self < other (unsigned)
+        let mag_lt = self.unsigned_lt_indicator(other);
+        // Magnitude comparison: other < self (unsigned)
+        let mag_gt = other.unsigned_lt_indicator(self);
+
+        // Case: same sign, positive → lt iff mag_lt
+        // Case: same sign, negative → lt iff mag_gt (reversed)
+        // select_limb(self.sign, positive_result, negative_result)
+        let same_sign_result = T::select_limb(&self.sign, mag_lt, mag_gt);
+
+        // Case: different signs
+        // self_neg && other_pos → lt = 1 (unless self is zero)
+        // self_pos && other_neg → lt = 0 (unless other is zero... but other_neg and zero → impossible with sign=1)
+        // Simplify: diff_sign_result = self.sign (if self is negative, it's less)
+        let diff_sign_result = self.sign.clone_limb();
+
+        // same_sign indicator
+        let (sign_diff, sign_borrow) = self.sign.sub_borrow(&other.sign, &T::zero_val());
+        let same_sign_ind = sign_diff.is_zero_limb();
+        let borrow_zero = sign_borrow.is_zero_limb();
+        let (same_sign, _) = same_sign_ind.mul2(&borrow_zero);
+
+        // Select between same-sign and diff-sign results
+        let result = T::select_limb(&same_sign, same_sign_result, diff_sign_result);
+
+        // Override: if both zero, result = 0 (not less than)
+        // both_zero = 1 → force result to 0
+        // result and both_zero are all 0 or 1, so preconditions hold
+        proof {
+            assert(0 <= result.sem() < LIMB_BASE());
+            // both_zero = mul2(self_zero, other_zero) where both are 0 or 1.
+            // mul2 gives lo = (a*b) % BASE. Since a,b ∈ {0,1}: a*b ∈ {0,1} < BASE.
+            assert(both_zero.sem() == 0 || both_zero.sem() == 1) by(nonlinear_arith)
+                requires both_zero.sem() == (self_zero.sem() * other_zero.sem()) % LIMB_BASE(),
+                    self_zero.sem() == 0 || self_zero.sem() == 1,
+                    other_zero.sem() == 0 || other_zero.sem() == 1,
+                    LIMB_BASE() > 1;
+        }
+        T::select_limb(&both_zero, result, T::zero_val())
     }
 }
 
@@ -2492,6 +2604,7 @@ impl RuntimeFixedPointInterval {
                     assert(bx_prod == bx_val * s + bx_rem) by {
                         vstd::arithmetic::div_mod::lemma_fundamental_div_mod(
                             bx_prod as int, s as int);
+                        assert(bx_prod as int == s as int * (bx_prod as int / s as int) + bx_prod as int % s as int);
                     };
                     assert(b_int * x_int < (s + 2) * s) by (nonlinear_arith)
                         requires b_int * x_int == bx_val * s + bx_rem,
