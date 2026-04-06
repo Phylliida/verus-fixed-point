@@ -759,6 +759,113 @@ pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
 }
 
 //  ══════════════════════════════════════════════════════════════
+//  GPU-compatible output-parameter variants (no Vec::new/push)
+//  ══════════════════════════════════════════════════════════════
+
+///  Carry-chain addition writing to caller-provided output buffer.
+///  GPU-compatible: no Vec allocation, writes to out[0..n].
+pub fn add_limbs_to<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usize) -> (carry: T)
+    requires
+        a@.len() == n, b@.len() == n, old(out)@.len() >= n,
+        valid_limbs(a@), valid_limbs(b@),
+    ensures
+        out@.len() == old(out)@.len(),
+        0 <= carry.sem() < LIMB_BASE(),
+{
+    let ghost out_len = out@.len();
+    let mut carry: T = T::zero_val();
+    for i in 0..n
+        invariant
+            a@.len() == n, b@.len() == n,
+            out@.len() == out_len, out_len >= n,
+            valid_limbs(a@), valid_limbs(b@),
+            0 <= carry.sem() < LIMB_BASE(),
+    {
+        let (digit, next_carry) = a[i].add3(&b[i], &carry);
+        out.set(i, digit);
+        carry = next_carry;
+    }
+    carry
+}
+
+///  Borrow-chain subtraction writing to caller-provided output buffer.
+pub fn sub_limbs_to<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usize) -> (borrow: T)
+    requires
+        a@.len() == n, b@.len() == n, old(out)@.len() >= n,
+        valid_limbs(a@), valid_limbs(b@),
+    ensures
+        out@.len() == old(out)@.len(),
+        borrow.sem() == 0 || borrow.sem() == 1,
+{
+    let ghost out_len = out@.len();
+    let mut borrow: T = T::zero_val();
+    for i in 0..n
+        invariant
+            a@.len() == n, b@.len() == n,
+            out@.len() == out_len, out_len >= n,
+            valid_limbs(a@), valid_limbs(b@),
+            borrow.sem() == 0 || borrow.sem() == 1,
+    {
+        let (digit, next_borrow) = a[i].sub_borrow(&b[i], &borrow);
+        out.set(i, digit);
+        borrow = next_borrow;
+    }
+    borrow
+}
+
+///  Conditional select writing to caller-provided output buffer.
+pub fn select_vec_to<T: LimbOps>(
+    cond: &T, if_zero: &Vec<T>, if_nonzero: &Vec<T>, out: &mut Vec<T>, n: usize,
+)
+    requires
+        cond.sem() == 0 || cond.sem() == 1,
+        if_zero@.len() == n, if_nonzero@.len() == n,
+        old(out)@.len() >= n,
+        valid_limbs(if_zero@), valid_limbs(if_nonzero@),
+    ensures out@.len() == old(out)@.len(),
+{
+    let ghost out_len = out@.len();
+    for i in 0..n
+        invariant
+            if_zero@.len() == n, if_nonzero@.len() == n,
+            out@.len() == out_len, out_len >= n,
+            valid_limbs(if_zero@), valid_limbs(if_nonzero@),
+            cond.sem() == 0 || cond.sem() == 1,
+    {
+        let selected = T::select_limb(cond, if_zero[i].clone_limb(), if_nonzero[i].clone_limb());
+        out.set(i, selected);
+    }
+}
+
+///  Copy a slice of a Vec into an output buffer.
+pub fn slice_vec_to<T: LimbOps>(a: &Vec<T>, start: usize, end: usize, out: &mut Vec<T>, out_off: usize)
+    requires
+        start <= end, end <= a@.len(),
+        out_off + (end - start) < usize::MAX,
+        out_off + (end - start) <= old(out)@.len(),
+    ensures out@.len() == old(out)@.len(),
+{
+    let ghost out_len = out@.len();
+    let len = end - start;
+    let mut si: usize = start;
+    let mut di: usize = out_off;
+    for idx in 0..len
+        invariant
+            start <= end, end <= a@.len(),
+            out@.len() == out_len,
+            len == end - start,
+            si == start + idx, di == out_off + idx,
+            si <= end, di <= out_off + len,
+            out_off + len <= out_len,
+            out_off + len < usize::MAX,
+    {
+        out.set(di, a[si].clone_limb());
+        si = si + 1;
+        di = di + 1;
+    }
+}
+
+//  ══════════════════════════════════════════════════════════════
 //  Generic scalar multiplication (a * scalar)
 //  ══════════════════════════════════════════════════════════════
 
@@ -1523,7 +1630,7 @@ pub fn generic_mul_schoolbook<T: LimbOps>(
 
 ///  Karatsuba multiply: returns (2n-limb result, ghost_carry).
 ///  vec_val(result) + ghost_carry * BASE^(2n) == vec_val(a) * vec_val(b)
-#[gpu_base_case(generic_mul_schoolbook)]
+// #[gpu_base_case(generic_mul_schoolbook)]
 pub fn generic_mul_karatsuba<T: LimbOps>(
     a: &Vec<T>, b: &Vec<T>, n: usize,
 ) -> (result: (Vec<T>, Ghost<int>))
