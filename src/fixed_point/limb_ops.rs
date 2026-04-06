@@ -1523,6 +1523,7 @@ pub fn generic_mul_schoolbook<T: LimbOps>(
 
 ///  Karatsuba multiply: returns (2n-limb result, ghost_carry).
 ///  vec_val(result) + ghost_carry * BASE^(2n) == vec_val(a) * vec_val(b)
+#[gpu_base_case(generic_mul_schoolbook)]
 pub fn generic_mul_karatsuba<T: LimbOps>(
     a: &Vec<T>, b: &Vec<T>, n: usize,
 ) -> (result: (Vec<T>, Ghost<int>))
