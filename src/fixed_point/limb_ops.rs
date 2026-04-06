@@ -912,9 +912,10 @@ pub fn signed_add_to<T: LimbOps>(
     //
     // Simplest: do element-wise select in a loop.
     let diff_sign = T::select_limb(&borrow_ab, a_sign.clone_limb(), b_sign.clone_limb());
-    let result_sign = T::select_limb(&same_sign, a_sign.clone_limb(), diff_sign);
+    // same_sign=1 → use a_sign (common sign), same_sign=0 → use diff_sign
+    let result_sign = T::select_limb(&same_sign, diff_sign, a_sign.clone_limb());
 
-    // Element-wise double select: out[i] = select(same, sum[i], select(borrow, a-b[i], b-a[i]))
+    // Element-wise double select: same_sign=1 → sum, same_sign=0 → diff
     let ghost out_len = out@.len();
     for i in 0..n
         invariant
@@ -927,7 +928,8 @@ pub fn signed_add_to<T: LimbOps>(
             forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[j]).sem() < LIMB_BASE(),
     {
         let diff_val = T::select_limb(&borrow_ab, tmp2[i].clone_limb(), out[i].clone_limb());
-        let final_val = T::select_limb(&same_sign, tmp1[i].clone_limb(), diff_val);
+        // same_sign=1 → sum (tmp1), same_sign=0 → diff
+        let final_val = T::select_limb(&same_sign, diff_val, tmp1[i].clone_limb());
         out.set(i, final_val);
     }
 

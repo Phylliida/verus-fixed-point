@@ -45,6 +45,13 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         vec_val(self.limbs@)
     }
 
+    ///  The signed value: positive if sign==0, negative if sign==1.
+    ///  This is the semantic meaning of the sign-magnitude representation.
+    pub open spec fn signed_val(&self) -> int {
+        if self.sign.sem() == 0 { self.unsigned_val() }
+        else { -self.unsigned_val() }
+    }
+
     ///  Zero with given format.
     pub fn zero(n: usize, frac: usize) -> (out: Self)
         requires n > 0, frac <= n * 32,
@@ -95,6 +102,12 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         requires self.wf_spec(), other.wf_spec(),
             self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
         ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
+            // Semantic correctness: result = a + b (mod limb_power(n))
+            // This catches swapped select args!
+            out.signed_val() == (self.signed_val() + other.signed_val())
+                % (limb_power(self.n_spec()) as int)
+                || out.signed_val() == (self.signed_val() + other.signed_val())
+                    % (limb_power(self.n_spec()) as int) - limb_power(self.n_spec()),
     {
         use crate::fixed_point::limb_ops::{generic_add_limbs, generic_sub_limbs, generic_select_vec};
         let n = self.n_exec;
@@ -129,8 +142,9 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         let diff_sign = T::select_limb(&borrow_ab, self.sign.clone_limb(), other.sign.clone_limb());
 
         // Final: select between same-sign and diff-sign results
-        let result_limbs = generic_select_vec(&same_sign, &sum, &diff_result, n);
-        let result_sign = T::select_limb(&same_sign, self.sign.clone_limb(), diff_sign);
+        // same_sign=1 → use sum (same sign case), same_sign=0 → use diff_result
+        let result_limbs = generic_select_vec(&same_sign, &diff_result, &sum, n);
+        let result_sign = T::select_limb(&same_sign, diff_sign, self.sign.clone_limb());
 
         GenericFixedPoint {
             limbs: result_limbs, sign: result_sign,
@@ -254,7 +268,8 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         let (same_sign, _) = same_sign_ind.mul2(&borrow_zero);
 
         // Select between same-sign and diff-sign results
-        let result = T::select_limb(&same_sign, same_sign_result, diff_sign_result);
+        // same_sign=1 → use same_sign_result, same_sign=0 → use diff_sign_result
+        let result = T::select_limb(&same_sign, diff_sign_result, same_sign_result);
 
         // Override: if both zero, result = 0 (not less than)
         // both_zero = 1 → force result to 0
