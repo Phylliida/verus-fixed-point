@@ -199,10 +199,24 @@ pub proof fn lemma_centered_mul(a: nat, b: nat, p: nat)
         requires b < p, half == (p as int - 1) / 2,
             cb == if b as int <= half { b as int } else { b as int - p as int },
             kb == if b as int <= half { 0int } else { 1int };
+    //  Case split on ka/kb (0 or 1) — each case is simple for nonlinear_arith
     let q: int = ka * cb + kb * ca + ka * kb * (p as int);
-    assert(a as int * b as int == prod + q * (p as int)) by(nonlinear_arith)
-        requires a as int == ca + ka * (p as int), b as int == cb + kb * (p as int),
-            prod == ca * cb, q == ka * cb + kb * ca + ka * kb * (p as int);
+    if ka == 0 && kb == 0 {
+        assert(a as int * b as int == prod + q * (p as int)) by(nonlinear_arith)
+            requires a as int == ca, b as int == cb, prod == ca * cb, q == 0;
+    } else if ka == 1 && kb == 0 {
+        assert(a as int * b as int == prod + q * (p as int)) by(nonlinear_arith)
+            requires a as int == ca + p as int, b as int == cb,
+                prod == ca * cb, q == cb;
+    } else if ka == 0 && kb == 1 {
+        assert(a as int * b as int == prod + q * (p as int)) by(nonlinear_arith)
+            requires a as int == ca, b as int == cb + p as int,
+                prod == ca * cb, q == ca;
+    } else {
+        assert(a as int * b as int == prod + q * (p as int)) by(nonlinear_arith)
+            requires a as int == ca + p as int, b as int == cb + p as int,
+                prod == ca * cb, q == ca + cb + p as int;
+    }
     //  (a*b) % p is the unique value in [0, p) congruent to a*b ≡ prod (mod p).
     //  Since |prod| <= half: representative is prod (if >= 0) or prod + p (if < 0).
     if prod >= 0 {
@@ -268,7 +282,9 @@ impl BoundedPrimeField {
     pub open spec fn wf(&self) -> bool {
         &&& self.inner.wf()
         &&& self.inner.n_exec >= 2
+        &&& self.inner.n_exec <= 0x1FFF_FFFF
         &&& self.prime_spec() > 2
+        &&& self.prime_spec() % 2 == 1
         &&& self.centered_value() >= -(self.bound@ as int)
         &&& self.centered_value() <= self.bound@ as int
         &&& (self.bound@ as int) <= self.half_prime()
@@ -276,6 +292,138 @@ impl BoundedPrimeField {
 
     pub open spec fn same_field(&self, other: &Self) -> bool {
         self.inner.same_field(&other.inner)
+    }
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  View: BoundedPrimeField → int (centered value)
+//  ══════════════════════════════════════════════════════════════
+
+impl vstd::view::View for BoundedPrimeField {
+    type V = int;
+    open spec fn view(&self) -> int {
+        self.centered_value()
+    }
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Exec helpers
+//  ══════════════════════════════════════════════════════════════
+
+///  Compare two n-limb Vecs for equality. Returns true iff all limbs match.
+fn limbs_equal(a: &Vec<u32>, b: &Vec<u32>, n: usize) -> (out: bool)
+    requires a@.len() == n, b@.len() == n,
+    ensures out == (forall|j: int| 0 <= j < n ==> a@[j] == b@[j]),
+{
+    let mut i: usize = 0;
+    while i < n
+        invariant
+            0 <= i <= n,
+            a@.len() == n, b@.len() == n,
+            forall|j: int| 0 <= j < i ==> a@[j] == b@[j],
+        decreases n - i,
+    {
+        if a[i] != b[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+///  Check if a value's model is > half = (p-1)/2, meaning centered value is negative.
+///  We compare the raw model against half by checking: sub from p_half rounds.
+///  Simpler approach: compare raw model against threshold using limb comparison.
+///  For now: just check if the first n limbs represent a value > (p-1)/2.
+///  We use: a > (p-1)/2 iff 2*a > p - 1 iff 2*a >= p (since p odd).
+///  Equivalently: a + a >= p, which we can check via generic_add + carry.
+fn is_negative_centered(val: &RuntimePrimeField) -> (out: bool)
+    requires val.wf(), val.n_exec >= 2, val.prime_spec() > 2, val.prime_spec() % 2 == 1,
+    ensures out == (centered(val.model@, val.prime_spec()) < 0),
+{
+    //  centered(a, p) < 0 iff a > (p-1)/2 iff a as int > (p as int - 1) / 2
+    //  Since p = 2*half + 1 (odd), a > half iff 2*a > 2*half = p - 1 iff 2*a >= p.
+    //  2*a >= p iff a + a overflows p, i.e., add_mod(a, a) has a "carry" from the addition.
+    //  But add_mod reduces, so we can't check carry. Instead: a > half iff p - a <= half.
+    //  Or: a > half iff a >= half + 1 iff 2*a >= 2*half + 2 = p + 1 > p.
+    //  Actually simplest: val.model@ == 0 → not negative. Otherwise check if val > p/2.
+    //  Use: add val to itself via generic_add_limbs. If carry = 1, then 2*val >= BASE^n > p,
+    //  so val > p/2. If carry = 0, compare the sum against p_limbs.
+    //  Actually even simpler: val.model@ > (p-1)/2 iff val.model@ >= (p+1)/2.
+    //  And (p+1)/2 = half + 1. We can construct this and compare.
+    //  But constructing (p+1)/2 as limbs is complex.
+    //
+    //  Simplest correct approach: add val to itself using generic_add_limbs.
+    //  sum + carry*BASE^n == 2*val.model@. Since val.model@ < p:
+    //  2*val < 2*p. And if 2*val >= p (i.e., val > (p-1)/2), then carry could be 0 or 1.
+    //
+    //  Actually, the very simplest: compare val against p_limbs using subtraction.
+    //  val > half iff val >= half+1 iff val + val >= p (since p = 2*half+1).
+    //  val + val: use generic_add_limbs.
+    let n = val.n_exec;
+    let (sum, carry) = generic_add_limbs(&val.limbs, &val.limbs, n);
+    //  sum + carry * limb_power(n) == 2 * vec_val(val.limbs@)
+    //  i.e. sum + carry * lp_full == 2 * val.model@ (where lp_full is the limb space, not p)
+    //  If carry == 1: 2*val >= BASE^n >= p (since p < BASE^n), so val >= p/2 > half. Negative.
+    //  If carry == 0: sum == 2*val. Compare sum >= p: use generic_sub_limbs(sum, p_limbs).
+    if carry > 0u32 {
+        proof {
+            let lp = limb_power(n as nat);
+            let p = val.prime_spec();
+            let half = (p as int - 1) / 2;
+            lemma_vec_val_bounded(val.limbs@);
+            lemma_vec_val_bounded(sum@);
+            lemma_odd_half(p);
+            //  carry > 0 → carry.sem() >= 1 → 2*val >= lp >= p → val > half
+            assert(2 * val.model@ as int >= lp) by(nonlinear_arith)
+                requires vec_val(sum@) + carry.sem() * lp == vec_val(val.limbs@) + vec_val(val.limbs@),
+                    val.model@ == vec_val(val.limbs@) as nat,
+                    vec_val(sum@) >= 0, carry.sem() >= 1, lp > 0;
+            assert(val.model@ as int > half) by(nonlinear_arith)
+                requires 2 * val.model@ as int >= lp,
+                    (p as int) < lp, p as int == 2 * half + 1;
+        }
+        true
+    } else {
+        let p_limbs = make_p_limbs(n, val.c_exec);
+        let (_diff, borrow) = generic_sub_limbs(&sum, &p_limbs, n);
+        let result = borrow == 0u32;
+        proof {
+            let lp = limb_power(n as nat);
+            let p = val.prime_spec();
+            let half = (p as int - 1) / 2;
+            let pv = lp - val.c_exec as int;
+            lemma_vec_val_bounded(val.limbs@);
+            lemma_vec_val_bounded(sum@);
+            lemma_vec_val_bounded(_diff@);
+            lemma_odd_half(p);
+            //  carry == 0u32 → carry.sem()*lp == 0 → sum == 2*val
+            assert(carry.sem() == 0int);
+            assert(carry.sem() * lp == 0int) by(nonlinear_arith) requires carry.sem() == 0int;
+            //  Now Z3 can derive: sum + 0 == val_limbs + val_limbs → sum == 2*val
+            assert(vec_val(sum@) == 2 * val.model@ as int) by(nonlinear_arith)
+                requires vec_val(sum@) + 0 == vec_val(val.limbs@) + vec_val(val.limbs@),
+                    val.model@ == vec_val(val.limbs@) as nat, vec_val(val.limbs@) >= 0;
+            assert(vec_val(p_limbs@) == pv);
+            if borrow.sem() == 0 {
+                assert(vec_val(_diff@) + pv == vec_val(sum@));
+                assert(vec_val(sum@) >= pv) by(nonlinear_arith)
+                    requires vec_val(_diff@) + pv == vec_val(sum@), vec_val(_diff@) >= 0;
+                assert(val.model@ as int > half) by(nonlinear_arith)
+                    requires vec_val(sum@) >= pv, vec_val(sum@) == 2 * val.model@ as int,
+                        pv == p as int, p as int == 2 * half + 1;
+            } else {
+                assert(borrow.sem() == 1);
+                assert(vec_val(_diff@) + pv == vec_val(sum@) + lp);
+                assert(vec_val(sum@) < pv) by(nonlinear_arith)
+                    requires vec_val(_diff@) + pv == vec_val(sum@) + lp,
+                        vec_val(_diff@) < lp, pv > 0, pv < lp;
+                assert(val.model@ as int <= half) by(nonlinear_arith)
+                    requires vec_val(sum@) < pv, vec_val(sum@) == 2 * val.model@ as int,
+                        pv == p as int, p as int == 2 * half + 1;
+            }
+        }
+        result
     }
 }
 
