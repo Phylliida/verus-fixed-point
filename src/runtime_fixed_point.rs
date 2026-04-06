@@ -110,11 +110,13 @@ impl<T: LimbOps> GenericFixedPoint<T> {
             self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
         ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
             // Semantic correctness: result ≡ a + b (mod P), where P = limb_power(n).
-            // Exactly one of these holds: result = true_sum, true_sum - P, or true_sum + P.
+            // The modular reduction only happens when the true sum overflows.
             // This catches swapped select_limb args, wrong signs, missing terms.
             out.signed_val() == self.signed_val() + other.signed_val()
-                || out.signed_val() == self.signed_val() + other.signed_val() - limb_power(self.n_spec())
-                || out.signed_val() == self.signed_val() + other.signed_val() + limb_power(self.n_spec()),
+                || (out.signed_val() == self.signed_val() + other.signed_val() - limb_power(self.n_spec())
+                    && self.signed_val() + other.signed_val() >= limb_power(self.n_spec()))
+                || (out.signed_val() == self.signed_val() + other.signed_val() + limb_power(self.n_spec())
+                    && self.signed_val() + other.signed_val() <= -(limb_power(self.n_spec()) as int)),
     {
         use crate::fixed_point::limb_ops::{generic_add_limbs, generic_sub_limbs, generic_select_vec};
         let n = self.n_exec;
@@ -175,8 +177,10 @@ impl<T: LimbOps> GenericFixedPoint<T> {
             self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
         ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
             out.signed_val() == self.signed_val() - other.signed_val()
-                || out.signed_val() == self.signed_val() - other.signed_val() - limb_power(self.n_spec())
-                || out.signed_val() == self.signed_val() - other.signed_val() + limb_power(self.n_spec()),
+                || (out.signed_val() == self.signed_val() - other.signed_val() - limb_power(self.n_spec())
+                    && self.signed_val() - other.signed_val() >= limb_power(self.n_spec()))
+                || (out.signed_val() == self.signed_val() - other.signed_val() + limb_power(self.n_spec())
+                    && self.signed_val() - other.signed_val() <= -(limb_power(self.n_spec()) as int)),
     {
         let neg_other = other.neg();
         self.signed_add(&neg_other)
@@ -275,8 +279,10 @@ impl<T: LimbOps> GenericFixedPoint<T> {
             out.n_exec == n, out.frac_exec == a.frac_exec,
         ensures
             out.signed_val() == a.signed_val() + b.signed_val()
-                || out.signed_val() == a.signed_val() + b.signed_val() - limb_power(n as nat)
-                || out.signed_val() == a.signed_val() + b.signed_val() + limb_power(n as nat),
+                || (out.signed_val() == a.signed_val() + b.signed_val() - limb_power(n as nat)
+                    && a.signed_val() + b.signed_val() >= limb_power(n as nat))
+                || (out.signed_val() == a.signed_val() + b.signed_val() + limb_power(n as nat)
+                    && a.signed_val() + b.signed_val() <= -(limb_power(n as nat) as int)),
     {
         let sa = a.sign.sem();
         let sb = b.sign.sem();
@@ -297,12 +303,18 @@ impl<T: LimbOps> GenericFixedPoint<T> {
                 if cy == 0 { assert(sv == true_sum); return; }
                 assert(sv + P == va + vb) by(nonlinear_arith)
                     requires sv + cy * P == va + vb, cy == 1;
+                // cy==1 means va + vb >= P (since sv >= 0 → va+vb = sv+P >= P)
+                assert(sv >= 0) by { crate::fixed_point::limb_ops::lemma_vec_val_bounded::<T>(sum@); };
+                assert(true_sum >= P);
             } else {
                 assert(out.signed_val() == -sv);
                 assert(true_sum == -(va + vb));
                 if cy == 0 { assert(-sv == true_sum); return; }
                 assert(sv + P == va + vb) by(nonlinear_arith)
                     requires sv + cy * P == va + vb, cy == 1;
+                assert(sv >= 0) by { crate::fixed_point::limb_ops::lemma_vec_val_bounded::<T>(sum@); };
+                assert(va + vb >= P);
+                assert(true_sum <= -P);
             }
         } else {
             // Different sign: result_limbs = diff_result, result_sign = diff_sign
@@ -326,6 +338,42 @@ impl<T: LimbOps> GenericFixedPoint<T> {
             assert(out.signed_val() == true_sum);
         }
     }
+
+    /// Corollary: if the true sum is within range, signed_add is exact.
+    /// With the strengthened postcondition (overflow conditions), this is trivial:
+    /// |true_sum| < P rules out both overflow disjuncts.
+    pub proof fn lemma_signed_add_exact(a: &Self, b: &Self, out: &Self)
+        requires
+            a.wf_spec(), b.wf_spec(), out.wf_spec(),
+            a.n_exec == b.n_exec, a.n_exec == out.n_exec,
+            a.frac_exec == b.frac_exec, a.frac_exec == out.frac_exec,
+            out.signed_val() == a.signed_val() + b.signed_val()
+                || (out.signed_val() == a.signed_val() + b.signed_val() - limb_power(a.n_spec())
+                    && a.signed_val() + b.signed_val() >= limb_power(a.n_spec()))
+                || (out.signed_val() == a.signed_val() + b.signed_val() + limb_power(a.n_spec())
+                    && a.signed_val() + b.signed_val() <= -(limb_power(a.n_spec()) as int)),
+            a.signed_val() + b.signed_val() < limb_power(a.n_spec()),
+            a.signed_val() + b.signed_val() > -(limb_power(a.n_spec()) as int),
+        ensures
+            out.signed_val() == a.signed_val() + b.signed_val(),
+    { /* Trivial: preconditions rule out both overflow disjuncts */ }
+
+    /// Same for signed_sub.
+    pub proof fn lemma_signed_sub_exact(a: &Self, b: &Self, out: &Self)
+        requires
+            a.wf_spec(), b.wf_spec(), out.wf_spec(),
+            a.n_exec == b.n_exec, a.n_exec == out.n_exec,
+            a.frac_exec == b.frac_exec, a.frac_exec == out.frac_exec,
+            out.signed_val() == a.signed_val() - b.signed_val()
+                || (out.signed_val() == a.signed_val() - b.signed_val() - limb_power(a.n_spec())
+                    && a.signed_val() - b.signed_val() >= limb_power(a.n_spec()))
+                || (out.signed_val() == a.signed_val() - b.signed_val() + limb_power(a.n_spec())
+                    && a.signed_val() - b.signed_val() <= -(limb_power(a.n_spec()) as int)),
+            a.signed_val() - b.signed_val() < limb_power(a.n_spec()),
+            a.signed_val() - b.signed_val() > -(limb_power(a.n_spec()) as int),
+        ensures
+            out.signed_val() == a.signed_val() - b.signed_val(),
+    { /* Trivial: preconditions rule out both overflow disjuncts */ }
 
     /// Proof helper: product of two n-limb values fits in 2n limbs (gc == 0).
     proof fn lemma_signed_mul_magnitude(
