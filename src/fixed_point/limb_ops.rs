@@ -1517,6 +1517,90 @@ pub proof fn lemma_vec_val_pad<T: LimbOps>(a: Seq<T>, padded: Seq<T>)
 //  Generic schoolbook multiplication (O(n²), base case for Karatsuba)
 //  ══════════════════════════════════════════════════════════════
 
+///  Schoolbook multiply writing to output buffer. GPU-compatible (no Vec allocation).
+///  Writes 2n limbs to out[0..2n]. out must be pre-zeroed or at least length >= 2n.
+pub fn mul_schoolbook_to<T: LimbOps>(
+    a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usize,
+)
+    requires
+        a@.len() == n, b@.len() == n,
+        n > 0, n <= 0x3FFF_FFFF,
+        valid_limbs(a@), valid_limbs(b@),
+        old(out)@.len() >= 2 * n,
+    ensures
+        out@.len() == old(out)@.len(),
+{
+    let ghost out_len = out@.len();
+    let nn: usize = 2 * n;
+
+    // Zero the output region
+    for i in 0..nn
+        invariant out@.len() == out_len, out_len >= nn, nn == 2 * n,
+    {
+        out.set(i, T::zero_val());
+    }
+
+    // Schoolbook: for each limb b[i], multiply a by b[i] and accumulate into out
+    for i in 0..n
+        invariant
+            a@.len() == n, b@.len() == n,
+            nn == 2 * n, n <= 0x3FFF_FFFF,
+            out@.len() == out_len, out_len >= nn,
+            valid_limbs(a@), valid_limbs(b@),
+    {
+        let mut carry: T = T::zero_val();
+        for j in 0..n
+            invariant
+                a@.len() == n, b@.len() == n,
+                out@.len() == out_len, out_len >= nn,
+                nn == 2 * n, n <= 0x3FFF_FFFF,
+                i < n,
+                valid_limbs(a@), valid_limbs(b@),
+                0 <= carry.sem() < LIMB_BASE(),
+        {
+            let (prod_lo, prod_hi) = a[j].mul2(&b[i]);
+            let (sum1, c1) = prod_lo.add3(&out[i + j], &carry);
+            let (new_carry, _c2) = prod_hi.add3(&c1, &T::zero_val());
+            out.set(i + j, sum1);
+            carry = new_carry;
+        }
+        out.set(i + n, carry);
+    }
+}
+
+///  Multiply writing to output buffer. GPU-compatible interface.
+///  Writes 2n limbs to out[0..2n].
+///  For n <= 4: uses schoolbook directly (no allocation).
+///  For n > 4: delegates to Karatsuba internally, copies result to out.
+///  The transpiler unrolls this into depth-stratified variants.
+// #[gpu_base_case(mul_schoolbook_to)]
+pub fn mul_to<T: LimbOps>(
+    a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usize,
+)
+    requires
+        a@.len() == n, b@.len() == n,
+        n > 0, n <= 0x1FFF_FFFF,
+        valid_limbs(a@), valid_limbs(b@),
+        old(out)@.len() >= 2 * n,
+    ensures
+        out@.len() == old(out)@.len(),
+{
+    let ghost out_len = out@.len();
+    if n <= 4 {
+        mul_schoolbook_to(a, b, out, n);
+    } else {
+        let (product, _gc) = generic_mul_karatsuba(a, b, n);
+        for i in 0..(2 * n)
+            invariant
+                product@.len() == 2 * n,
+                out@.len() == out_len, out_len >= 2 * n,
+                n <= 0x3FFF_FFFF,
+        {
+            out.set(i, product[i].clone_limb());
+        }
+    }
+}
+
 ///  Schoolbook multiply: returns 2n-limb result.
 ///  vec_val(result) == vec_val(a) * vec_val(b)
 ///  Returns (result, ghost_carry) where:
