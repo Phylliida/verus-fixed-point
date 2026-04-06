@@ -70,12 +70,19 @@ impl<T: LimbOps> GenericFixedPoint<T> {
     pub fn neg(&self) -> (out: Self)
         requires self.wf_spec(),
         ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
+            out.unsigned_val() == self.unsigned_val(),
+            out.signed_val() == -self.signed_val(),
     {
-        use crate::fixed_point::limb_ops::generic_slice_vec;
+        use crate::fixed_point::limb_ops::{generic_slice_vec, lemma_vec_val_eq_from_sem_eq};
         // Flip: select_limb(sign, 1, 0) — if sign==0 return 1, if sign==1 return 0
         let new_sign = T::select_limb(&self.sign, T::const_u32(1u32), T::zero_val());
+        let new_limbs = generic_slice_vec(&self.limbs, 0, self.n_exec);
+        proof {
+            // generic_slice_vec preserves sem() at each position →  preserves vec_val
+            lemma_vec_val_eq_from_sem_eq::<T>(new_limbs@, self.limbs@);
+        }
         GenericFixedPoint {
-            limbs: generic_slice_vec(&self.limbs, 0, self.n_exec),
+            limbs: new_limbs,
             sign: new_sign,
             n_exec: self.n_exec,
             frac_exec: self.frac_exec,
@@ -157,6 +164,11 @@ impl<T: LimbOps> GenericFixedPoint<T> {
         requires self.wf_spec(), other.wf_spec(),
             self.n_exec == other.n_exec, self.frac_exec == other.frac_exec,
         ensures out.wf_spec(), out.n_exec == self.n_exec, out.frac_exec == self.frac_exec,
+            // Semantic correctness: result = a - b (mod limb_power(n))
+            out.signed_val() == (self.signed_val() - other.signed_val())
+                % (limb_power(self.n_spec()) as int)
+                || out.signed_val() == (self.signed_val() - other.signed_val())
+                    % (limb_power(self.n_spec()) as int) - limb_power(self.n_spec()),
     {
         let neg_other = other.neg();
         self.signed_add(&neg_other)
