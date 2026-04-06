@@ -312,7 +312,7 @@ fn pair_to_padded_vec(lo: u32, hi: u32, n: usize) -> (out: Vec<u32>)
 }
 
 ///  Build a 1-limb Vec<u32>, pad to n. vec_val == scalar.
-fn scalar_to_padded_vec(scalar: u32, n: usize) -> (out: Vec<u32>)
+pub fn scalar_to_padded_vec(scalar: u32, n: usize) -> (out: Vec<u32>)
     requires n >= 1,
     ensures
         out@.len() == n,

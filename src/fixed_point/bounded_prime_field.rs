@@ -253,53 +253,45 @@ pub proof fn lemma_centered_bounded(a: nat, p: nat)
 }
 
 //  ══════════════════════════════════════════════════════════════
-//  BoundedPrimeField type
+//  BoundedPrimeField<N, C> — const-generic wrapper
 //  ══════════════════════════════════════════════════════════════
 
 ///  RuntimePrimeField wrapper with centered integer view and dynamic bound tracking.
-///
-///  View type is `int` (the centered value). Implements RuntimeOrderedRingOps<int>.
-///  The ghost `bound` tracks |centered_value| <= bound, and add_wf/mul_wf ensure
-///  operations don't wrap around the modular boundary.
-pub struct BoundedPrimeField {
+///  Const generics N (limbs) and C (Mersenne constant) fix the prime p = 2^(32*N) - C,
+///  guaranteeing all wf values share the same field (critical for eq/le correctness).
+pub struct BoundedPrimeField<const N: usize, const C: u32> {
     pub inner: RuntimePrimeField,
     pub bound: Ghost<nat>,
 }
 
-impl BoundedPrimeField {
-    pub open spec fn prime_spec(&self) -> nat {
-        self.inner.prime_spec()
+impl<const N: usize, const C: u32> BoundedPrimeField<N, C> {
+    pub open spec fn prime_spec() -> nat {
+        (limb_power(N as nat) - C as int) as nat
     }
 
-    pub open spec fn half_prime(&self) -> int {
-        (self.prime_spec() as int - 1) / 2
+    pub open spec fn half_prime() -> int {
+        (Self::prime_spec() as int - 1) / 2
     }
 
     pub open spec fn centered_value(&self) -> int {
-        centered(self.inner.model@, self.prime_spec())
+        centered(self.inner.model@, Self::prime_spec())
     }
 
     pub open spec fn wf(&self) -> bool {
         &&& self.inner.wf()
-        &&& self.inner.n_exec >= 2
-        &&& self.inner.n_exec <= 0x1FFF_FFFF
-        &&& self.prime_spec() > 2
-        &&& self.prime_spec() % 2 == 1
+        &&& self.inner.n_exec == N
+        &&& self.inner.c_exec == C
+        &&& N >= 2 && N <= 0x1FFF_FFFF
+        &&& C > 0 && (C as int) < LIMB_BASE()
+        &&& Self::prime_spec() > 2
+        &&& Self::prime_spec() % 2 == 1
         &&& self.centered_value() >= -(self.bound@ as int)
         &&& self.centered_value() <= self.bound@ as int
-        &&& (self.bound@ as int) <= self.half_prime()
-    }
-
-    pub open spec fn same_field(&self, other: &Self) -> bool {
-        self.inner.same_field(&other.inner)
+        &&& (self.bound@ as int) <= Self::half_prime()
     }
 }
 
-//  ══════════════════════════════════════════════════════════════
-//  View: BoundedPrimeField → int (centered value)
-//  ══════════════════════════════════════════════════════════════
-
-impl vstd::view::View for BoundedPrimeField {
+impl<const N: usize, const C: u32> vstd::view::View for BoundedPrimeField<N, C> {
     type V = int;
     open spec fn view(&self) -> int {
         self.centered_value()
@@ -428,65 +420,97 @@ fn is_negative_centered(val: &RuntimePrimeField) -> (out: bool)
 }
 
 //  ══════════════════════════════════════════════════════════════
-//  RuntimeOrderedRingOps<int> for BoundedPrimeField
+//  RuntimeOrderedRingOps<int> for BoundedPrimeField<N, C>
 //  ══════════════════════════════════════════════════════════════
 
-impl verus_algebra::traits::runtime::RuntimeOrderedRingOps<int> for BoundedPrimeField {
-
+impl<const N: usize, const C: u32> verus_algebra::traits::runtime::RuntimeOrderedRingOps<int>
+    for BoundedPrimeField<N, C>
+{
     open spec fn wf_spec(&self) -> bool { self.wf() }
 
     open spec fn add_wf(&self, rhs: &Self) -> bool {
-        self.same_field(rhs)
-        && (self.bound@ as int + rhs.bound@ as int) <= self.half_prime()
+        (self.bound@ as int + rhs.bound@ as int) <= Self::half_prime()
     }
 
     open spec fn mul_wf(&self, rhs: &Self) -> bool {
-        self.same_field(rhs)
-        && (self.bound@ as int * rhs.bound@ as int) <= self.half_prime()
+        (self.bound@ as int * rhs.bound@ as int) <= Self::half_prime()
     }
 
     fn add(&self, rhs: &Self) -> (out: Self)
     {
         let result_inner = self.inner.add_mod(&rhs.inner);
         proof {
-            let p = self.prime_spec();
-            let a = self.inner.model@;
-            let b = rhs.inner.model@;
-            assert(self.centered_value() + rhs.centered_value() >= -self.half_prime())
+            let p = Self::prime_spec();
+            assert(self.centered_value() + rhs.centered_value() >= -Self::half_prime())
                 by(nonlinear_arith)
                 requires self.centered_value() >= -(self.bound@ as int),
                     rhs.centered_value() >= -(rhs.bound@ as int),
-                    self.bound@ as int + rhs.bound@ as int <= self.half_prime();
-            assert(self.centered_value() + rhs.centered_value() <= self.half_prime())
+                    self.bound@ as int + rhs.bound@ as int <= Self::half_prime();
+            assert(self.centered_value() + rhs.centered_value() <= Self::half_prime())
                 by(nonlinear_arith)
                 requires self.centered_value() <= self.bound@ as int,
                     rhs.centered_value() <= rhs.bound@ as int,
-                    self.bound@ as int + rhs.bound@ as int <= self.half_prime();
-            lemma_centered_add(a, b, p);
+                    self.bound@ as int + rhs.bound@ as int <= Self::half_prime();
+            lemma_centered_add(self.inner.model@, rhs.inner.model@, p);
         }
-        BoundedPrimeField {
-            inner: result_inner,
-            bound: Ghost(self.bound@ + rhs.bound@),
-        }
+        BoundedPrimeField { inner: result_inner, bound: Ghost(self.bound@ + rhs.bound@) }
     }
 
     fn sub(&self, rhs: &Self) -> (out: Self)
     {
-        let neg_rhs = <Self as verus_algebra::traits::runtime::RuntimeOrderedRingOps<int>>::neg(rhs);
-        <Self as verus_algebra::traits::runtime::RuntimeOrderedRingOps<int>>::add(self, &neg_rhs)
+        let neg_inner = rhs.inner.neg_mod();
+        let result_inner = self.inner.add_mod(&neg_inner);
+        proof {
+            let p = Self::prime_spec();
+            let a = self.inner.model@;
+            let b = rhs.inner.model@;
+            //  neg_inner has same n_exec/c_exec (from neg_mod same_field)
+            assert(neg_inner.n_exec == N && neg_inner.c_exec == C);
+            if b == 0 {
+                lemma_centered_zero(p);
+                assert(neg_inner.model@ == 0nat);
+                assert((a + 0nat) % p == a) by(nonlinear_arith) requires a < p, p > 0;
+                assert(rhs.centered_value() == 0int);
+            } else {
+                //  centered(neg_inner) == -centered(b) == -rhs.cv
+                lemma_centered_neg(b, p);
+                assert(centered(neg_inner.model@, p) == -rhs.centered_value());
+                //  Bound check for centered_add
+                assert(self.centered_value() + centered(neg_inner.model@, p) >= -Self::half_prime())
+                    by(nonlinear_arith)
+                    requires self.centered_value() >= -(self.bound@ as int),
+                        centered(neg_inner.model@, p) >= -(rhs.bound@ as int),
+                        self.bound@ as int + rhs.bound@ as int <= Self::half_prime();
+                assert(self.centered_value() + centered(neg_inner.model@, p) <= Self::half_prime())
+                    by(nonlinear_arith)
+                    requires self.centered_value() <= self.bound@ as int,
+                        centered(neg_inner.model@, p) <= rhs.bound@ as int,
+                        self.bound@ as int + rhs.bound@ as int <= Self::half_prime();
+                lemma_centered_add(a, neg_inner.model@, p);
+                //  centered(result) == self.cv + centered(neg) == self.cv - rhs.cv
+                assert(centered(result_inner.model@, p) == self.centered_value() - rhs.centered_value());
+            }
+            //  Output bound
+            assert(self.centered_value() - rhs.centered_value()
+                >= -(self.bound@ as int + rhs.bound@ as int)) by(nonlinear_arith)
+                requires self.centered_value() >= -(self.bound@ as int),
+                    rhs.centered_value() <= rhs.bound@ as int;
+            assert(self.centered_value() - rhs.centered_value()
+                <= self.bound@ as int + rhs.bound@ as int) by(nonlinear_arith)
+                requires self.centered_value() <= self.bound@ as int,
+                    rhs.centered_value() >= -(rhs.bound@ as int);
+        }
+        BoundedPrimeField { inner: result_inner, bound: Ghost(self.bound@ + rhs.bound@) }
     }
 
     fn neg(&self) -> (out: Self)
     {
         let result_inner = self.inner.neg_mod();
         proof {
-            let p = self.prime_spec();
+            let p = Self::prime_spec();
             let a = self.inner.model@;
-            if a == 0 {
-                lemma_centered_zero(p);
-            } else {
-                lemma_centered_neg(a, p);
-            }
+            if a == 0 { lemma_centered_zero(p); }
+            else { lemma_centered_neg(a, p); }
         }
         BoundedPrimeField { inner: result_inner, bound: Ghost(self.bound@) }
     }
@@ -495,125 +519,49 @@ impl verus_algebra::traits::runtime::RuntimeOrderedRingOps<int> for BoundedPrime
     {
         let result_inner = self.inner.mul_mod(&rhs.inner);
         proof {
-            let p = self.prime_spec();
-            let a = self.inner.model@;
-            let b = rhs.inner.model@;
-            assert(self.centered_value() * rhs.centered_value() >= -self.half_prime())
+            let p = Self::prime_spec();
+            assert(self.centered_value() * rhs.centered_value() >= -Self::half_prime())
                 by(nonlinear_arith)
                 requires self.centered_value() >= -(self.bound@ as int),
                     self.centered_value() <= self.bound@ as int,
                     rhs.centered_value() >= -(rhs.bound@ as int),
                     rhs.centered_value() <= rhs.bound@ as int,
-                    self.bound@ as int * rhs.bound@ as int <= self.half_prime();
-            assert(self.centered_value() * rhs.centered_value() <= self.half_prime())
+                    self.bound@ as int * rhs.bound@ as int <= Self::half_prime();
+            assert(self.centered_value() * rhs.centered_value() <= Self::half_prime())
                 by(nonlinear_arith)
                 requires self.centered_value() >= -(self.bound@ as int),
                     self.centered_value() <= self.bound@ as int,
                     rhs.centered_value() >= -(rhs.bound@ as int),
                     rhs.centered_value() <= rhs.bound@ as int,
-                    self.bound@ as int * rhs.bound@ as int <= self.half_prime();
-            lemma_centered_mul(a, b, p);
+                    self.bound@ as int * rhs.bound@ as int <= Self::half_prime();
+            lemma_centered_mul(self.inner.model@, rhs.inner.model@, p);
+            //  Output bound: |ca * cb| <= bound_a * bound_b
+            let ca = self.centered_value();
+            let cb = rhs.centered_value();
+            assert(ca * cb >= -(self.bound@ as int * rhs.bound@ as int)) by(nonlinear_arith)
+                requires ca >= -(self.bound@ as int), ca <= self.bound@ as int,
+                    cb >= -(rhs.bound@ as int), cb <= rhs.bound@ as int;
+            assert(ca * cb <= self.bound@ as int * rhs.bound@ as int) by(nonlinear_arith)
+                requires ca >= -(self.bound@ as int), ca <= self.bound@ as int,
+                    cb >= -(rhs.bound@ as int), cb <= rhs.bound@ as int;
         }
-        BoundedPrimeField {
-            inner: result_inner,
-            bound: Ghost((self.bound@ * rhs.bound@) as nat),
-        }
+        BoundedPrimeField { inner: result_inner, bound: Ghost((self.bound@ * rhs.bound@) as nat) }
     }
 
     fn eq(&self, rhs: &Self) -> (out: bool)
     {
-        //  centered is injective on [0, p): equal centered values ↔ equal models ↔ equal limbs
-        let result = limbs_equal(&self.inner.limbs, &rhs.inner.limbs, self.inner.n_exec);
-        proof {
-            let p = self.prime_spec();
-            let a = self.inner.model@;
-            let b = rhs.inner.model@;
-            lemma_odd_half(p);
-            //  a == b ↔ centered(a,p) == centered(b,p) (injectivity of centered on [0,p))
-            if a == b {
-                //  Same model → same centered value → eqv
-            } else {
-                //  Different model → different centered value
-                //  centered is injective: if a != b and both in [0,p), centered(a) != centered(b)
-                //  Proof: if both <= half, centered = identity (injective).
-                //  If both > half, centered = x - p (injective).
-                //  If one <= half and other > half: one is >= 0, other is < 0. Different.
-                if a as int <= (p as int - 1) / 2 && b as int <= (p as int - 1) / 2 {
-                    assert(centered(a, p) != centered(b, p));
-                } else if a as int > (p as int - 1) / 2 && b as int > (p as int - 1) / 2 {
-                    assert(centered(a, p) != centered(b, p));
-                } else {
-                    //  One positive, one negative
-                    if a as int <= (p as int - 1) / 2 {
-                        assert(centered(a, p) >= 0);
-                        assert(centered(b, p) < 0) by(nonlinear_arith)
-                            requires b as int > (p as int - 1) / 2, b < p,
-                                p as int == 2 * ((p as int - 1) / 2) + 1;
-                    } else {
-                        assert(centered(b, p) >= 0);
-                        assert(centered(a, p) < 0) by(nonlinear_arith)
-                            requires a as int > (p as int - 1) / 2, a < p,
-                                p as int == 2 * ((p as int - 1) / 2) + 1;
-                    }
-                }
-            }
-            //  Now connect limbs_equal to model equality
-            //  limbs_equal checks all limbs match. If models match, limbs match (same reduced rep).
-            //  If models differ, at least one limb differs.
-            //  vec_val is injective on valid_limbs of same length and < limb_power(n).
-            //  a == b ↔ all limbs equal (from valid_limbs + vec_val_bounded + vec_val injective)
-            if result {
-                //  all limbs equal → same sem_seq → same vec_val → same model
-                assert(sem_seq(self.inner.limbs@) =~= sem_seq(rhs.inner.limbs@)) by {
-                    assert forall|j: int| 0 <= j < self.inner.n_exec
-                        implies sem_seq(self.inner.limbs@)[j] == sem_seq(rhs.inner.limbs@)[j] by {
-                        assert(self.inner.limbs@[j] == rhs.inner.limbs@[j]);
-                    };
-                };
-            } else {
-                //  some limb differs → different sem_seq → different vec_val
-                //  Need: vec_val injective. Actually, sem values differ →
-                //  at least one sem_seq element differs → vec_val differs.
-                //  This requires a lemma about limbs_val being injective.
-                //  For now, use the fact that model@ == vec_val(...) as nat,
-                //  and if limbs differ, vec_val differs (from valid_limbs uniqueness).
-                //  Actually, valid_limbs + sem_seq element difference →
-                //  limbs_val differs (by positional encoding).
-                //  This is a nontrivial fact. Let me use a helper:
-                //  If all limbs same → vec_val same (proved above).
-                //  Contrapositive: vec_val different → some limb different.
-                //  But we have: some limb different → need vec_val different.
-                //  This IS true for positional number systems but needs proof.
-                //  For soundness, let me use the contrapositive of the forward direction
-                //  via the model: if models are equal, limbs must be equal (by reduction uniqueness).
-                //  Contrapositive: if limbs differ, models differ.
-                //  This follows from: wf guarantees model == vec_val(limbs) as nat,
-                //  and if all limbs of a valid representation are the same, vec_val is the same.
-                //  So: NOT all limbs same → NOT (vec_val same) → NOT (model same).
-                //  But we need: exists j, limb[j] != limb[j] → vec_val != vec_val.
-                //  This is the injectivity of positional representation, which IS true but complex to prove.
-                //  Simplify: assert the contrapositive of the forward direction.
-                //  Forward: a == b → limbs_equal. Contra: !limbs_equal → a != b.
-                //  The forward direction: if model@ are equal, since both are
-                //  vec_val(limbs@) as nat and vec_val is determined by limbs, if models equal
-                //  then vec_val equal. But multiple limb sequences can have same vec_val? No —
-                //  for valid_limbs (each limb < BASE), the representation is unique.
-                //  This is a standard positional number system uniqueness fact.
-                //  For now, appeal to: both models < prime_spec < limb_power(n).
-                //  And valid_limbs. The representation is unique when each digit < BASE.
-                //  TODO: prove positional representation uniqueness lemma.
-                //  For now, use a weaker approach: compare via subtraction.
-            }
-        }
-        result
+        //  a == b iff a <= b && b <= a. Avoids positional uniqueness proof.
+        let ab = <Self as verus_algebra::traits::runtime::RuntimeOrderedRingOps<int>>::le(self, rhs);
+        let ba = <Self as verus_algebra::traits::runtime::RuntimeOrderedRingOps<int>>::le(rhs, self);
+        ab && ba
     }
 
     fn copy(&self) -> (out: Self)
     {
-        let copied_limbs = generic_slice_vec(&self.inner.limbs, 0, self.inner.n_exec);
+        let copied_limbs = generic_slice_vec(&self.inner.limbs, 0, N);
         proof {
             assert(sem_seq(copied_limbs@) =~= sem_seq(self.inner.limbs@)) by {
-                assert forall|j: int| 0 <= j < self.inner.n_exec
+                assert forall|j: int| 0 <= j < N
                     implies sem_seq(copied_limbs@)[j] == sem_seq(self.inner.limbs@)[j] by {
                     assert(copied_limbs@[j].sem() == self.inner.limbs@[(0 + j) as int].sem());
                 };
@@ -621,9 +569,7 @@ impl verus_algebra::traits::runtime::RuntimeOrderedRingOps<int> for BoundedPrime
         }
         BoundedPrimeField {
             inner: RuntimePrimeField {
-                limbs: copied_limbs,
-                n_exec: self.inner.n_exec,
-                c_exec: self.inner.c_exec,
+                limbs: copied_limbs, n_exec: N, c_exec: C,
                 model: Ghost(self.inner.model@),
             },
             bound: Ghost(self.bound@),
@@ -632,17 +578,14 @@ impl verus_algebra::traits::runtime::RuntimeOrderedRingOps<int> for BoundedPrime
 
     fn zero_like(&self) -> (out: Self)
     {
-        let limbs = generic_zero_vec(self.inner.n_exec);
+        let limbs = generic_zero_vec(N);
         proof {
             lemma_vec_val_zeros(limbs@);
-            lemma_centered_zero(self.prime_spec());
+            lemma_centered_zero(Self::prime_spec());
         }
         BoundedPrimeField {
             inner: RuntimePrimeField {
-                limbs: limbs,
-                n_exec: self.inner.n_exec,
-                c_exec: self.inner.c_exec,
-                model: Ghost(0nat),
+                limbs: limbs, n_exec: N, c_exec: C, model: Ghost(0nat),
             },
             bound: Ghost(0nat),
         }
@@ -650,25 +593,15 @@ impl verus_algebra::traits::runtime::RuntimeOrderedRingOps<int> for BoundedPrime
 
     fn one_like(&self) -> (out: Self)
     {
-        let mut limbs = generic_zero_vec(self.inner.n_exec);
-        limbs.set(0, 1u32);
+        let limbs = scalar_to_padded_vec(1u32, N);
         proof {
-            //  vec_val([1, 0, 0, ...]) == 1
-            assert forall|j: int| 0 <= j < limbs@.len()
-                implies (#[trigger] limbs@[j]).sem() == if j == 0 { 1int } else { 0int } by {};
-            lemma_vec_val_zeros(limbs@.subrange(1, limbs@.len() as int));
-            //  Need: vec_val(limbs@) == 1. limbs_val([1, 0, ...]) = 1 + BASE * 0 = 1.
-            reveal_with_fuel(limbs_val, 2);
-            assert(sem_seq(limbs@)[0] == 1int);
-            //  centered(1, p) == 1 (since 1 <= half for p > 2)
-            lemma_odd_half(self.prime_spec());
+            //  scalar_to_padded_vec ensures vec_val == 1, valid_limbs, len == N
+            //  centered(1, p) == 1 since 1 <= half (half >= 1 for p > 2)
+            lemma_odd_half(Self::prime_spec());
         }
         BoundedPrimeField {
             inner: RuntimePrimeField {
-                limbs: limbs,
-                n_exec: self.inner.n_exec,
-                c_exec: self.inner.c_exec,
-                model: Ghost(1nat),
+                limbs: limbs, n_exec: N, c_exec: C, model: Ghost(1nat),
             },
             bound: Ghost(1nat),
         }
@@ -676,65 +609,45 @@ impl verus_algebra::traits::runtime::RuntimeOrderedRingOps<int> for BoundedPrime
 
     fn le(&self, rhs: &Self) -> (out: bool)
     {
-        //  centered(a,p) <= centered(b,p).
-        //  Cases: a_neg && !b_neg → true. !a_neg && b_neg → false.
-        //  Both non-negative (a,b <= half) → a <= b (raw comparison).
-        //  Both negative (a,b > half) → a <= b (larger raw = less negative = greater, so a <= b in raw means a <= b in centered too since both shifted by -p).
         let a_neg = is_negative_centered(&self.inner);
         let b_neg = is_negative_centered(&rhs.inner);
         if a_neg && !b_neg {
-            //  a < 0 <= b
-            proof {
-                assert(self.centered_value() < 0);
-                assert(rhs.centered_value() >= 0);
-            }
+            proof { assert(self.centered_value() < 0); assert(rhs.centered_value() >= 0); }
             true
         } else if !a_neg && b_neg {
-            //  a >= 0 > b
-            proof {
-                assert(self.centered_value() >= 0);
-                assert(rhs.centered_value() < 0);
-            }
+            proof { assert(self.centered_value() >= 0); assert(rhs.centered_value() < 0); }
             false
         } else {
-            //  Same sign: raw model comparison preserves centered ordering.
-            //  If both non-negative: centered(a) = a, centered(b) = b. a <= b iff raw a <= raw b.
-            //  If both negative: centered(a) = a-p, centered(b) = b-p. a-p <= b-p iff a <= b.
-            //  So in both cases: centered(a) <= centered(b) iff a <= b (as raw nats).
-            //  Compare via subtraction: a <= b iff b - a doesn't borrow.
-            let (_diff, borrow) = generic_sub_limbs(&rhs.inner.limbs, &self.inner.limbs, self.inner.n_exec);
+            //  Same sign: centered ordering == raw ordering (both shifted by same -p or 0).
+            let (_diff, borrow) = generic_sub_limbs(&rhs.inner.limbs, &self.inner.limbs, N);
             let result = borrow == 0u32;
             proof {
-                let p = self.prime_spec();
-                let half = (p as int - 1) / 2;
+                let p = Self::prime_spec();
                 let a = self.inner.model@;
                 let b = rhs.inner.model@;
-                let lp = limb_power(self.inner.n_exec as nat);
+                let lp = limb_power(N as nat);
                 lemma_vec_val_bounded(self.inner.limbs@);
                 lemma_vec_val_bounded(rhs.inner.limbs@);
                 lemma_vec_val_bounded(_diff@);
-                //  sub_limbs: diff + a == b + borrow * lp
-                //  borrow == 0 → diff == b - a → b >= a.
-                //  borrow == 1 → diff + a == b + lp → a > b (since diff >= 0, b < lp).
                 if borrow.sem() == 0 {
-                    assert(vec_val(_diff@) + vec_val(self.inner.limbs@) == vec_val(rhs.inner.limbs@));
+                    assert(borrow.sem() * lp == 0int) by(nonlinear_arith) requires borrow.sem() == 0;
                     assert(a as int <= b as int) by(nonlinear_arith)
-                        requires vec_val(_diff@) >= 0,
-                            vec_val(_diff@) + a as int == b as int;
+                        requires vec_val(_diff@) + a as int == b as int,
+                            vec_val(_diff@) >= 0;
                 } else {
-                    assert(vec_val(_diff@) + vec_val(self.inner.limbs@)
-                        == vec_val(rhs.inner.limbs@) + borrow.sem() * lp);
                     assert(a as int > b as int) by(nonlinear_arith)
-                        requires vec_val(_diff@) + a as int == b as int + lp,
-                            vec_val(_diff@) < lp, lp > 0;
+                        requires vec_val(_diff@) + a as int == b as int + borrow.sem() * lp,
+                            vec_val(_diff@) < lp, lp > 0, borrow.sem() >= 1;
                 }
-                //  a <= b ↔ centered(a) <= centered(b) when same sign
+                //  Same sign → same centered branch → ordering preserved
+                lemma_odd_half(p);
                 if !a_neg && !b_neg {
-                    //  Both non-negative: centered = identity
                     assert(centered(a, p) == a as int);
                     assert(centered(b, p) == b as int);
                 } else {
-                    //  Both negative: centered(x) = x - p, ordering preserved
+                    //  Both negative: a > half, b > half
+                    assert(a as int > Self::half_prime());
+                    assert(b as int > Self::half_prime());
                     assert(centered(a, p) == a as int - p as int);
                     assert(centered(b, p) == b as int - p as int);
                 }
