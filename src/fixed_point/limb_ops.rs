@@ -784,54 +784,58 @@ pub fn generic_add_limbs<T: LimbOps>(a: &[T], b: &[T], n: usize) -> (result: (Ve
 
 ///  Carry-chain addition writing to caller-provided output buffer.
 ///  GPU-compatible: no Vec allocation, writes to out[0..n].
-pub fn add_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut [T], n: usize) -> (carry: T)
+pub fn add_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usize, n: usize) -> (carry: T)
     requires
-        a@.len() == n, b@.len() == n, old(out)@.len() >= n,
+        a@.len() >= n, b@.len() >= n, old(out)@.len() >= out_off + n,
+        out_off + n < usize::MAX,
         valid_limbs(a@), valid_limbs(b@),
     ensures
         out@.len() == old(out)@.len(),
         0 <= carry.sem() < LIMB_BASE(),
-        forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[j]).sem() < LIMB_BASE(),
+        forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
 {
     let ghost out_len = out@.len();
     let mut carry: T = T::zero_val();
     for i in 0..n
         invariant
-            a@.len() == n, b@.len() == n,
-            out@.len() == out_len, out_len >= n,
+            a@.len() >= n, b@.len() >= n,
+            out@.len() == out_len, out_len >= out_off + n,
+            out_off + n < usize::MAX,
             valid_limbs(a@), valid_limbs(b@),
             0 <= carry.sem() < LIMB_BASE(),
-            forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[j]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
     {
         let (digit, next_carry) = a[i].add3(&b[i], &carry);
-        out.set(i, digit);
+        out.set(out_off + i, digit);
         carry = next_carry;
     }
     carry
 }
 
 ///  Borrow-chain subtraction writing to caller-provided output buffer.
-pub fn sub_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut [T], n: usize) -> (borrow: T)
+pub fn sub_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usize, n: usize) -> (borrow: T)
     requires
-        a@.len() == n, b@.len() == n, old(out)@.len() >= n,
+        a@.len() == n, b@.len() == n, old(out)@.len() >= out_off + n,
+        out_off + n < usize::MAX,
         valid_limbs(a@), valid_limbs(b@),
     ensures
         out@.len() == old(out)@.len(),
         borrow.sem() == 0 || borrow.sem() == 1,
-        forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[j]).sem() < LIMB_BASE(),
+        forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
 {
     let ghost out_len = out@.len();
     let mut borrow: T = T::zero_val();
     for i in 0..n
         invariant
             a@.len() == n, b@.len() == n,
-            out@.len() == out_len, out_len >= n,
+            out@.len() == out_len, out_len >= out_off + n,
+            out_off + n < usize::MAX,
             valid_limbs(a@), valid_limbs(b@),
             borrow.sem() == 0 || borrow.sem() == 1,
-            forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[j]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
     {
         let (digit, next_borrow) = a[i].sub_borrow(&b[i], &borrow);
-        out.set(i, digit);
+        out.set(out_off + i, digit);
         borrow = next_borrow;
     }
     borrow
@@ -839,12 +843,13 @@ pub fn sub_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut [T], n: usize) -> (b
 
 ///  Conditional select writing to caller-provided output buffer.
 pub fn select_vec_to<T: LimbOps>(
-    cond: &T, if_zero: &[T], if_nonzero: &[T], out: &mut [T], n: usize,
+    cond: &T, if_zero: &[T], if_nonzero: &[T], out: &mut Vec<T>, out_off: usize, n: usize,
 )
     requires
         cond.sem() == 0 || cond.sem() == 1,
         if_zero@.len() == n, if_nonzero@.len() == n,
-        old(out)@.len() >= n,
+        old(out)@.len() >= out_off + n,
+        out_off + n < usize::MAX,
         valid_limbs(if_zero@), valid_limbs(if_nonzero@),
     ensures out@.len() == old(out)@.len(),
 {
@@ -852,17 +857,18 @@ pub fn select_vec_to<T: LimbOps>(
     for i in 0..n
         invariant
             if_zero@.len() == n, if_nonzero@.len() == n,
-            out@.len() == out_len, out_len >= n,
+            out@.len() == out_len, out_len >= out_off + n,
+            out_off + n < usize::MAX,
             valid_limbs(if_zero@), valid_limbs(if_nonzero@),
             cond.sem() == 0 || cond.sem() == 1,
     {
         let selected = T::select_limb(cond, if_zero[i].clone_limb(), if_nonzero[i].clone_limb());
-        out.set(i, selected);
+        out.set(out_off + i, selected);
     }
 }
 
 ///  Copy a slice of a Vec into an output buffer.
-pub fn slice_vec_to<T: LimbOps>(a: &[T], start: usize, end: usize, out: &mut [T], out_off: usize)
+pub fn slice_vec_to<T: LimbOps>(a: &[T], start: usize, end: usize, out: &mut Vec<T>, out_off: usize)
     requires
         start <= end, end <= a@.len(),
         out_off + (end - start) < usize::MAX,
@@ -894,12 +900,15 @@ pub fn slice_vec_to<T: LimbOps>(a: &[T], start: usize, end: usize, out: &mut [T]
 ///  a has sign a_sign (0=pos, 1=neg), b has sign b_sign. Result in out.
 pub fn signed_add_to<T: LimbOps>(
     a: &[T], a_sign: &T, b: &[T], b_sign: &T,
-    out: &mut [T], tmp1: &mut [T], tmp2: &mut [T],
+    out: &mut Vec<T>, out_off: usize,
+    tmp1: &mut Vec<T>, tmp1_off: usize,
+    tmp2: &mut Vec<T>, tmp2_off: usize,
     n: usize,
 ) -> (out_sign: T)
     requires
         a@.len() == n, b@.len() == n,
-        old(out)@.len() >= n, old(tmp1)@.len() >= n, old(tmp2)@.len() >= n,
+        old(out)@.len() >= out_off + n, old(tmp1)@.len() >= tmp1_off + n, old(tmp2)@.len() >= tmp2_off + n,
+        out_off + n < usize::MAX, tmp1_off + n < usize::MAX, tmp2_off + n < usize::MAX,
         valid_limbs(a@), valid_limbs(b@),
         a_sign.sem() == 0 || a_sign.sem() == 1,
         b_sign.sem() == 0 || b_sign.sem() == 1,
@@ -908,11 +917,11 @@ pub fn signed_add_to<T: LimbOps>(
         out_sign.sem() == 0 || out_sign.sem() == 1,
 {
     // Compute a + b (unsigned) → tmp1
-    let _sum_carry = add_limbs_to(a, b, tmp1, n);
+    let _sum_carry = add_limbs_to(a, b, tmp1, tmp1_off, n);
     // Compute a - b → tmp2
-    let borrow_ab = sub_limbs_to(a, b, tmp2, n);
+    let borrow_ab = sub_limbs_to(a, b, tmp2, tmp2_off, n);
     // Compute b - a → out (will be overwritten later if not used)
-    let _borrow_ba = sub_limbs_to(b, a, out, n);
+    let _borrow_ba = sub_limbs_to(b, a, out, out_off, n);
 
     // same_sign indicator
     let (sign_diff, sign_borrow) = a_sign.sub_borrow(b_sign, &T::zero_val());
@@ -939,18 +948,19 @@ pub fn signed_add_to<T: LimbOps>(
     let ghost out_len = out@.len();
     for i in 0..n
         invariant
-            out@.len() == out_len, out_len >= n,
-            tmp1@.len() >= n, tmp2@.len() >= n,
+            out@.len() == out_len, out_len >= out_off + n,
+            out_off + n < usize::MAX, tmp1_off + n < usize::MAX, tmp2_off + n < usize::MAX,
+            tmp1@.len() >= tmp1_off + n, tmp2@.len() >= tmp2_off + n,
             same_sign.sem() == 0 || same_sign.sem() == 1,
             borrow_ab.sem() == 0 || borrow_ab.sem() == 1,
-            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] tmp1@[j]).sem() < LIMB_BASE(),
-            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] tmp2@[j]).sem() < LIMB_BASE(),
-            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[j]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] tmp1@[(tmp1_off as int + j) as int]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] tmp2@[(tmp2_off as int + j) as int]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
     {
-        let diff_val = T::select_limb(&borrow_ab, tmp2[i].clone_limb(), out[i].clone_limb());
+        let diff_val = T::select_limb(&borrow_ab, tmp2[tmp2_off + i].clone_limb(), out[out_off + i].clone_limb());
         // same_sign=1 → sum (tmp1), same_sign=0 → diff
-        let final_val = T::select_limb(&same_sign, diff_val, tmp1[i].clone_limb());
-        out.set(i, final_val);
+        let final_val = T::select_limb(&same_sign, diff_val, tmp1[tmp1_off + i].clone_limb());
+        out.set(out_off + i, final_val);
     }
 
     result_sign
@@ -959,12 +969,15 @@ pub fn signed_add_to<T: LimbOps>(
 ///  Signed subtraction: a - b = a + (-b). No Vec::new.
 pub fn signed_sub_to<T: LimbOps>(
     a: &[T], a_sign: &T, b: &[T], b_sign: &T,
-    out: &mut [T], tmp1: &mut [T], tmp2: &mut [T],
+    out: &mut Vec<T>, out_off: usize,
+    tmp1: &mut Vec<T>, tmp1_off: usize,
+    tmp2: &mut Vec<T>, tmp2_off: usize,
     n: usize,
 ) -> (out_sign: T)
     requires
         a@.len() == n, b@.len() == n,
-        old(out)@.len() >= n, old(tmp1)@.len() >= n, old(tmp2)@.len() >= n,
+        old(out)@.len() >= out_off + n, old(tmp1)@.len() >= tmp1_off + n, old(tmp2)@.len() >= tmp2_off + n,
+        out_off + n < usize::MAX, tmp1_off + n < usize::MAX, tmp2_off + n < usize::MAX,
         valid_limbs(a@), valid_limbs(b@),
         a_sign.sem() == 0 || a_sign.sem() == 1,
         b_sign.sem() == 0 || b_sign.sem() == 1,
@@ -973,21 +986,24 @@ pub fn signed_sub_to<T: LimbOps>(
         out_sign.sem() == 0 || out_sign.sem() == 1,
 {
     let neg_b_sign = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
-    signed_add_to(a, a_sign, b, &neg_b_sign, out, tmp1, tmp2, n)
+    signed_add_to(a, a_sign, b, &neg_b_sign, out, out_off, tmp1, tmp1_off, tmp2, tmp2_off, n)
 }
 
 ///  Signed fixed-point multiply. No Vec::new.
 pub fn signed_mul_to<T: LimbOps>(
     a: &[T], a_sign: &T, b: &[T], b_sign: &T,
-    out: &mut [T], prod: &mut [T],
+    out: &mut Vec<T>, out_off: usize,
+    prod: &mut Vec<T>, prod_off: usize,
     n: usize, frac_limbs: usize,
 ) -> (out_sign: T)
     requires
         a@.len() == n, b@.len() == n,
         n > 0, n <= 0x1FFF_FFFF,
         valid_limbs(a@), valid_limbs(b@),
-        old(out)@.len() >= n,
-        old(prod)@.len() >= 2 * n,
+        old(out)@.len() >= out_off + n,
+        old(prod)@.len() >= prod_off + 2 * n,
+        out_off + n < usize::MAX,
+        prod_off + 2 * n < usize::MAX,
         frac_limbs + n <= 2 * n,
         frac_limbs + n < usize::MAX,
         a_sign.sem() == 0 || a_sign.sem() == 1,
@@ -996,8 +1012,8 @@ pub fn signed_mul_to<T: LimbOps>(
         prod@.len() == old(prod)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
 {
-    mul_schoolbook_to(a, b, prod, n);
-    slice_vec_to(prod, frac_limbs, frac_limbs + n, out, 0);
+    mul_schoolbook_to(a, b, prod, prod_off, n);
+    slice_vec_to(prod.as_slice(), prod_off + frac_limbs, prod_off + frac_limbs + n, out, out_off);
     let sign_b_flipped = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
     T::select_limb(a_sign, b_sign.clone_limb(), sign_b_flipped)
 }
@@ -1666,13 +1682,14 @@ pub proof fn lemma_vec_val_pad<T: LimbOps>(a: Seq<T>, padded: Seq<T>)
 ///  Schoolbook multiply writing to output buffer. GPU-compatible (no Vec allocation).
 ///  Writes 2n limbs to out[0..2n]. out must be pre-zeroed or at least length >= 2n.
 pub fn mul_schoolbook_to<T: LimbOps>(
-    a: &[T], b: &[T], out: &mut [T], n: usize,
+    a: &[T], b: &[T], out: &mut Vec<T>, out_off: usize, n: usize,
 )
     requires
         a@.len() == n, b@.len() == n,
         n > 0, n <= 0x3FFF_FFFF,
         valid_limbs(a@), valid_limbs(b@),
-        old(out)@.len() >= 2 * n,
+        old(out)@.len() >= out_off + 2 * n,
+        out_off + 2 * n < usize::MAX,
     ensures
         out@.len() == old(out)@.len(),
 {
@@ -1681,9 +1698,9 @@ pub fn mul_schoolbook_to<T: LimbOps>(
 
     // Zero the output region
     for i in 0..nn
-        invariant out@.len() == out_len, out_len >= nn, nn == 2 * n,
+        invariant out@.len() == out_len, out_len >= out_off + nn, nn == 2 * n, out_off + nn < usize::MAX,
     {
-        out.set(i, T::zero_val());
+        out.set(out_off + i, T::zero_val());
     }
 
     // Schoolbook: for each limb b[i], multiply a by b[i] and accumulate into out
@@ -1691,26 +1708,28 @@ pub fn mul_schoolbook_to<T: LimbOps>(
         invariant
             a@.len() == n, b@.len() == n,
             nn == 2 * n, n <= 0x3FFF_FFFF,
-            out@.len() == out_len, out_len >= nn,
+            out@.len() == out_len, out_len >= out_off + nn,
+            out_off + nn < usize::MAX,
             valid_limbs(a@), valid_limbs(b@),
     {
         let mut carry: T = T::zero_val();
         for j in 0..n
             invariant
                 a@.len() == n, b@.len() == n,
-                out@.len() == out_len, out_len >= nn,
+                out@.len() == out_len, out_len >= out_off + nn,
                 nn == 2 * n, n <= 0x3FFF_FFFF,
+                out_off + nn < usize::MAX,
                 i < n,
                 valid_limbs(a@), valid_limbs(b@),
                 0 <= carry.sem() < LIMB_BASE(),
         {
             let (prod_lo, prod_hi) = a[j].mul2(&b[i]);
-            let (sum1, c1) = prod_lo.add3(&out[i + j], &carry);
+            let (sum1, c1) = prod_lo.add3(&out[out_off + i + j], &carry);
             let (new_carry, _c2) = prod_hi.add3(&c1, &T::zero_val());
-            out.set(i + j, sum1);
+            out.set(out_off + i + j, sum1);
             carry = new_carry;
         }
-        out.set(i + n, carry);
+        out.set(out_off + i + n, carry);
     }
 }
 
@@ -1721,28 +1740,30 @@ pub fn mul_schoolbook_to<T: LimbOps>(
 ///  The transpiler unrolls this into depth-stratified variants.
 // #[gpu_base_case(mul_schoolbook_to)]
 pub fn mul_to<T: LimbOps>(
-    a: &[T], b: &[T], out: &mut [T], n: usize,
+    a: &[T], b: &[T], out: &mut Vec<T>, out_off: usize, n: usize,
 )
     requires
         a@.len() == n, b@.len() == n,
         n > 0, n <= 0x1FFF_FFFF,
         valid_limbs(a@), valid_limbs(b@),
-        old(out)@.len() >= 2 * n,
+        old(out)@.len() >= out_off + 2 * n,
+        out_off + 2 * n < usize::MAX,
     ensures
         out@.len() == old(out)@.len(),
 {
     let ghost out_len = out@.len();
     if n <= 4 {
-        mul_schoolbook_to(a, b, out, n);
+        mul_schoolbook_to(a, b, out, out_off, n);
     } else {
         let (product, _gc) = generic_mul_karatsuba(a, b, n);
         for i in 0..(2 * n)
             invariant
                 product@.len() == 2 * n,
-                out@.len() == out_len, out_len >= 2 * n,
+                out@.len() == out_len, out_len >= out_off + 2 * n,
+                out_off + 2 * n < usize::MAX,
                 n <= 0x3FFF_FFFF,
         {
-            out.set(i, product[i].clone_limb());
+            out.set(out_off + i, product[i].clone_limb());
         }
     }
 }
