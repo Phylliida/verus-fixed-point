@@ -896,7 +896,12 @@ pub fn slice_vec_to<T: LimbOps>(a: &[T], start: usize, end: usize, out: &mut Vec
         out_off + (end - start) < usize::MAX,
         out_off + (end - start) <= old(out)@.len(),
     ensures out@.len() == old(out)@.len(),
+        // Copied values match source
+        forall |j: int| 0 <= j < end - start ==> (#[trigger] out@[(out_off as int + j) as int]).sem() == a@[(start as int + j) as int].sem(),
+        // Frame: outside [out_off, out_off+len) unchanged
+        forall |j: int| 0 <= j < out@.len() && !(out_off as int <= j < out_off as int + (end - start) as int) ==> out@[j] == old(out)@[j],
 {
+    let ghost old_out = out@;
     let ghost out_len = out@.len();
     let len = end - start;
     let mut si: usize = start;
@@ -910,6 +915,10 @@ pub fn slice_vec_to<T: LimbOps>(a: &[T], start: usize, end: usize, out: &mut Vec
             si <= end, di <= out_off + len,
             out_off + len <= out_len,
             out_off + len < usize::MAX,
+            // Copied values match
+            forall |j: int| 0 <= j < idx ==> (#[trigger] out@[(out_off as int + j) as int]).sem() == a@[(start as int + j) as int].sem(),
+            // Frame
+            forall |j: int| 0 <= j < out_len && !(out_off as int <= j < out_off as int + idx) ==> out@[j] == old_out[j],
     {
         out.set(di, a[si].clone_limb());
         si = si + 1;
@@ -937,6 +946,8 @@ pub fn signed_add_to<T: LimbOps>(
     ensures out@.len() == old(out)@.len(),
         tmp1@.len() == old(tmp1)@.len(), tmp2@.len() == old(tmp2)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
+        // Valid limbs on output region
+        forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
 {
     // Compute a + b (unsigned) → tmp1
     let _sum_carry = add_limbs_to(a, b, tmp1, tmp1_off, n);
@@ -1006,6 +1017,7 @@ pub fn signed_sub_to<T: LimbOps>(
     ensures out@.len() == old(out)@.len(),
         tmp1@.len() == old(tmp1)@.len(), tmp2@.len() == old(tmp2)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
+        forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
 {
     let neg_b_sign = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
     signed_add_to(a, a_sign, b, &neg_b_sign, out, out_off, tmp1, tmp1_off, tmp2, tmp2_off, n)
@@ -1033,9 +1045,25 @@ pub fn signed_mul_to<T: LimbOps>(
     ensures out@.len() == old(out)@.len(),
         prod@.len() == old(prod)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
+        // Valid limbs on output region
+        forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
 {
     mul_schoolbook_to(a, b, prod, prod_off, n);
     slice_vec_to(prod.as_slice(), prod_off + frac_limbs, prod_off + frac_limbs + n, out, out_off);
+    // Prove valid_limbs: slice_vec_to copies values from mul_schoolbook_to output
+    proof {
+        assert forall |j: int| 0 <= j < n
+            implies 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE()
+        by {
+            // slice_vec_to ensures copied values match source
+            assert(out@[(out_off as int + j) as int].sem()
+                == prod@[((prod_off + frac_limbs) as int + j) as int].sem());
+            // mul_schoolbook_to ensures valid limbs on prod region
+            // frac_limbs + j is within [0, 2*n)
+            assert(0 <= (frac_limbs as int + j) && (frac_limbs as int + j) < 2 * n);
+            assert(0 <= prod@[(prod_off as int + (frac_limbs as int + j)) as int].sem() < LIMB_BASE());
+        }
+    }
     let sign_b_flipped = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
     T::select_limb(a_sign, b_sign.clone_limb(), sign_b_flipped)
 }
