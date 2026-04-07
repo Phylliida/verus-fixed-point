@@ -937,7 +937,7 @@ pub fn signed_add_to<T: LimbOps>(
     n: usize,
 ) -> (out_sign: T)
     requires
-        a@.len() == n, b@.len() == n,
+        a@.len() >= n, b@.len() >= n,
         old(out)@.len() >= out_off + n, old(tmp1)@.len() >= tmp1_off + n, old(tmp2)@.len() >= tmp2_off + n,
         out_off + n < usize::MAX, tmp1_off + n < usize::MAX, tmp2_off + n < usize::MAX,
         valid_limbs(a@), valid_limbs(b@),
@@ -1008,7 +1008,7 @@ pub fn signed_sub_to<T: LimbOps>(
     n: usize,
 ) -> (out_sign: T)
     requires
-        a@.len() == n, b@.len() == n,
+        a@.len() >= n, b@.len() >= n,
         old(out)@.len() >= out_off + n, old(tmp1)@.len() >= tmp1_off + n, old(tmp2)@.len() >= tmp2_off + n,
         out_off + n < usize::MAX, tmp1_off + n < usize::MAX, tmp2_off + n < usize::MAX,
         valid_limbs(a@), valid_limbs(b@),
@@ -1031,7 +1031,7 @@ pub fn signed_mul_to<T: LimbOps>(
     n: usize, frac_limbs: usize,
 ) -> (out_sign: T)
     requires
-        a@.len() == n, b@.len() == n,
+        a@.len() >= n, b@.len() >= n,
         n > 0, n <= 0x1FFF_FFFF,
         valid_limbs(a@), valid_limbs(b@),
         old(out)@.len() >= out_off + n,
