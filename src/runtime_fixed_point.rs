@@ -4654,4 +4654,61 @@ pub proof fn lemma_signed_self_mul_spec<T: LimbOps>(x: &GenericFixedPoint<T>)
     //   = (sv*sv / limb_power(f)) % limb_power(n)
 }
 
+/// signed_add is exact (no modular wrapping) when the true sum fits in [-P+1, P-1].
+///
+/// The signed_add postcondition is a 3-way disjunction. This lemma collapses it
+/// to the exact case when both inputs are bounded.
+pub proof fn lemma_signed_add_exact<T: LimbOps>(
+    a: &GenericFixedPoint<T>,
+    b: &GenericFixedPoint<T>,
+    out: &GenericFixedPoint<T>,
+)
+    requires
+        a.wf_spec(), b.wf_spec(), out.wf_spec(),
+        a.n_exec == b.n_exec, a.frac_exec == b.frac_exec,
+        out.n_exec == a.n_exec, out.frac_exec == a.frac_exec,
+        // Bounded inputs: true sum doesn't overflow
+        a.signed_val() + b.signed_val() < limb_power(a.n_spec()),
+        a.signed_val() + b.signed_val() > -(limb_power(a.n_spec()) as int),
+        // signed_add postcondition holds (call this after signed_add)
+        out.signed_val() == a.signed_val() + b.signed_val()
+            || (out.signed_val() == a.signed_val() + b.signed_val() - limb_power(a.n_spec())
+                && a.signed_val() + b.signed_val() >= limb_power(a.n_spec()))
+            || (out.signed_val() == a.signed_val() + b.signed_val() + limb_power(a.n_spec())
+                && a.signed_val() + b.signed_val() <= -(limb_power(a.n_spec()) as int)),
+    ensures
+        out.signed_val() == a.signed_val() + b.signed_val(),
+{
+    let sum = a.signed_val() + b.signed_val();
+    let p = limb_power(a.n_spec());
+    // Case 2 requires sum >= P, but we have sum < P → contradiction
+    // Case 3 requires sum <= -P, but we have sum > -P → contradiction
+    // Only case 1 remains
+}
+
+/// Convenience: signed_sub is exact for bounded inputs.
+/// signed_sub(a, b) = signed_add(a, -b), so |a.sv - b.sv| < P suffices.
+pub proof fn lemma_signed_sub_exact<T: LimbOps>(
+    a: &GenericFixedPoint<T>,
+    b: &GenericFixedPoint<T>,
+    out: &GenericFixedPoint<T>,
+)
+    requires
+        a.wf_spec(), b.wf_spec(), out.wf_spec(),
+        a.n_exec == b.n_exec, a.frac_exec == b.frac_exec,
+        out.n_exec == a.n_exec, out.frac_exec == a.frac_exec,
+        a.signed_val() - b.signed_val() < limb_power(a.n_spec()),
+        a.signed_val() - b.signed_val() > -(limb_power(a.n_spec()) as int),
+        // signed_sub postcondition (same structure as signed_add with b negated)
+        out.signed_val() == a.signed_val() - b.signed_val()
+            || (out.signed_val() == a.signed_val() - b.signed_val() - limb_power(a.n_spec())
+                && a.signed_val() - b.signed_val() >= limb_power(a.n_spec()))
+            || (out.signed_val() == a.signed_val() - b.signed_val() + limb_power(a.n_spec())
+                && a.signed_val() - b.signed_val() <= -(limb_power(a.n_spec()) as int)),
+    ensures
+        out.signed_val() == a.signed_val() - b.signed_val(),
+{
+    // Same logic as lemma_signed_add_exact
+}
+
 } //  verus!
