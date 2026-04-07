@@ -8,6 +8,7 @@
 ///  use this trait, so correctness is proved once for both instantiations.
 
 use vstd::prelude::*;
+use vstd::slice::SliceAdditionalExecFns;
 use super::limbs::limb_base;
 #[cfg(verus_keep_ghost)]
 use super::limbs::{lemma_limb_base_is_pow2_32, lemma_karatsuba_identity, lemma_mul_distribute};
@@ -672,7 +673,7 @@ pub proof fn lemma_sem_seq_subrange<T: LimbOps>(s: Seq<T>, lo: int, hi: int)
 ///  Generic carry-chain addition of two n-limb arrays.
 ///  Returns (result, carry_out).
 ///  Postcondition uses limbs_val(sem_seq(...)) to interpret results as integers.
-pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (result: (Vec<T>, T))
+pub fn generic_add_limbs<T: LimbOps>(a: &[T], b: &[T], n: usize) -> (result: (Vec<T>, T))
     requires
         a@.len() == n,
         b@.len() == n,
@@ -1007,7 +1008,7 @@ pub fn signed_mul_to<T: LimbOps>(
 
 ///  Multiply n-limb array by a single limb. Returns (n+1)-limb result.
 ///  limbs_val(result) == limbs_val(a) * scalar.sem()
-pub fn generic_mul_by_limb<T: LimbOps>(a: &Vec<T>, scalar: &T, n: usize) -> (result: Vec<T>)
+pub fn generic_mul_by_limb<T: LimbOps>(a: &[T], scalar: &T, n: usize) -> (result: Vec<T>)
     requires
         a@.len() == n,
         n < 0x7FFF_FFFF,
@@ -1151,7 +1152,7 @@ pub open spec fn valid_limbs<T: LimbOps>(s: Seq<T>) -> bool {
 ///  Generic borrow-chain subtraction of two n-limb arrays.
 ///  Returns (result, borrow_out).
 ///  Semantics: result + b == a + borrow_out * BASE^n
-pub fn generic_sub_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (result: (Vec<T>, T))
+pub fn generic_sub_limbs<T: LimbOps>(a: &[T], b: &[T], n: usize) -> (result: (Vec<T>, T))
     requires
         a@.len() == n,
         b@.len() == n,
@@ -1276,7 +1277,7 @@ pub fn generic_zero_vec<T: LimbOps>(n: usize) -> (result: Vec<T>)
 }
 
 ///  Copy a subrange of a Vec.
-pub fn generic_slice_vec<T: LimbOps>(a: &Vec<T>, start: usize, end: usize) -> (result: Vec<T>)
+pub fn generic_slice_vec<T: LimbOps>(a: &[T], start: usize, end: usize) -> (result: Vec<T>)
     requires start <= end, end <= a@.len(),
     ensures result@.len() == end - start,
         forall |j: int| 0 <= j < result@.len() ==> (#[trigger] result@[j]).sem() == a@[(start + j) as int].sem(),
@@ -1329,7 +1330,7 @@ pub fn generic_select_vec<T: LimbOps>(cond: &T, if_zero: &Vec<T>, if_nonzero: &V
 }
 
 ///  Pad a Vec with zeros to reach target length.
-pub fn generic_pad_to_length<T: LimbOps>(a: &Vec<T>, target: usize) -> (result: Vec<T>)
+pub fn generic_pad_to_length<T: LimbOps>(a: &[T], target: usize) -> (result: Vec<T>)
     requires target >= a@.len(), valid_limbs(a@),
     ensures result@.len() == target, valid_limbs(result@),
         forall |j: int| 0 <= j < a@.len() ==> (#[trigger] result@[j]).sem() == a@[j].sem(),
@@ -1355,7 +1356,7 @@ pub fn generic_pad_to_length<T: LimbOps>(a: &Vec<T>, target: usize) -> (result: 
 }
 
 ///  Shift left (prepend zeros).
-pub fn generic_shift_left<T: LimbOps>(a: &Vec<T>, offset: usize) -> (result: Vec<T>)
+pub fn generic_shift_left<T: LimbOps>(a: &[T], offset: usize) -> (result: Vec<T>)
     requires valid_limbs(a@),
     ensures result@.len() == a@.len() + offset,
         valid_limbs(result@),
@@ -1720,7 +1721,7 @@ pub fn mul_schoolbook_to<T: LimbOps>(
 ///  The transpiler unrolls this into depth-stratified variants.
 // #[gpu_base_case(mul_schoolbook_to)]
 pub fn mul_to<T: LimbOps>(
-    a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usize,
+    a: &[T], b: &[T], out: &mut [T], n: usize,
 )
     requires
         a@.len() == n, b@.len() == n,
@@ -1752,7 +1753,7 @@ pub fn mul_to<T: LimbOps>(
 ///  vec_val(result) + ghost_carry * BASE^(2n) == vec_val(a) * vec_val(b)
 ///  For valid u32 limbs, ghost_carry == 0 (product fits in 2n limbs).
 pub fn generic_mul_schoolbook<T: LimbOps>(
-    a: &Vec<T>, b: &Vec<T>, n: usize,
+    a: &[T], b: &[T], n: usize,
 ) -> (result: (Vec<T>, Ghost<int>))
     requires
         a@.len() == n,
@@ -1861,7 +1862,7 @@ pub fn generic_mul_schoolbook<T: LimbOps>(
 ///  vec_val(result) + ghost_carry * BASE^(2n) == vec_val(a) * vec_val(b)
 // #[gpu_base_case(generic_mul_schoolbook)]
 pub fn generic_mul_karatsuba<T: LimbOps>(
-    a: &Vec<T>, b: &Vec<T>, n: usize,
+    a: &[T], b: &[T], n: usize,
 ) -> (result: (Vec<T>, Ghost<int>))
     requires
         a@.len() == n,
