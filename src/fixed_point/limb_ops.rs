@@ -783,7 +783,7 @@ pub fn generic_add_limbs<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, n: usize) -> (resul
 
 ///  Carry-chain addition writing to caller-provided output buffer.
 ///  GPU-compatible: no Vec allocation, writes to out[0..n].
-pub fn add_limbs_to<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usize) -> (carry: T)
+pub fn add_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut [T], n: usize) -> (carry: T)
     requires
         a@.len() == n, b@.len() == n, old(out)@.len() >= n,
         valid_limbs(a@), valid_limbs(b@),
@@ -810,7 +810,7 @@ pub fn add_limbs_to<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usi
 }
 
 ///  Borrow-chain subtraction writing to caller-provided output buffer.
-pub fn sub_limbs_to<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usize) -> (borrow: T)
+pub fn sub_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut [T], n: usize) -> (borrow: T)
     requires
         a@.len() == n, b@.len() == n, old(out)@.len() >= n,
         valid_limbs(a@), valid_limbs(b@),
@@ -838,7 +838,7 @@ pub fn sub_limbs_to<T: LimbOps>(a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usi
 
 ///  Conditional select writing to caller-provided output buffer.
 pub fn select_vec_to<T: LimbOps>(
-    cond: &T, if_zero: &Vec<T>, if_nonzero: &Vec<T>, out: &mut Vec<T>, n: usize,
+    cond: &T, if_zero: &[T], if_nonzero: &[T], out: &mut [T], n: usize,
 )
     requires
         cond.sem() == 0 || cond.sem() == 1,
@@ -861,7 +861,7 @@ pub fn select_vec_to<T: LimbOps>(
 }
 
 ///  Copy a slice of a Vec into an output buffer.
-pub fn slice_vec_to<T: LimbOps>(a: &Vec<T>, start: usize, end: usize, out: &mut Vec<T>, out_off: usize)
+pub fn slice_vec_to<T: LimbOps>(a: &[T], start: usize, end: usize, out: &mut [T], out_off: usize)
     requires
         start <= end, end <= a@.len(),
         out_off + (end - start) < usize::MAX,
@@ -892,8 +892,8 @@ pub fn slice_vec_to<T: LimbOps>(a: &Vec<T>, start: usize, end: usize, out: &mut 
 ///  Uses tmp1, tmp2, tmp3 as scratch (each >= n limbs).
 ///  a has sign a_sign (0=pos, 1=neg), b has sign b_sign. Result in out.
 pub fn signed_add_to<T: LimbOps>(
-    a: &Vec<T>, a_sign: &T, b: &Vec<T>, b_sign: &T,
-    out: &mut Vec<T>, tmp1: &mut Vec<T>, tmp2: &mut Vec<T>,
+    a: &[T], a_sign: &T, b: &[T], b_sign: &T,
+    out: &mut [T], tmp1: &mut [T], tmp2: &mut [T],
     n: usize,
 ) -> (out_sign: T)
     requires
@@ -957,8 +957,8 @@ pub fn signed_add_to<T: LimbOps>(
 
 ///  Signed subtraction: a - b = a + (-b). No Vec::new.
 pub fn signed_sub_to<T: LimbOps>(
-    a: &Vec<T>, a_sign: &T, b: &Vec<T>, b_sign: &T,
-    out: &mut Vec<T>, tmp1: &mut Vec<T>, tmp2: &mut Vec<T>,
+    a: &[T], a_sign: &T, b: &[T], b_sign: &T,
+    out: &mut [T], tmp1: &mut [T], tmp2: &mut [T],
     n: usize,
 ) -> (out_sign: T)
     requires
@@ -977,8 +977,8 @@ pub fn signed_sub_to<T: LimbOps>(
 
 ///  Signed fixed-point multiply. No Vec::new.
 pub fn signed_mul_to<T: LimbOps>(
-    a: &Vec<T>, a_sign: &T, b: &Vec<T>, b_sign: &T,
-    out: &mut Vec<T>, prod: &mut Vec<T>,
+    a: &[T], a_sign: &T, b: &[T], b_sign: &T,
+    out: &mut [T], prod: &mut [T],
     n: usize, frac_limbs: usize,
 ) -> (out_sign: T)
     requires
@@ -1665,7 +1665,7 @@ pub proof fn lemma_vec_val_pad<T: LimbOps>(a: Seq<T>, padded: Seq<T>)
 ///  Schoolbook multiply writing to output buffer. GPU-compatible (no Vec allocation).
 ///  Writes 2n limbs to out[0..2n]. out must be pre-zeroed or at least length >= 2n.
 pub fn mul_schoolbook_to<T: LimbOps>(
-    a: &Vec<T>, b: &Vec<T>, out: &mut Vec<T>, n: usize,
+    a: &[T], b: &[T], out: &mut [T], n: usize,
 )
     requires
         a@.len() == n, b@.len() == n,
