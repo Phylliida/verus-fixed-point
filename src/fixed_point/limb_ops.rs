@@ -326,17 +326,31 @@ impl LimbOps for u32 {
             assert(*self as int == a_hi as int * half + a_lo as int);
             assert(*b as int == b_hi as int * half + b_lo as int);
             //  Product expansion: a*b = p3*base + (p1+p2)*half + p0
-            assert(prod == p3 as int * base + (p1 as int + p2 as int) * half + p0 as int)
+            //  Step A: expand (a_hi*H + a_lo)*(b_hi*H + b_lo)
+            let lp_half = half * half;
+            assert(prod == a_hi as int * b_hi as int * lp_half
+                + a_hi as int * b_lo as int * half
+                + a_lo as int * b_hi as int * half
+                + a_lo as int * b_lo as int)
                 by(nonlinear_arith)
                 requires
                     prod == (*self as int) * (*b as int),
                     *self as int == a_hi as int * half + a_lo as int,
                     *b as int == b_hi as int * half + b_lo as int,
+                    lp_half == half * half;
+            //  Step B: substitute p0..p3 and base
+            assert(prod == p3 as int * base + (p1 as int + p2 as int) * half + p0 as int)
+                by(nonlinear_arith)
+                requires
+                    prod == a_hi as int * b_hi as int * lp_half
+                        + a_hi as int * b_lo as int * half
+                        + a_lo as int * b_hi as int * half
+                        + a_lo as int * b_lo as int,
                     p0 as int == a_lo as int * b_lo as int,
                     p1 as int == a_lo as int * b_hi as int,
                     p2 as int == a_hi as int * b_lo as int,
                     p3 as int == a_hi as int * b_hi as int,
-                    base == half * half;
+                    base == half * half, lp_half == half * half;
             //  Decompose p1, p2, p0, mid into hi/lo halves (u64 bit_vector)
             let p1_hi_u: u32 = p1 >> 16u32;
             let p1_lo_u: u32 = p1 & 0xFFFFu32;
@@ -793,7 +807,10 @@ pub fn add_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
         out@.len() == old(out)@.len(),
         0 <= carry.sem() < LIMB_BASE(),
         forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
+        // Frame: indices outside [out_off, out_off+n) are unchanged
+        forall |j: int| 0 <= j < out@.len() && !(out_off as int <= j < out_off + n) ==> out@[j] == old(out)@[j],
 {
+    let ghost old_out = out@;
     let ghost out_len = out@.len();
     let mut carry: T = T::zero_val();
     for i in 0..n
@@ -804,6 +821,7 @@ pub fn add_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
             valid_limbs(a@), valid_limbs(b@),
             0 <= carry.sem() < LIMB_BASE(),
             forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < out_len && !(out_off as int <= j < out_off as int + i) ==> out@[j] == old_out[j],
     {
         let (digit, next_carry) = a[i].add3(&b[i], &carry);
         out.set(out_off + i, digit);
@@ -822,7 +840,10 @@ pub fn sub_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
         out@.len() == old(out)@.len(),
         borrow.sem() == 0 || borrow.sem() == 1,
         forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
+        // Frame: indices outside [out_off, out_off+n) are unchanged
+        forall |j: int| 0 <= j < out@.len() && !(out_off as int <= j < out_off + n) ==> out@[j] == old(out)@[j],
 {
+    let ghost old_out = out@;
     let ghost out_len = out@.len();
     let mut borrow: T = T::zero_val();
     for i in 0..n
@@ -833,6 +854,7 @@ pub fn sub_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
             valid_limbs(a@), valid_limbs(b@),
             borrow.sem() == 0 || borrow.sem() == 1,
             forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < out_len && !(out_off as int <= j < out_off as int + i) ==> out@[j] == old_out[j],
     {
         let (digit, next_borrow) = a[i].sub_borrow(&b[i], &borrow);
         out.set(out_off + i, digit);
@@ -1692,13 +1714,20 @@ pub fn mul_schoolbook_to<T: LimbOps>(
         out_off + 2 * n < usize::MAX,
     ensures
         out@.len() == old(out)@.len(),
+        // Valid limbs on output region
+        forall |j: int| 0 <= j < 2 * n ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
+        // Frame: indices outside [out_off, out_off+2n) are unchanged
+        forall |j: int| 0 <= j < out@.len() && !(out_off as int <= j < out_off + 2 * n) ==> out@[j] == old(out)@[j],
 {
+    let ghost old_out = out@;
     let ghost out_len = out@.len();
     let nn: usize = 2 * n;
 
     // Zero the output region
     for i in 0..nn
         invariant out@.len() == out_len, out_len >= out_off + nn, nn == 2 * n, out_off + nn < usize::MAX,
+            forall |j: int| 0 <= j < out_len && !(out_off as int <= j < out_off as int + i) ==> out@[j] == old_out[j],
+            forall |j: int| 0 <= j < i ==> (#[trigger] out@[out_off as int + j]).sem() == 0,
     {
         out.set(out_off + i, T::zero_val());
     }
@@ -1711,6 +1740,8 @@ pub fn mul_schoolbook_to<T: LimbOps>(
             out@.len() == out_len, out_len >= out_off + nn,
             out_off + nn < usize::MAX,
             valid_limbs(a@), valid_limbs(b@),
+            forall |j: int| 0 <= j < out_len && !(out_off as int <= j < out_off as int + nn) ==> out@[j] == old_out[j],
+            forall |j: int| 0 <= j < nn ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
     {
         let mut carry: T = T::zero_val();
         for j in 0..n
@@ -1722,6 +1753,8 @@ pub fn mul_schoolbook_to<T: LimbOps>(
                 i < n,
                 valid_limbs(a@), valid_limbs(b@),
                 0 <= carry.sem() < LIMB_BASE(),
+                forall |k: int| 0 <= k < out_len && !(out_off as int <= k < out_off as int + nn) ==> out@[k] == old_out[k],
+                forall |k: int| 0 <= k < nn ==> 0 <= (#[trigger] out@[out_off as int + k]).sem() < LIMB_BASE(),
         {
             let (prod_lo, prod_hi) = a[j].mul2(&b[i]);
             let (sum1, c1) = prod_lo.add3(&out[out_off + i + j], &carry);
@@ -2306,14 +2339,13 @@ pub fn generic_mul_karatsuba<T: LimbOps>(
 
 /// Single-buffer signed add: all mutable params are offsets into one Vec.
 /// For GPU kernels where out/tmp1/tmp2 are regions of the same shared memory.
-#[verifier::external_body]
 pub fn signed_add_to_buf<T: LimbOps>(
     a: &[T], a_sign: &T, b: &[T], b_sign: &T,
     buf: &mut Vec<T>, out_off: usize, tmp1_off: usize, tmp2_off: usize,
     n: usize,
 ) -> (out_sign: T)
     requires
-        a@.len() >= n, b@.len() >= n,
+        a@.len() >= n, b@.len() >= n, n > 0,
         old(buf)@.len() >= out_off + n,
         old(buf)@.len() >= tmp1_off + n,
         old(buf)@.len() >= tmp2_off + n,
@@ -2321,13 +2353,32 @@ pub fn signed_add_to_buf<T: LimbOps>(
         valid_limbs(a@), valid_limbs(b@),
         a_sign.sem() == 0 || a_sign.sem() == 1,
         b_sign.sem() == 0 || b_sign.sem() == 1,
+        // Non-overlap of all three regions
+        out_off + n <= tmp1_off || tmp1_off + n <= out_off,
+        out_off + n <= tmp2_off || tmp2_off + n <= out_off,
+        tmp1_off + n <= tmp2_off || tmp2_off + n <= tmp1_off,
     ensures buf@.len() == old(buf)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
+        // Valid limbs on output region
+        forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] buf@[out_off as int + j]).sem() < LIMB_BASE(),
+        // Frame: indices outside all three regions are unchanged
+        forall |j: int| 0 <= j < buf@.len()
+            && !(out_off as int <= j < out_off + n)
+            && !(tmp1_off as int <= j < tmp1_off + n)
+            && !(tmp2_off as int <= j < tmp2_off + n)
+            ==> buf@[j] == old(buf)@[j],
 {
+    // Step 1: a+b → tmp1
     let _sum_carry = add_limbs_to(a, b, buf, tmp1_off, n);
+    // After: tmp1 region has valid limbs, rest unchanged
+
+    // Step 2: a-b → tmp2  (frame: tmp1 preserved by non-overlap)
     let borrow_ab = sub_limbs_to(a, b, buf, tmp2_off, n);
+
+    // Step 3: b-a → out  (frame: tmp1, tmp2 preserved by non-overlap)
     let _borrow_ba = sub_limbs_to(b, a, buf, out_off, n);
 
+    // Compute same_sign indicator
     let (sign_diff, sign_borrow) = a_sign.sub_borrow(b_sign, &T::zero_val());
     let diff_zero = sign_diff.is_zero_limb();
     let borrow_zero = sign_borrow.is_zero_limb();
@@ -2336,14 +2387,32 @@ pub fn signed_add_to_buf<T: LimbOps>(
     let diff_sign = T::select_limb(&borrow_ab, a_sign.clone_limb(), b_sign.clone_limb());
     let result_sign = T::select_limb(&same_sign, diff_sign, a_sign.clone_limb());
 
+    // Select loop: pick sum or diff for each limb
     let ghost buf_len = buf@.len();
+    let ghost pre_select = buf@;
     for i in 0..n
         invariant
             buf@.len() == buf_len,
             buf_len >= out_off + n, buf_len >= tmp1_off + n, buf_len >= tmp2_off + n,
             out_off + n < usize::MAX, tmp1_off + n < usize::MAX, tmp2_off + n < usize::MAX,
+            out_off + n <= tmp1_off || tmp1_off + n <= out_off,
+            out_off + n <= tmp2_off || tmp2_off + n <= out_off,
             same_sign.sem() == 0 || same_sign.sem() == 1,
             borrow_ab.sem() == 0 || borrow_ab.sem() == 1,
+            // Output: already-processed have valid limbs
+            forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] buf@[out_off as int + j]).sem() < LIMB_BASE(),
+            // tmp1 valid limbs preserved (non-overlapping with out writes)
+            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] buf@[tmp1_off as int + j]).sem() < LIMB_BASE(),
+            // tmp2 valid limbs preserved
+            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] buf@[tmp2_off as int + j]).sem() < LIMB_BASE(),
+            // Unprocessed out region still valid from sub_limbs_to
+            forall |j: int| i <= j < n ==> 0 <= (#[trigger] buf@[out_off as int + j]).sem() < LIMB_BASE(),
+            // Frame outside all three regions
+            forall |j: int| 0 <= j < buf_len
+                && !(out_off as int <= j < out_off + n)
+                && !(tmp1_off as int <= j < tmp1_off + n)
+                && !(tmp2_off as int <= j < tmp2_off + n)
+                ==> buf@[j] == pre_select[j],
     {
         let diff_val = T::select_limb(&borrow_ab, buf[tmp2_off + i].clone_limb(), buf[out_off + i].clone_limb());
         let final_val = T::select_limb(&same_sign, diff_val, buf[tmp1_off + i].clone_limb());
@@ -2353,14 +2422,13 @@ pub fn signed_add_to_buf<T: LimbOps>(
 }
 
 /// Single-buffer signed subtraction.
-#[verifier::external_body]
 pub fn signed_sub_to_buf<T: LimbOps>(
     a: &[T], a_sign: &T, b: &[T], b_sign: &T,
     buf: &mut Vec<T>, out_off: usize, tmp1_off: usize, tmp2_off: usize,
     n: usize,
 ) -> (out_sign: T)
     requires
-        a@.len() >= n, b@.len() >= n,
+        a@.len() >= n, b@.len() >= n, n > 0,
         old(buf)@.len() >= out_off + n,
         old(buf)@.len() >= tmp1_off + n,
         old(buf)@.len() >= tmp2_off + n,
@@ -2368,15 +2436,24 @@ pub fn signed_sub_to_buf<T: LimbOps>(
         valid_limbs(a@), valid_limbs(b@),
         a_sign.sem() == 0 || a_sign.sem() == 1,
         b_sign.sem() == 0 || b_sign.sem() == 1,
+        // Non-overlap of all three regions
+        out_off + n <= tmp1_off || tmp1_off + n <= out_off,
+        out_off + n <= tmp2_off || tmp2_off + n <= out_off,
+        tmp1_off + n <= tmp2_off || tmp2_off + n <= tmp1_off,
     ensures buf@.len() == old(buf)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
+        forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] buf@[out_off as int + j]).sem() < LIMB_BASE(),
+        forall |j: int| 0 <= j < buf@.len()
+            && !(out_off as int <= j < out_off + n)
+            && !(tmp1_off as int <= j < tmp1_off + n)
+            && !(tmp2_off as int <= j < tmp2_off + n)
+            ==> buf@[j] == old(buf)@[j],
 {
     let neg_b_sign = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
     signed_add_to_buf(a, a_sign, b, &neg_b_sign, buf, out_off, tmp1_off, tmp2_off, n)
 }
 
 /// Single-buffer signed multiply.
-#[verifier::external_body]
 pub fn signed_mul_to_buf<T: LimbOps>(
     a: &[T], a_sign: &T, b: &[T], b_sign: &T,
     buf: &mut Vec<T>, out_off: usize, prod_off: usize,
@@ -2394,19 +2471,54 @@ pub fn signed_mul_to_buf<T: LimbOps>(
         frac_limbs + n < usize::MAX,
         a_sign.sem() == 0 || a_sign.sem() == 1,
         b_sign.sem() == 0 || b_sign.sem() == 1,
+        // Non-overlap: out region and prod region
+        out_off + n <= prod_off || prod_off + 2 * n <= out_off,
     ensures buf@.len() == old(buf)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
+        // Valid limbs on output region
+        forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] buf@[out_off as int + j]).sem() < LIMB_BASE(),
+        // Frame: indices outside out and prod regions unchanged
+        forall |j: int| 0 <= j < buf@.len()
+            && !(out_off as int <= j < out_off + n)
+            && !(prod_off as int <= j < prod_off + 2 * n)
+            ==> buf@[j] == old(buf)@[j],
 {
     mul_schoolbook_to(a, b, buf, prod_off, n);
     // Copy product[frac_limbs..frac_limbs+n] to out (can't use slice_vec_to: aliasing)
     let ghost buf_len = buf@.len();
+    let ghost post_mul = buf@;
     for i in 0..n
         invariant
             buf@.len() == buf_len,
             buf_len >= out_off + n, buf_len >= prod_off + 2 * n,
             out_off + n < usize::MAX, prod_off + 2 * n < usize::MAX,
             frac_limbs + n <= 2 * n,
+            frac_limbs + n < usize::MAX,
+            out_off + n <= prod_off || prod_off + 2 * n <= out_off,
+            n <= 0x1FFF_FFFF,
+            // Product region preserved (non-overlapping with out writes)
+            forall |j: int| prod_off as int <= j < prod_off + 2 * n ==> buf@[j] == post_mul[j],
+            // Valid limbs in product snapshot (carried from mul_schoolbook_to postcondition)
+            forall |j: int| 0 <= j < 2 * n ==> 0 <= (#[trigger] post_mul[prod_off as int + j]).sem() < LIMB_BASE(),
+            // Already-copied output has valid limbs
+            forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] buf@[out_off as int + j]).sem() < LIMB_BASE(),
+            // Frame outside both regions
+            forall |j: int| 0 <= j < buf_len
+                && !(out_off as int <= j < out_off + n)
+                && !(prod_off as int <= j < prod_off + 2 * n)
+                ==> buf@[j] == post_mul[j],
     {
+        proof {
+            // Chain: product snapshot has valid limbs at this index
+            let j_idx: int = (frac_limbs + i) as int;
+            assert(0 <= j_idx && j_idx < 2 * n);
+            // Trigger the post_mul valid_limbs invariant
+            assert(0 <= (#[trigger] post_mul[prod_off as int + j_idx]).sem() < LIMB_BASE());
+            // Product region is preserved
+            let abs_idx: int = (prod_off + frac_limbs + i) as int;
+            assert(prod_off as int <= abs_idx && abs_idx < prod_off + 2 * n);
+            assert(buf@[abs_idx] == post_mul[abs_idx]);
+        }
         let val = buf[prod_off + frac_limbs + i].clone_limb();
         buf.set(out_off + i, val);
     }
