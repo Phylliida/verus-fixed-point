@@ -4611,4 +4611,47 @@ impl RuntimeModularIntMultiLimb {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Exec-to-spec foundation lemmas
+// ═══════════════════════════════════════════════════════════════
+
+/// Squaring removes sign: signed_val² == unsigned_val².
+///
+/// Since signed_val = ±unsigned_val, squaring gives the same result either way.
+/// This connects the unsigned truncation theorems to signed spec functions.
+pub proof fn lemma_signed_val_squared<T: LimbOps>(x: &GenericFixedPoint<T>)
+    requires x.wf_spec(),
+    ensures x.signed_val() * x.signed_val() == x.unsigned_val() * x.unsigned_val(),
+{
+    let sv = x.signed_val();
+    let uv = x.unsigned_val();
+    if x.sign.sem() == 0 {
+        assert(sv == uv);
+    } else {
+        assert(sv == -uv);
+        assert(sv * sv == (-uv) * (-uv));
+        assert((-uv) * (-uv) == uv * uv) by(nonlinear_arith);
+    }
+}
+
+/// Corollary: signed_mul of x*x gives truncated_product_spec of unsigned vals,
+/// and the result equals truncation of signed_val².
+pub proof fn lemma_signed_self_mul_spec<T: LimbOps>(x: &GenericFixedPoint<T>)
+    requires x.wf_spec(), x.n_exec > 0, x.n_exec <= 0x1FFF_FFFF, x.frac_exec % 32 == 0,
+    ensures ({
+        let uv = x.unsigned_val();
+        let sv = x.signed_val();
+        let frac_limbs = (x.frac_exec / 32) as nat;
+        let n = x.n_spec();
+        // Truncated product of unsigned vals == truncation of signed_val²
+        GenericFixedPoint::<T>::truncated_product_spec(uv, uv, frac_limbs, n)
+            == (sv * sv / limb_power(frac_limbs)) % limb_power(n)
+    })
+{
+    lemma_signed_val_squared(x);
+    // sv*sv == uv*uv, so truncated_product_spec(uv, uv, f, n)
+    //   = (uv*uv / limb_power(f)) % limb_power(n)
+    //   = (sv*sv / limb_power(f)) % limb_power(n)
+}
+
 } //  verus!
