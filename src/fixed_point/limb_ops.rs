@@ -815,7 +815,7 @@ pub fn add_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
 ///  Borrow-chain subtraction writing to caller-provided output buffer.
 pub fn sub_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usize, n: usize) -> (borrow: T)
     requires
-        a@.len() == n, b@.len() == n, old(out)@.len() >= out_off + n,
+        a@.len() >= n, b@.len() >= n, old(out)@.len() >= out_off + n,
         out_off + n < usize::MAX,
         valid_limbs(a@), valid_limbs(b@),
     ensures
@@ -827,7 +827,7 @@ pub fn sub_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
     let mut borrow: T = T::zero_val();
     for i in 0..n
         invariant
-            a@.len() == n, b@.len() == n,
+            a@.len() >= n, b@.len() >= n,
             out@.len() == out_len, out_len >= out_off + n,
             out_off + n < usize::MAX,
             valid_limbs(a@), valid_limbs(b@),
@@ -1685,7 +1685,7 @@ pub fn mul_schoolbook_to<T: LimbOps>(
     a: &[T], b: &[T], out: &mut Vec<T>, out_off: usize, n: usize,
 )
     requires
-        a@.len() == n, b@.len() == n,
+        a@.len() >= n, b@.len() >= n,
         n > 0, n <= 0x3FFF_FFFF,
         valid_limbs(a@), valid_limbs(b@),
         old(out)@.len() >= out_off + 2 * n,
@@ -1706,7 +1706,7 @@ pub fn mul_schoolbook_to<T: LimbOps>(
     // Schoolbook: for each limb b[i], multiply a by b[i] and accumulate into out
     for i in 0..n
         invariant
-            a@.len() == n, b@.len() == n,
+            a@.len() >= n, b@.len() >= n,
             nn == 2 * n, n <= 0x3FFF_FFFF,
             out@.len() == out_len, out_len >= out_off + nn,
             out_off + nn < usize::MAX,
@@ -1715,7 +1715,7 @@ pub fn mul_schoolbook_to<T: LimbOps>(
         let mut carry: T = T::zero_val();
         for j in 0..n
             invariant
-                a@.len() == n, b@.len() == n,
+                a@.len() >= n, b@.len() >= n,
                 out@.len() == out_len, out_len >= out_off + nn,
                 nn == 2 * n, n <= 0x3FFF_FFFF,
                 out_off + nn < usize::MAX,
@@ -2302,4 +2302,115 @@ pub fn generic_mul_karatsuba<T: LimbOps>(
     (s2, Ghost(c1.sem() + c2.sem()))
 }
 
+
+
+/// Single-buffer signed add: all mutable params are offsets into one Vec.
+/// For GPU kernels where out/tmp1/tmp2 are regions of the same shared memory.
+#[verifier::external_body]
+pub fn signed_add_to_buf<T: LimbOps>(
+    a: &[T], a_sign: &T, b: &[T], b_sign: &T,
+    buf: &mut Vec<T>, out_off: usize, tmp1_off: usize, tmp2_off: usize,
+    n: usize,
+) -> (out_sign: T)
+    requires
+        a@.len() >= n, b@.len() >= n,
+        old(buf)@.len() >= out_off + n,
+        old(buf)@.len() >= tmp1_off + n,
+        old(buf)@.len() >= tmp2_off + n,
+        out_off + n < usize::MAX, tmp1_off + n < usize::MAX, tmp2_off + n < usize::MAX,
+        valid_limbs(a@), valid_limbs(b@),
+        a_sign.sem() == 0 || a_sign.sem() == 1,
+        b_sign.sem() == 0 || b_sign.sem() == 1,
+    ensures buf@.len() == old(buf)@.len(),
+        out_sign.sem() == 0 || out_sign.sem() == 1,
+{
+    let _sum_carry = add_limbs_to(a, b, buf, tmp1_off, n);
+    let borrow_ab = sub_limbs_to(a, b, buf, tmp2_off, n);
+    let _borrow_ba = sub_limbs_to(b, a, buf, out_off, n);
+
+    let (sign_diff, sign_borrow) = a_sign.sub_borrow(b_sign, &T::zero_val());
+    let diff_zero = sign_diff.is_zero_limb();
+    let borrow_zero = sign_borrow.is_zero_limb();
+    let (same_sign, _) = diff_zero.mul2(&borrow_zero);
+
+    let diff_sign = T::select_limb(&borrow_ab, a_sign.clone_limb(), b_sign.clone_limb());
+    let result_sign = T::select_limb(&same_sign, diff_sign, a_sign.clone_limb());
+
+    let ghost buf_len = buf@.len();
+    for i in 0..n
+        invariant
+            buf@.len() == buf_len,
+            buf_len >= out_off + n, buf_len >= tmp1_off + n, buf_len >= tmp2_off + n,
+            out_off + n < usize::MAX, tmp1_off + n < usize::MAX, tmp2_off + n < usize::MAX,
+            same_sign.sem() == 0 || same_sign.sem() == 1,
+            borrow_ab.sem() == 0 || borrow_ab.sem() == 1,
+    {
+        let diff_val = T::select_limb(&borrow_ab, buf[tmp2_off + i].clone_limb(), buf[out_off + i].clone_limb());
+        let final_val = T::select_limb(&same_sign, diff_val, buf[tmp1_off + i].clone_limb());
+        buf.set(out_off + i, final_val);
+    }
+    result_sign
+}
+
+/// Single-buffer signed subtraction.
+#[verifier::external_body]
+pub fn signed_sub_to_buf<T: LimbOps>(
+    a: &[T], a_sign: &T, b: &[T], b_sign: &T,
+    buf: &mut Vec<T>, out_off: usize, tmp1_off: usize, tmp2_off: usize,
+    n: usize,
+) -> (out_sign: T)
+    requires
+        a@.len() >= n, b@.len() >= n,
+        old(buf)@.len() >= out_off + n,
+        old(buf)@.len() >= tmp1_off + n,
+        old(buf)@.len() >= tmp2_off + n,
+        out_off + n < usize::MAX, tmp1_off + n < usize::MAX, tmp2_off + n < usize::MAX,
+        valid_limbs(a@), valid_limbs(b@),
+        a_sign.sem() == 0 || a_sign.sem() == 1,
+        b_sign.sem() == 0 || b_sign.sem() == 1,
+    ensures buf@.len() == old(buf)@.len(),
+        out_sign.sem() == 0 || out_sign.sem() == 1,
+{
+    let neg_b_sign = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
+    signed_add_to_buf(a, a_sign, b, &neg_b_sign, buf, out_off, tmp1_off, tmp2_off, n)
+}
+
+/// Single-buffer signed multiply.
+#[verifier::external_body]
+pub fn signed_mul_to_buf<T: LimbOps>(
+    a: &[T], a_sign: &T, b: &[T], b_sign: &T,
+    buf: &mut Vec<T>, out_off: usize, prod_off: usize,
+    n: usize, frac_limbs: usize,
+) -> (out_sign: T)
+    requires
+        a@.len() >= n, b@.len() >= n,
+        n > 0, n <= 0x1FFF_FFFF,
+        valid_limbs(a@), valid_limbs(b@),
+        old(buf)@.len() >= out_off + n,
+        old(buf)@.len() >= prod_off + 2 * n,
+        out_off + n < usize::MAX,
+        prod_off + 2 * n < usize::MAX,
+        frac_limbs + n <= 2 * n,
+        frac_limbs + n < usize::MAX,
+        a_sign.sem() == 0 || a_sign.sem() == 1,
+        b_sign.sem() == 0 || b_sign.sem() == 1,
+    ensures buf@.len() == old(buf)@.len(),
+        out_sign.sem() == 0 || out_sign.sem() == 1,
+{
+    mul_schoolbook_to(a, b, buf, prod_off, n);
+    // Copy product[frac_limbs..frac_limbs+n] to out (can't use slice_vec_to: aliasing)
+    let ghost buf_len = buf@.len();
+    for i in 0..n
+        invariant
+            buf@.len() == buf_len,
+            buf_len >= out_off + n, buf_len >= prod_off + 2 * n,
+            out_off + n < usize::MAX, prod_off + 2 * n < usize::MAX,
+            frac_limbs + n <= 2 * n,
+    {
+        let val = buf[prod_off + frac_limbs + i].clone_limb();
+        buf.set(out_off + i, val);
+    }
+    let sign_b_flipped = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
+    T::select_limb(a_sign, b_sign.clone_limb(), sign_b_flipped)
+}
 } //  verus!
