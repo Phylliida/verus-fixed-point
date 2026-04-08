@@ -806,12 +806,20 @@ pub fn add_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
     ensures
         out@.len() == old(out)@.len(),
         0 <= carry.sem() < LIMB_BASE(),
+        carry.sem() == 0 || carry.sem() == 1,
         forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
         // Frame: indices outside [out_off, out_off+n) are unchanged
         forall |j: int| 0 <= j < out@.len() && !(out_off as int <= j < out_off + n) ==> out@[j] == old(out)@[j],
+        // Sum equation: output + carry * P == a + b (as limb values)
+        limbs_val(sem_seq(out@.subrange(out_off as int, (out_off + n) as int)))
+            + carry.sem() * limb_power(n as nat)
+            == limbs_val(sem_seq(a@.subrange(0, n as int)))
+                + limbs_val(sem_seq(b@.subrange(0, n as int))),
 {
     let ghost old_out = out@;
     let ghost out_len = out@.len();
+    let ghost sa = sem_seq(a@.subrange(0, n as int));
+    let ghost sb = sem_seq(b@.subrange(0, n as int));
     let mut carry: T = T::zero_val();
     for i in 0..n
         invariant
@@ -820,12 +828,113 @@ pub fn add_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
             out_off + n < usize::MAX,
             valid_limbs(a@), valid_limbs(b@),
             0 <= carry.sem() < LIMB_BASE(),
+            sa == sem_seq(a@.subrange(0, n as int)),
+            sb == sem_seq(b@.subrange(0, n as int)),
             forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
             forall |j: int| 0 <= j < out_len && !(out_off as int <= j < out_off as int + i) ==> out@[j] == old_out[j],
+            // Sum equation invariant
+            limbs_val(sem_seq(out@.subrange(out_off as int, out_off as int + i)))
+                + carry.sem() * limb_power(i as nat)
+                == limbs_val(sa.subrange(0, i as int))
+                    + limbs_val(sb.subrange(0, i as int)),
     {
         let (digit, next_carry) = a[i].add3(&b[i], &carry);
+        proof {
+            let x = a@[i as int].sem() + b@[i as int].sem() + carry.sem();
+            assert(digit.sem() + next_carry.sem() * LIMB_BASE() == x) by(nonlinear_arith)
+                requires digit.sem() == x % LIMB_BASE(),
+                         next_carry.sem() == x / LIMB_BASE(), LIMB_BASE() > 0;
+            assert(0 <= next_carry.sem() && next_carry.sem() < LIMB_BASE()) by(nonlinear_arith)
+                requires next_carry.sem() == x / LIMB_BASE(), x >= 0,
+                         x < 3 * LIMB_BASE(), LIMB_BASE() > 0;
+
+            reveal_with_fuel(limb_power, 2);
+            let p = limb_power(i as nat);
+            let p_next = limb_power((i + 1) as nat);
+            assert(p_next == LIMB_BASE() * p);
+
+            // a@[i] is at position i in the subrange a@.subrange(0, n)
+            assert(sa[i as int] == a@[i as int].sem());
+            assert(sb[i as int] == b@[i as int].sem());
+            lemma_limbs_val_subrange_extend(sa, i as nat);
+            lemma_limbs_val_subrange_extend(sb, i as nat);
+
+        }
+        let ghost pre_sub = sem_seq(out@.subrange(out_off as int, out_off as int + i));
         out.set(out_off + i, digit);
+        proof {
+            let p = limb_power(i as nat);
+            let p_next = limb_power((i + 1) as nat);
+            let new_sub = out@.subrange(out_off as int, out_off as int + (i + 1));
+            assert(new_sub[i as int] == digit);
+            let new_sem = sem_seq(new_sub);
+            assert(new_sem[i as int] == digit.sem());
+            lemma_limbs_val_subrange_extend(new_sem, i as nat);
+            assert(new_sem.subrange(0, (i + 1) as int) =~= new_sem);
+            assert(new_sem.subrange(0, i as int) =~= pre_sub);
+
+            assert(
+                limbs_val(new_sem) + next_carry.sem() * p_next
+                == limbs_val(sa.subrange(0, (i + 1) as int))
+                    + limbs_val(sb.subrange(0, (i + 1) as int))
+            ) by(nonlinear_arith)
+                requires
+                    limbs_val(pre_sub) + carry.sem() * p
+                        == limbs_val(sa.subrange(0, i as int))
+                            + limbs_val(sb.subrange(0, i as int)),
+                    digit.sem() + next_carry.sem() * LIMB_BASE()
+                        == sa[i as int] + sb[i as int] + carry.sem(),
+                    limbs_val(new_sem) == limbs_val(new_sem.subrange(0, i as int))
+                        + new_sem[i as int] * p,
+                    limbs_val(sa.subrange(0, (i + 1) as int))
+                        == limbs_val(sa.subrange(0, i as int)) + sa[i as int] * p,
+                    limbs_val(sb.subrange(0, (i + 1) as int))
+                        == limbs_val(sb.subrange(0, i as int)) + sb[i as int] * p,
+                    new_sem.subrange(0, i as int) =~= pre_sub,
+                    new_sem[i as int] == digit.sem(),
+                    p_next == LIMB_BASE() * p;
+        }
         carry = next_carry;
+    }
+
+    proof {
+        assert(sa.subrange(0, sa.len() as int) =~= sa);
+        assert(sb.subrange(0, sb.len() as int) =~= sb);
+        let final_sub = out@.subrange(out_off as int, (out_off + n) as int);
+        assert(sem_seq(final_sub).len() == n);
+        // Establish valid_limbs on the output subrange
+        assert(valid_limbs(final_sub)) by {
+            assert forall |j: int| 0 <= j < final_sub.len()
+                implies 0 <= (#[trigger] final_sub[j]).sem() < LIMB_BASE() by {
+                assert(final_sub[j] == out@[(out_off as int + j) as int]);
+            };
+        };
+        // Derive carry ≤ 1
+        lemma_vec_val_bounded::<T>(final_sub);
+        assert(valid_limbs(a@.subrange(0, n as int))) by {
+            assert forall |j: int| 0 <= j < n
+                implies 0 <= (#[trigger] a@.subrange(0, n as int)[j]).sem() < LIMB_BASE() by {
+                assert(a@.subrange(0, n as int)[j] == a@[j]);
+            };
+        };
+        assert(valid_limbs(b@.subrange(0, n as int))) by {
+            assert forall |j: int| 0 <= j < n
+                implies 0 <= (#[trigger] b@.subrange(0, n as int)[j]).sem() < LIMB_BASE() by {
+                assert(b@.subrange(0, n as int)[j] == b@[j]);
+            };
+        };
+        lemma_vec_val_bounded::<T>(a@.subrange(0, n as int));
+        lemma_vec_val_bounded::<T>(b@.subrange(0, n as int));
+        let P = limb_power(n as nat);
+        assert(carry.sem() <= 1) by(nonlinear_arith)
+            requires
+                limbs_val(sem_seq(final_sub)) + carry.sem() * P
+                    == limbs_val(sa) + limbs_val(sb),
+                0 <= limbs_val(sem_seq(final_sub)),
+                limbs_val(sem_seq(final_sub)) < P,
+                0 <= limbs_val(sa), limbs_val(sa) < P,
+                0 <= limbs_val(sb), limbs_val(sb) < P,
+                carry.sem() >= 0, P > 0;
     }
     carry
 }
@@ -842,9 +951,16 @@ pub fn sub_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
         forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
         // Frame: indices outside [out_off, out_off+n) are unchanged
         forall |j: int| 0 <= j < out@.len() && !(out_off as int <= j < out_off + n) ==> out@[j] == old(out)@[j],
+        // Difference equation: out + b == a + borrow * P
+        limbs_val(sem_seq(out@.subrange(out_off as int, (out_off + n) as int)))
+            + limbs_val(sem_seq(b@.subrange(0, n as int)))
+            == limbs_val(sem_seq(a@.subrange(0, n as int)))
+                + borrow.sem() * limb_power(n as nat),
 {
     let ghost old_out = out@;
     let ghost out_len = out@.len();
+    let ghost sa = sem_seq(a@.subrange(0, n as int));
+    let ghost sb = sem_seq(b@.subrange(0, n as int));
     let mut borrow: T = T::zero_val();
     for i in 0..n
         invariant
@@ -853,12 +969,92 @@ pub fn sub_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
             out_off + n < usize::MAX,
             valid_limbs(a@), valid_limbs(b@),
             borrow.sem() == 0 || borrow.sem() == 1,
+            sa == sem_seq(a@.subrange(0, n as int)),
+            sb == sem_seq(b@.subrange(0, n as int)),
             forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
             forall |j: int| 0 <= j < out_len && !(out_off as int <= j < out_off as int + i) ==> out@[j] == old_out[j],
+            // Difference equation invariant
+            limbs_val(sem_seq(out@.subrange(out_off as int, out_off as int + i)))
+                + limbs_val(sb.subrange(0, i as int))
+                == limbs_val(sa.subrange(0, i as int))
+                    + borrow.sem() * limb_power(i as nat),
     {
         let (digit, next_borrow) = a[i].sub_borrow(&b[i], &borrow);
+        proof {
+            let ai = sa[i as int];
+            let bi = sb[i as int];
+            assert(ai == a@[i as int].sem());
+            assert(bi == b@[i as int].sem());
+            assert(0 <= ai && ai < LIMB_BASE());
+            assert(0 <= bi && bi < LIMB_BASE());
+
+            let diff = ai - bi - borrow.sem();
+            let sum = diff + LIMB_BASE();
+            if diff >= 0 {
+                assert(next_borrow.sem() == 0int);
+                assert(sum >= LIMB_BASE() && sum < 2 * LIMB_BASE());
+                assert(sum % LIMB_BASE() == sum - LIMB_BASE()) by(nonlinear_arith)
+                    requires sum >= LIMB_BASE(), sum < 2 * LIMB_BASE(), LIMB_BASE() > 0;
+                assert(digit.sem() == diff);
+            } else {
+                assert(next_borrow.sem() == 1int);
+                assert(sum >= 0 && sum < LIMB_BASE());
+                assert(sum % LIMB_BASE() == sum) by(nonlinear_arith)
+                    requires sum >= 0, sum < LIMB_BASE(), LIMB_BASE() > 0;
+                assert(digit.sem() == diff + LIMB_BASE());
+            }
+            // Per-digit equation: digit + bi + borrow == ai + next_borrow * BASE
+            assert(digit.sem() + bi + borrow.sem() == ai + next_borrow.sem() * LIMB_BASE());
+
+            reveal_with_fuel(limb_power, 2);
+            let p = limb_power(i as nat);
+            let p_next = limb_power((i + 1) as nat);
+            assert(p_next == LIMB_BASE() * p);
+
+            lemma_limbs_val_subrange_extend(sa, i as nat);
+            lemma_limbs_val_subrange_extend(sb, i as nat);
+        }
+        let ghost pre_sub = sem_seq(out@.subrange(out_off as int, out_off as int + i));
         out.set(out_off + i, digit);
+        proof {
+            let p = limb_power(i as nat);
+            let p_next = limb_power((i + 1) as nat);
+            let ai = sa[i as int];
+            let bi = sb[i as int];
+            let new_sub = out@.subrange(out_off as int, out_off as int + (i + 1));
+            let new_sem = sem_seq(new_sub);
+            assert(new_sem[i as int] == digit.sem());
+            lemma_limbs_val_subrange_extend(new_sem, i as nat);
+            assert(new_sem.subrange(0, (i + 1) as int) =~= new_sem);
+            assert(new_sem.subrange(0, i as int) =~= pre_sub);
+
+            assert(
+                limbs_val(new_sem) + limbs_val(sb.subrange(0, (i + 1) as int))
+                == limbs_val(sa.subrange(0, (i + 1) as int))
+                    + next_borrow.sem() * p_next
+            ) by(nonlinear_arith)
+                requires
+                    limbs_val(pre_sub) + limbs_val(sb.subrange(0, i as int))
+                        == limbs_val(sa.subrange(0, i as int))
+                            + borrow.sem() * p,
+                    digit.sem() + bi + borrow.sem()
+                        == ai + next_borrow.sem() * LIMB_BASE(),
+                    limbs_val(new_sem) == limbs_val(new_sem.subrange(0, i as int))
+                        + new_sem[i as int] * p,
+                    limbs_val(sa.subrange(0, (i + 1) as int))
+                        == limbs_val(sa.subrange(0, i as int)) + ai * p,
+                    limbs_val(sb.subrange(0, (i + 1) as int))
+                        == limbs_val(sb.subrange(0, i as int)) + bi * p,
+                    new_sem.subrange(0, i as int) =~= pre_sub,
+                    new_sem[i as int] == digit.sem(),
+                    p_next == LIMB_BASE() * p;
+        }
         borrow = next_borrow;
+    }
+
+    proof {
+        assert(sa.subrange(0, sa.len() as int) =~= sa);
+        assert(sb.subrange(0, sb.len() as int) =~= sb);
     }
     borrow
 }
