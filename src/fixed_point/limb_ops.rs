@@ -1045,6 +1045,9 @@ pub fn signed_mul_to<T: LimbOps>(
     ensures out@.len() == old(out)@.len(),
         prod@.len() == old(prod)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
+        // Sign is XOR of input signs (same sign → positive result)
+        (a_sign.sem() == b_sign.sem()) ==> out_sign.sem() == 0,
+        (a_sign.sem() != b_sign.sem()) ==> out_sign.sem() == 1,
         // Valid limbs on output region
         forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
 {
