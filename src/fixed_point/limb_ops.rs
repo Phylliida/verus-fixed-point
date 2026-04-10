@@ -3263,16 +3263,57 @@ pub fn signed_add_to_buf<T: LimbOps>(
             && !(tmp1_off as int <= j < tmp1_off + n)
             && !(tmp2_off as int <= j < tmp2_off + n)
             ==> buf@[j] == old(buf)@[j],
+        // Signed-magnitude sum equation: 3-way modular disjunction
+        ({
+            let va = vec_val(a@.subrange(0, n as int));
+            let vb = vec_val(b@.subrange(0, n as int));
+            let vo = vec_val(buf@.subrange(out_off as int, (out_off + n) as int));
+            let sa_signed = if a_sign.sem() == 0 { va } else { -va };
+            let sb_signed = if b_sign.sem() == 0 { vb } else { -vb };
+            let so_signed = if out_sign.sem() == 0 { vo } else { -vo };
+            let true_sum = sa_signed + sb_signed;
+            let P = limb_power(n as nat);
+            so_signed == true_sum
+                || (so_signed == true_sum - P && true_sum >= P)
+                || (so_signed == true_sum + P && true_sum <= -(P as int))
+        }),
 {
+    let ghost a_sub = a@.subrange(0, n as int);
+    let ghost b_sub = b@.subrange(0, n as int);
+    proof {
+        assert(valid_limbs(a_sub)) by {
+            assert forall |k: int| 0 <= k < a_sub.len()
+                implies 0 <= (#[trigger] a_sub[k]).sem() && a_sub[k].sem() < LIMB_BASE() by {
+                assert(a_sub[k] == a@[k]);
+            }
+        }
+        assert(valid_limbs(b_sub)) by {
+            assert forall |k: int| 0 <= k < b_sub.len()
+                implies 0 <= (#[trigger] b_sub[k]).sem() && b_sub[k].sem() < LIMB_BASE() by {
+                assert(b_sub[k] == b@[k]);
+            }
+        }
+    }
     // Step 1: a+b → tmp1
-    let _sum_carry = add_limbs_to(a, b, buf, tmp1_off, n);
-    // After: tmp1 region has valid limbs, rest unchanged
+    let sum_carry = add_limbs_to(a, b, buf, tmp1_off, n);
+    let ghost sum_sub = buf@.subrange(tmp1_off as int, (tmp1_off + n) as int);
 
     // Step 2: a-b → tmp2  (frame: tmp1 preserved by non-overlap)
     let borrow_ab = sub_limbs_to(a, b, buf, tmp2_off, n);
+    let ghost amb_sub = buf@.subrange(tmp2_off as int, (tmp2_off + n) as int);
+    proof {
+        // Frame: tmp1 region preserved by non-overlap with tmp2
+        assert(sum_sub =~= buf@.subrange(tmp1_off as int, (tmp1_off + n) as int));
+    }
 
     // Step 3: b-a → out  (frame: tmp1, tmp2 preserved by non-overlap)
-    let _borrow_ba = sub_limbs_to(b, a, buf, out_off, n);
+    let borrow_ba = sub_limbs_to(b, a, buf, out_off, n);
+    let ghost bma_sub = buf@.subrange(out_off as int, (out_off + n) as int);
+    proof {
+        // Frame: tmp1 and tmp2 regions preserved by non-overlap with out
+        assert(sum_sub =~= buf@.subrange(tmp1_off as int, (tmp1_off + n) as int));
+        assert(amb_sub =~= buf@.subrange(tmp2_off as int, (tmp2_off + n) as int));
+    }
 
     // Compute same_sign indicator
     let (sign_diff, sign_borrow) = a_sign.sub_borrow(b_sign, &T::zero_val());
@@ -3280,8 +3321,60 @@ pub fn signed_add_to_buf<T: LimbOps>(
     let borrow_zero = sign_borrow.is_zero_limb();
     let (same_sign, _) = diff_zero.mul2(&borrow_zero);
 
+    proof {
+        // Establish (a_sign == b_sign) <==> same_sign == 1
+        let asv = a_sign.sem();
+        let bsv = b_sign.sem();
+        let sd = sign_diff.sem();
+        let sbo = sign_borrow.sem();
+        let dz = diff_zero.sem();
+        let bz = borrow_zero.sem();
+        let ss = same_sign.sem();
+        assert(ss == (dz * bz) % LIMB_BASE());
+        if asv == bsv {
+            assert(sd == 0) by(nonlinear_arith)
+                requires sd == (asv - bsv - 0 + LIMB_BASE()) % LIMB_BASE(),
+                         asv == bsv, LIMB_BASE() > 0;
+            assert(sbo == 0);
+            assert(dz == 1);
+            assert(bz == 1);
+            assert(dz * bz == 1) by(nonlinear_arith) requires dz == 1, bz == 1;
+            assert(1int % LIMB_BASE() == 1) by(nonlinear_arith) requires LIMB_BASE() > 1;
+            assert(ss == 1);
+        } else if asv == 0 && bsv == 1 {
+            assert(sd == LIMB_BASE() - 1) by(nonlinear_arith)
+                requires sd == (0 - 1 - 0 + LIMB_BASE()) % LIMB_BASE(), LIMB_BASE() > 1;
+            assert(sbo == 1);
+            assert(dz == 0);
+            assert(bz == 0);
+            assert(dz * bz == 0) by(nonlinear_arith) requires dz == 0, bz == 0;
+            assert(0int % LIMB_BASE() == 0) by(nonlinear_arith) requires LIMB_BASE() > 0;
+            assert(ss == 0);
+        } else {
+            assert(sd == 1) by(nonlinear_arith)
+                requires sd == (1 - 0 - 0 + LIMB_BASE()) % LIMB_BASE(), LIMB_BASE() > 2;
+            assert(sbo == 0);
+            assert(dz == 0);
+            assert(bz == 1);
+            assert(dz * bz == 0) by(nonlinear_arith) requires dz == 0, bz == 1;
+            assert(0int % LIMB_BASE() == 0) by(nonlinear_arith) requires LIMB_BASE() > 0;
+            assert(ss == 0);
+        }
+    }
+
     let diff_sign = T::select_limb(&borrow_ab, a_sign.clone_limb(), b_sign.clone_limb());
     let result_sign = T::select_limb(&same_sign, diff_sign, a_sign.clone_limb());
+
+    // Capture the SELECTED sequence (one of sum_sub, amb_sub, bma_sub)
+    let ghost ss_v = same_sign.sem();
+    let ghost bab_v = borrow_ab.sem();
+    let ghost selected_seq: Seq<T> = if ss_v == 1 {
+        sum_sub
+    } else if bab_v == 0 {
+        amb_sub
+    } else {
+        bma_sub
+    };
 
     // Select loop: pick sum or diff for each limb
     let ghost buf_len = buf@.len();
@@ -3293,8 +3386,18 @@ pub fn signed_add_to_buf<T: LimbOps>(
             out_off + n < usize::MAX, tmp1_off + n < usize::MAX, tmp2_off + n < usize::MAX,
             out_off + n <= tmp1_off || tmp1_off + n <= out_off,
             out_off + n <= tmp2_off || tmp2_off + n <= out_off,
-            same_sign.sem() == 0 || same_sign.sem() == 1,
-            borrow_ab.sem() == 0 || borrow_ab.sem() == 1,
+            tmp1_off + n <= tmp2_off || tmp2_off + n <= tmp1_off,
+            ss_v == same_sign.sem(),
+            bab_v == borrow_ab.sem(),
+            ss_v == 0 || ss_v == 1,
+            bab_v == 0 || bab_v == 1,
+            sum_sub == pre_select.subrange(tmp1_off as int, (tmp1_off + n) as int),
+            amb_sub == pre_select.subrange(tmp2_off as int, (tmp2_off + n) as int),
+            bma_sub == pre_select.subrange(out_off as int, (out_off + n) as int),
+            selected_seq.len() == n as int,
+            ss_v == 1 ==> selected_seq == sum_sub,
+            ss_v == 0 && bab_v == 0 ==> selected_seq == amb_sub,
+            ss_v == 0 && bab_v == 1 ==> selected_seq == bma_sub,
             // Output: already-processed have valid limbs
             forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] buf@[out_off as int + j]).sem() < LIMB_BASE(),
             // tmp1 valid limbs preserved (non-overlapping with out writes)
@@ -3303,6 +3406,15 @@ pub fn signed_add_to_buf<T: LimbOps>(
             forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] buf@[tmp2_off as int + j]).sem() < LIMB_BASE(),
             // Unprocessed out region still valid from sub_limbs_to
             forall |j: int| i <= j < n ==> 0 <= (#[trigger] buf@[out_off as int + j]).sem() < LIMB_BASE(),
+            // tmp1 region content preserved as sum_sub
+            forall |j: int| 0 <= j < n ==> #[trigger] buf@[tmp1_off as int + j] == sum_sub[j],
+            // tmp2 region content preserved as amb_sub
+            forall |j: int| 0 <= j < n ==> #[trigger] buf@[tmp2_off as int + j] == amb_sub[j],
+            // Unprocessed out region still has b-a content
+            forall |j: int| i <= j < n ==> #[trigger] buf@[out_off as int + j] == bma_sub[j],
+            // Already-processed out region has the selected value
+            forall |j: int| 0 <= j < i
+                ==> #[trigger] buf@[out_off as int + j].sem() == selected_seq[j].sem(),
             // Frame outside all three regions
             forall |j: int| 0 <= j < buf_len
                 && !(out_off as int <= j < out_off + n)
@@ -3312,8 +3424,114 @@ pub fn signed_add_to_buf<T: LimbOps>(
     {
         let diff_val = T::select_limb(&borrow_ab, buf[tmp2_off + i].clone_limb(), buf[out_off + i].clone_limb());
         let final_val = T::select_limb(&same_sign, diff_val, buf[tmp1_off + i].clone_limb());
+
+        proof {
+            // Show that final_val.sem() == selected_seq[i].sem()
+            let i_int = i as int;
+            assert(buf[tmp2_off + i] == buf@[(tmp2_off as int) + i_int]);
+            assert(buf[tmp1_off + i] == buf@[(tmp1_off as int) + i_int]);
+            assert(buf[out_off + i] == buf@[(out_off as int) + i_int]);
+            assert(buf@[(out_off as int) + i_int].sem() == bma_sub[i_int].sem());
+            assert(buf@[(tmp1_off as int) + i_int] == sum_sub[i_int]);
+            assert(buf@[(tmp2_off as int) + i_int] == amb_sub[i_int]);
+
+            if ss_v == 1 {
+                assert(selected_seq == sum_sub);
+                assert(final_val.sem() == buf[tmp1_off + i].sem());
+                assert(final_val.sem() == sum_sub[i_int].sem());
+                assert(final_val.sem() == selected_seq[i_int].sem());
+            } else if bab_v == 0 {
+                assert(selected_seq == amb_sub);
+                assert(diff_val.sem() == buf[tmp2_off + i].sem());
+                assert(final_val.sem() == diff_val.sem());
+                assert(final_val.sem() == amb_sub[i_int].sem());
+                assert(final_val.sem() == selected_seq[i_int].sem());
+            } else {
+                assert(selected_seq == bma_sub);
+                assert(diff_val.sem() == buf[out_off + i].sem());
+                assert(final_val.sem() == diff_val.sem());
+                assert(final_val.sem() == bma_sub[i_int].sem());
+                assert(final_val.sem() == selected_seq[i_int].sem());
+            }
+        }
+        let ghost buf_pre_set = buf@;
         buf.set(out_off + i, final_val);
+        proof {
+            let i_int = i as int;
+            // Re-establish invariants
+            assert forall |j: int| 0 <= j < i + 1
+                implies #[trigger] buf@[(out_off as int + j) as int].sem() == selected_seq[j].sem() by {
+                if j == i_int {
+                    assert(buf@[(out_off as int) + j] == final_val);
+                } else {
+                    assert(buf@[(out_off as int) + j] == buf_pre_set[(out_off as int) + j]);
+                }
+            }
+            assert forall |j: int| (i + 1) <= j < n
+                implies #[trigger] buf@[(out_off as int + j) as int] == bma_sub[j] by {
+                assert(j != i_int);
+                assert(buf@[(out_off as int) + j] == buf_pre_set[(out_off as int) + j]);
+            }
+            // tmp1, tmp2 regions still preserved (non-overlap with out)
+            assert forall |j: int| 0 <= j < n
+                implies #[trigger] buf@[tmp1_off as int + j] == sum_sub[j] by {
+                assert(buf@[(tmp1_off as int) + j] == buf_pre_set[(tmp1_off as int) + j]);
+            }
+            assert forall |j: int| 0 <= j < n
+                implies #[trigger] buf@[tmp2_off as int + j] == amb_sub[j] by {
+                assert(buf@[(tmp2_off as int) + j] == buf_pre_set[(tmp2_off as int) + j]);
+            }
+        }
     }
+
+    proof {
+        // After loop: vec_val(out subrange) == vec_val(selected_seq)
+        let final_sub = buf@.subrange(out_off as int, (out_off + n) as int);
+        assert(final_sub.len() == selected_seq.len());
+        assert forall |j: int| 0 <= j < final_sub.len()
+            implies (#[trigger] final_sub[j]).sem() == selected_seq[j].sem() by {
+            assert(final_sub[j] == buf@[(out_off as int) + j]);
+        }
+        lemma_vec_val_eq_from_sem_eq::<T>(final_sub, selected_seq);
+        assert(valid_limbs(final_sub)) by {
+            assert forall |j: int| 0 <= j < final_sub.len()
+                implies 0 <= (#[trigger] final_sub[j]).sem() && final_sub[j].sem() < LIMB_BASE() by {
+                assert(final_sub[j] == buf@[(out_off as int) + j]);
+            }
+        }
+        // Establish valid_limbs of sum_sub, amb_sub, bma_sub
+        assert(valid_limbs(sum_sub)) by {
+            assert forall |j: int| 0 <= j < sum_sub.len()
+                implies 0 <= (#[trigger] sum_sub[j]).sem() && sum_sub[j].sem() < LIMB_BASE() by {
+                assert(sum_sub[j] == buf@[(tmp1_off as int) + j]);
+            }
+        }
+        assert(valid_limbs(amb_sub)) by {
+            assert forall |j: int| 0 <= j < amb_sub.len()
+                implies 0 <= (#[trigger] amb_sub[j]).sem() && amb_sub[j].sem() < LIMB_BASE() by {
+                assert(amb_sub[j] == buf@[(tmp2_off as int) + j]);
+            }
+        }
+        assert(valid_limbs(bma_sub)) by {
+            assert forall |j: int| 0 <= j < bma_sub.len()
+                implies 0 <= (#[trigger] bma_sub[j]).sem() && bma_sub[j].sem() < LIMB_BASE() by {
+                assert(bma_sub[j] == pre_select[(out_off as int) + j]);
+            }
+        }
+
+        // Apply lemma_signed_add_correct_seq
+        lemma_signed_add_correct_seq::<T>(
+            a_sub, a_sign.sem(),
+            b_sub, b_sign.sem(),
+            sum_sub, sum_carry.sem(),
+            amb_sub, borrow_ab.sem(),
+            bma_sub, borrow_ba.sem(),
+            same_sign.sem(),
+            final_sub, result_sign.sem(),
+            n as nat,
+        );
+    }
+
     result_sign
 }
 
@@ -3344,9 +3562,38 @@ pub fn signed_sub_to_buf<T: LimbOps>(
             && !(tmp1_off as int <= j < tmp1_off + n)
             && !(tmp2_off as int <= j < tmp2_off + n)
             ==> buf@[j] == old(buf)@[j],
+        // Signed-magnitude difference equation: 3-way modular disjunction
+        // for a + (-b) = a - b
+        ({
+            let va = vec_val(a@.subrange(0, n as int));
+            let vb = vec_val(b@.subrange(0, n as int));
+            let vo = vec_val(buf@.subrange(out_off as int, (out_off + n) as int));
+            let sa_signed = if a_sign.sem() == 0 { va } else { -va };
+            let sb_signed = if b_sign.sem() == 0 { vb } else { -vb };
+            let so_signed = if out_sign.sem() == 0 { vo } else { -vo };
+            let true_diff = sa_signed - sb_signed;
+            let P = limb_power(n as nat);
+            so_signed == true_diff
+                || (so_signed == true_diff - P && true_diff >= P)
+                || (so_signed == true_diff + P && true_diff <= -(P as int))
+        }),
 {
     let neg_b_sign = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
-    signed_add_to_buf(a, a_sign, b, &neg_b_sign, buf, out_off, tmp1_off, tmp2_off, n)
+    let result = signed_add_to_buf(a, a_sign, b, &neg_b_sign, buf, out_off, tmp1_off, tmp2_off, n);
+    proof {
+        // -(-b) is just b. neg_b_sign flips b_sign: 0→1, 1→0.
+        // signed(b, neg_b_sign) == -signed(b, b_sign), so a + (b with flipped sign) = a - b.
+        // The signed_add_to_buf postcondition gives the sum with neg_b_sign as the b sign,
+        // which corresponds to a - b in the original signs.
+        let vb = vec_val(b@.subrange(0, n as int));
+        if b_sign.sem() == 0 {
+            // original b is non-negative, neg_b_sign == 1, signed(b, 1) == -vb == -signed(b, 0)
+            assert(neg_b_sign.sem() == 1);
+        } else {
+            assert(neg_b_sign.sem() == 0);
+        }
+    }
+    result
 }
 
 /// Single-buffer signed multiply.
@@ -3364,6 +3611,7 @@ pub fn signed_mul_to_buf<T: LimbOps>(
         out_off + n < usize::MAX,
         prod_off + 2 * n < usize::MAX,
         frac_limbs + n <= 2 * n,
+        frac_limbs <= n,
         frac_limbs + n < usize::MAX,
         a_sign.sem() == 0 || a_sign.sem() == 1,
         b_sign.sem() == 0 || b_sign.sem() == 1,
@@ -3371,6 +3619,9 @@ pub fn signed_mul_to_buf<T: LimbOps>(
         out_off + n <= prod_off || prod_off + 2 * n <= out_off,
     ensures buf@.len() == old(buf)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
+        // Sign is XOR of input signs (same sign → positive result)
+        (a_sign.sem() == b_sign.sem()) ==> out_sign.sem() == 0,
+        (a_sign.sem() != b_sign.sem()) ==> out_sign.sem() == 1,
         // Valid limbs on output region
         forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] buf@[out_off as int + j]).sem() < LIMB_BASE(),
         // Frame: indices outside out and prod regions unchanged
@@ -3378,6 +3629,10 @@ pub fn signed_mul_to_buf<T: LimbOps>(
             && !(out_off as int <= j < out_off + n)
             && !(prod_off as int <= j < prod_off + 2 * n)
             ==> buf@[j] == old(buf)@[j],
+        // Truncated product value equation: out is the truncated magnitude of a * b
+        vec_val(buf@.subrange(out_off as int, (out_off + n) as int))
+            == ((vec_val(a@.subrange(0, n as int)) * vec_val(b@.subrange(0, n as int)))
+                / limb_power(frac_limbs as nat)) % limb_power(n as nat),
 {
     mul_schoolbook_to(a, b, buf, prod_off, n);
     // Copy product[frac_limbs..frac_limbs+n] to out (can't use slice_vec_to: aliasing)
@@ -3398,6 +3653,9 @@ pub fn signed_mul_to_buf<T: LimbOps>(
             forall |j: int| 0 <= j < 2 * n ==> 0 <= (#[trigger] post_mul[prod_off as int + j]).sem() < LIMB_BASE(),
             // Already-copied output has valid limbs
             forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] buf@[out_off as int + j]).sem() < LIMB_BASE(),
+            // Already-copied output: value matches the corresponding product limb
+            forall |j: int| 0 <= j < i
+                ==> #[trigger] buf@[out_off as int + j].sem() == post_mul[(prod_off + frac_limbs) as int + j].sem(),
             // Frame outside both regions
             forall |j: int| 0 <= j < buf_len
                 && !(out_off as int <= j < out_off + n)
@@ -3418,6 +3676,64 @@ pub fn signed_mul_to_buf<T: LimbOps>(
         let val = buf[prod_off + frac_limbs + i].clone_limb();
         buf.set(out_off + i, val);
     }
+
+    proof {
+        // Build the truncated product value equation via lemma_truncated_product_seq.
+        // The 2n-limb product is in buf[prod_off..prod_off+2n] (preserved by post_mul snapshot).
+        // The truncated n limbs are in buf[out_off..out_off+n].
+        let prod_full = post_mul.subrange(prod_off as int, (prod_off + 2 * n) as int);
+        let out_sub = buf@.subrange(out_off as int, (out_off + n) as int);
+        let a_sub = a@.subrange(0, n as int);
+        let b_sub = b@.subrange(0, n as int);
+
+        assert(prod_full.len() == 2 * n as int);
+        // valid_limbs(prod_full) from the post_mul snapshot
+        assert(valid_limbs(prod_full)) by {
+            assert forall |k: int| 0 <= k < prod_full.len()
+                implies 0 <= (#[trigger] prod_full[k]).sem() && prod_full[k].sem() < LIMB_BASE() by {
+                assert(prod_full[k] == post_mul[prod_off as int + k]);
+            }
+        }
+        assert(valid_limbs(out_sub)) by {
+            assert forall |k: int| 0 <= k < out_sub.len()
+                implies 0 <= (#[trigger] out_sub[k]).sem() && out_sub[k].sem() < LIMB_BASE() by {
+                assert(out_sub[k] == buf@[(out_off as int) + k]);
+            }
+        }
+        assert(valid_limbs(a_sub)) by {
+            assert forall |k: int| 0 <= k < a_sub.len()
+                implies 0 <= (#[trigger] a_sub[k]).sem() && a_sub[k].sem() < LIMB_BASE() by {
+                assert(a_sub[k] == a@[k]);
+            }
+        }
+        assert(valid_limbs(b_sub)) by {
+            assert forall |k: int| 0 <= k < b_sub.len()
+                implies 0 <= (#[trigger] b_sub[k]).sem() && b_sub[k].sem() < LIMB_BASE() by {
+                assert(b_sub[k] == b@[k]);
+            }
+        }
+
+        // post_mul holds the result of mul_schoolbook_to: vec_val(prod_full) == vec_val(a) * vec_val(b)
+        // The post_mul value equation comes from mul_schoolbook_to's strengthened postcondition.
+        assert(vec_val(prod_full) == vec_val(a_sub) * vec_val(b_sub));
+
+        // out_sub[j].sem() == prod_full[(frac_limbs + j) as int].sem()
+        // (the copy loop writes the truncated portion)
+        assert forall |j: int| 0 <= j < n as int
+            implies (#[trigger] out_sub[j]).sem() == prod_full[(frac_limbs as int + j) as int].sem() by {
+            assert(out_sub[j] == buf@[(out_off as int) + j]);
+            // After the copy loop, buf[out_off + j] == post_mul[prod_off + frac_limbs + j]
+            assert(buf@[(out_off as int) + j].sem() == post_mul[(prod_off + frac_limbs) as int + j].sem());
+            assert(prod_full[(frac_limbs as int) + j] == post_mul[(prod_off as int) + (frac_limbs as int) + j]);
+        }
+
+        lemma_truncated_product_seq::<T>(
+            prod_full, out_sub,
+            vec_val(a_sub), vec_val(b_sub),
+            n as nat, frac_limbs as nat,
+        );
+    }
+
     let sign_b_flipped = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
     T::select_limb(a_sign, b_sign.clone_limb(), sign_b_flipped)
 }
