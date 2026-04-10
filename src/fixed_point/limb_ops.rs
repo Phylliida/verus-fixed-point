@@ -1235,6 +1235,7 @@ pub fn signed_mul_to<T: LimbOps>(
         out_off + n < usize::MAX,
         prod_off + 2 * n < usize::MAX,
         frac_limbs + n <= 2 * n,
+        frac_limbs <= n,
         frac_limbs + n < usize::MAX,
         a_sign.sem() == 0 || a_sign.sem() == 1,
         b_sign.sem() == 0 || b_sign.sem() == 1,
@@ -1246,8 +1247,13 @@ pub fn signed_mul_to<T: LimbOps>(
         (a_sign.sem() != b_sign.sem()) ==> out_sign.sem() == 1,
         // Valid limbs on output region
         forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
+        // Truncated product value equation: out is the truncated magnitude of a * b
+        vec_val(out@.subrange(out_off as int, (out_off + n) as int))
+            == ((vec_val(a@.subrange(0, n as int)) * vec_val(b@.subrange(0, n as int)))
+                / limb_power(frac_limbs as nat)) % limb_power(n as nat),
 {
     mul_schoolbook_to(a, b, prod, prod_off, n);
+    let ghost prod_full = prod@.subrange(prod_off as int, (prod_off + 2 * n) as int);
     slice_vec_to(prod.as_slice(), prod_off + frac_limbs, prod_off + frac_limbs + n, out, out_off);
     // Prove valid_limbs: slice_vec_to copies values from mul_schoolbook_to output
     proof {
@@ -1262,6 +1268,63 @@ pub fn signed_mul_to<T: LimbOps>(
             assert(0 <= (frac_limbs as int + j) && (frac_limbs as int + j) < 2 * n);
             assert(0 <= prod@[(prod_off as int + (frac_limbs as int + j)) as int].sem() < LIMB_BASE());
         }
+
+        // Build the value equation via lemma_truncated_product_seq
+        let out_sub = out@.subrange(out_off as int, (out_off + n) as int);
+        let a_sub = a@.subrange(0, n as int);
+        let b_sub = b@.subrange(0, n as int);
+
+        // prod_full == prod@.subrange(prod_off, prod_off + 2n) is the full 2n-limb product
+        assert(prod_full.len() == 2 * n as int);
+
+        // Establish valid_limbs(prod_full) and valid_limbs(out_sub) and valid_limbs(a_sub) etc.
+        assert(valid_limbs(prod_full)) by {
+            assert forall |k: int| 0 <= k < prod_full.len()
+                implies 0 <= (#[trigger] prod_full[k]).sem() && prod_full[k].sem() < LIMB_BASE() by {
+                assert(prod_full[k] == prod@[prod_off as int + k]);
+                assert(0 <= prod@[(prod_off as int) + k].sem()
+                    && prod@[(prod_off as int) + k].sem() < LIMB_BASE());
+            }
+        }
+
+        assert(valid_limbs(out_sub)) by {
+            assert forall |k: int| 0 <= k < out_sub.len()
+                implies 0 <= (#[trigger] out_sub[k]).sem() && out_sub[k].sem() < LIMB_BASE() by {
+                assert(out_sub[k] == out@[(out_off as int) + k]);
+            }
+        }
+
+        assert(valid_limbs(a_sub)) by {
+            assert forall |k: int| 0 <= k < a_sub.len()
+                implies 0 <= (#[trigger] a_sub[k]).sem() && a_sub[k].sem() < LIMB_BASE() by {
+                assert(a_sub[k] == a@[k]);
+            }
+        }
+        assert(valid_limbs(b_sub)) by {
+            assert forall |k: int| 0 <= k < b_sub.len()
+                implies 0 <= (#[trigger] b_sub[k]).sem() && b_sub[k].sem() < LIMB_BASE() by {
+                assert(b_sub[k] == b@[k]);
+            }
+        }
+
+        // mul_schoolbook_to gives vec_val(prod_full) == vec_val(a_sub) * vec_val(b_sub)
+        assert(vec_val(prod_full) == vec_val(a_sub) * vec_val(b_sub));
+
+        // out_sub[j] == prod_full[(frac_limbs + j) as int] (semantically)
+        assert forall |j: int| 0 <= j < n as int
+            implies (#[trigger] out_sub[j]).sem() == prod_full[(frac_limbs as int + j) as int].sem() by {
+            assert(out_sub[j] == out@[(out_off as int) + j]);
+            assert(out@[(out_off as int) + j].sem()
+                == prod@[((prod_off + frac_limbs) as int) + j].sem());
+            assert(prod_full[(frac_limbs as int) + j] == prod@[(prod_off as int) + (frac_limbs as int) + j]);
+        }
+
+        // Apply the helper lemma
+        lemma_truncated_product_seq::<T>(
+            prod_full, out_sub,
+            vec_val(a_sub), vec_val(b_sub),
+            n as nat, frac_limbs as nat,
+        );
     }
     let sign_b_flipped = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
     T::select_limb(a_sign, b_sign.clone_limb(), sign_b_flipped)
@@ -1789,6 +1852,110 @@ pub proof fn lemma_vec_val_split<T: LimbOps>(a: Seq<T>, mid: nat)
     assert(sem_seq(a).subrange(0, mid as int) =~= sem_seq(a.subrange(0, mid as int)));
     assert(sem_seq(a).subrange(mid as int, sem_seq(a).len() as int)
         =~= sem_seq(a.subrange(mid as int, a.len() as int)));
+}
+
+///  Truncated product on Seq<T>: vec_val of the n-limb middle slice of the
+///  2n-limb product equals ((a_val * b_val) / limb_power(frac_limbs)) % limb_power(n).
+///  This is the Seq-friendly version of lemma_truncated_product.
+pub proof fn lemma_truncated_product_seq<T: LimbOps>(
+    product: Seq<T>, truncated: Seq<T>,
+    a_val: int, b_val: int,
+    n: nat, frac_limbs: nat,
+)
+    requires
+        product.len() == 2 * n,
+        valid_limbs(product),
+        vec_val(product) == a_val * b_val,
+        truncated.len() == n,
+        valid_limbs(truncated),
+        forall |j: int| 0 <= j < n as int ==>
+            (#[trigger] truncated[j]).sem() == product[(frac_limbs + j) as int].sem(),
+        frac_limbs + n <= 2 * n,
+        frac_limbs <= n,
+        n > 0,
+    ensures
+        vec_val(truncated) == ((a_val * b_val) / limb_power(frac_limbs)) % limb_power(n),
+{
+    let scale = limb_power(frac_limbs);
+    let P = limb_power(n);
+    let ab = a_val * b_val;
+
+    // Step 1: Split product at frac_limbs → lo + upper * scale
+    lemma_vec_val_split::<T>(product, frac_limbs);
+    let lo = vec_val(product.subrange(0, frac_limbs as int));
+    let upper_seq = product.subrange(frac_limbs as int, product.len() as int);
+
+    // Step 2: Split upper at n → mid + hi * P
+    lemma_vec_val_split::<T>(upper_seq, n);
+    let mid = vec_val(upper_seq.subrange(0, n as int));
+    let hi = vec_val(upper_seq.subrange(n as int, upper_seq.len() as int));
+
+    // Step 3: truncated == upper[0..n] semantically
+    assert(truncated.len() == upper_seq.subrange(0, n as int).len());
+    assert forall |j: int| 0 <= j < truncated.len()
+        implies (#[trigger] truncated[j]).sem() == upper_seq.subrange(0, n as int)[j].sem() by {
+        assert(upper_seq.subrange(0, n as int)[j] == upper_seq[j]);
+        assert(upper_seq[j] == product[(frac_limbs as int) + j]);
+    }
+    lemma_vec_val_eq_from_sem_eq::<T>(truncated, upper_seq.subrange(0, n as int));
+    assert(vec_val(truncated) == mid);
+
+    // Step 4: Bounds on lo, mid, hi
+    let lo_seq = product.subrange(0, frac_limbs as int);
+    assert forall |j: int| 0 <= j < lo_seq.len()
+        implies 0 <= (#[trigger] lo_seq[j]).sem() && lo_seq[j].sem() < LIMB_BASE() by {
+        assert(lo_seq[j] == product[j]);
+    }
+    lemma_vec_val_bounded::<T>(lo_seq);
+    assert(0 <= lo && lo < scale);
+    lemma_vec_val_bounded::<T>(truncated);
+    assert(0 <= mid && mid < P);
+    let hi_seq = upper_seq.subrange(n as int, upper_seq.len() as int);
+    assert forall |j: int| 0 <= j < hi_seq.len()
+        implies 0 <= (#[trigger] hi_seq[j]).sem() && hi_seq[j].sem() < LIMB_BASE() by {
+        assert(hi_seq[j] == upper_seq[j + n as int]);
+        assert(upper_seq[j + n as int] == product[(frac_limbs as int) + j + n as int]);
+    }
+    lemma_vec_val_bounded::<T>(hi_seq);
+    assert(hi >= 0);
+
+    // Step 5: ab == lo + (mid + hi*P) * scale
+    assert(ab == lo + vec_val(upper_seq) * scale);
+    assert(vec_val(upper_seq) == mid + hi * P);
+    assert(ab == lo + (mid + hi * P) * scale) by(nonlinear_arith)
+        requires
+            ab == lo + vec_val(upper_seq) * scale,
+            vec_val(upper_seq) == mid + hi * P;
+
+    // Step 6: ab % scale == lo
+    assert(scale > 0) by {
+        lemma_vec_val_bounded::<T>(lo_seq);
+    }
+    assert(ab % scale == lo) by {
+        assert(ab == scale * (mid + hi * P) + lo) by(nonlinear_arith)
+            requires ab == lo + (mid + hi * P) * scale;
+        vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(mid + hi * P, lo, scale);
+        vstd::arithmetic::div_mod::lemma_small_mod(lo as nat, scale as nat);
+    };
+
+    // Step 7: ab / scale == mid + hi * P
+    assert(ab == scale * (mid + hi * P) + lo) by(nonlinear_arith)
+        requires ab == lo + (mid + hi * P) * scale;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(ab, scale);
+    assert(ab / scale == mid + hi * P) by(nonlinear_arith)
+        requires
+            ab == scale * (ab / scale) + ab % scale,
+            ab % scale == lo,
+            ab == scale * (mid + hi * P) + lo,
+            scale > 0;
+
+    // Step 8: (mid + hi*P) % P == mid
+    assert(P > 0);
+    assert((mid + hi * P) % P == mid) by {
+        assert(mid + hi * P == P * hi + mid) by(nonlinear_arith);
+        vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(hi, mid, P);
+        vstd::arithmetic::div_mod::lemma_small_mod(mid as nat, P as nat);
+    };
 }
 
 ///  Updating one element of a Seq<T> changes vec_val by a multiple of limb_power(idx).
