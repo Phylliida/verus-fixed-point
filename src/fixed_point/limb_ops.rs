@@ -1791,6 +1791,83 @@ pub proof fn lemma_vec_val_split<T: LimbOps>(a: Seq<T>, mid: nat)
         =~= sem_seq(a.subrange(mid as int, a.len() as int)));
 }
 
+///  Updating one element of a Seq<T> changes vec_val by a multiple of limb_power(idx).
+///  vec_val(s_post) == vec_val(s_pre) + (s_post[idx].sem() - s_pre[idx].sem()) * limb_power(idx).
+pub proof fn lemma_vec_val_set_one<T: LimbOps>(
+    s_pre: Seq<T>, s_post: Seq<T>, idx: int,
+)
+    requires
+        s_pre.len() == s_post.len(),
+        0 <= idx,
+        idx < s_pre.len(),
+        forall |k: int| 0 <= k < s_pre.len() && k != idx ==> s_pre[k] == s_post[k],
+    ensures
+        vec_val(s_post) == vec_val(s_pre)
+            + (s_post[idx].sem() - s_pre[idx].sem()) * limb_power(idx as nat),
+{
+    lemma_vec_val_split::<T>(s_pre, idx as nat);
+    lemma_vec_val_split::<T>(s_post, idx as nat);
+
+    let lo_pre = s_pre.subrange(0, idx);
+    let lo_post = s_post.subrange(0, idx);
+    let hi_pre = s_pre.subrange(idx, s_pre.len() as int);
+    let hi_post = s_post.subrange(idx, s_post.len() as int);
+
+    // Lo parts are equal
+    assert(lo_pre =~= lo_post);
+
+    // Now split each hi part at index 1 to isolate s[idx]
+    lemma_vec_val_split::<T>(hi_pre, 1);
+    lemma_vec_val_split::<T>(hi_post, 1);
+
+    let head_pre = hi_pre.subrange(0, 1);
+    let head_post = hi_post.subrange(0, 1);
+    let tail_pre = hi_pre.subrange(1, hi_pre.len() as int);
+    let tail_post = hi_post.subrange(1, hi_post.len() as int);
+
+    // Single-element vec_val
+    reveal_with_fuel(limbs_val, 2);
+    reveal_with_fuel(limb_power, 2);
+    assert(head_pre.len() == 1);
+    assert(head_post.len() == 1);
+    assert(head_pre[0] == s_pre[idx]);
+    assert(head_post[0] == s_post[idx]);
+    assert(sem_seq(head_pre).len() == 1);
+    assert(sem_seq(head_pre)[0] == s_pre[idx].sem());
+    assert(sem_seq(head_pre).subrange(1, 1) =~= Seq::<int>::empty());
+    assert(vec_val(head_pre) == s_pre[idx].sem());
+    assert(sem_seq(head_post)[0] == s_post[idx].sem());
+    assert(sem_seq(head_post).subrange(1, 1) =~= Seq::<int>::empty());
+    assert(vec_val(head_post) == s_post[idx].sem());
+
+    // Tail parts are equal: tail_pre[k] == s_pre[idx + 1 + k] == s_post[idx + 1 + k] == tail_post[k]
+    assert forall |k: int| 0 <= k < tail_pre.len() implies tail_pre[k] == tail_post[k] by {
+        assert(tail_pre[k] == hi_pre[k + 1]);
+        assert(hi_pre[k + 1] == s_pre[idx + 1 + k]);
+        assert(tail_post[k] == hi_post[k + 1]);
+        assert(hi_post[k + 1] == s_post[idx + 1 + k]);
+    }
+    assert(tail_pre =~= tail_post);
+
+    let p_idx = limb_power(idx as nat);
+    let p_idx1 = limb_power((idx + 1) as nat);
+    assert(p_idx1 == LIMB_BASE() * p_idx);
+    assert(limb_power(1nat) == LIMB_BASE());
+
+    // Combine via nonlinear_arith
+    assert(vec_val(s_post) == vec_val(s_pre)
+        + (s_post[idx].sem() - s_pre[idx].sem()) * p_idx) by(nonlinear_arith)
+        requires
+            vec_val(s_pre) == vec_val(lo_pre) + vec_val(hi_pre) * p_idx,
+            vec_val(s_post) == vec_val(lo_post) + vec_val(hi_post) * p_idx,
+            vec_val(lo_pre) == vec_val(lo_post),
+            vec_val(hi_pre) == vec_val(head_pre) + vec_val(tail_pre) * LIMB_BASE(),
+            vec_val(hi_post) == vec_val(head_post) + vec_val(tail_post) * LIMB_BASE(),
+            vec_val(head_pre) == s_pre[idx].sem(),
+            vec_val(head_post) == s_post[idx].sem(),
+            vec_val(tail_pre) == vec_val(tail_post);
+}
+
 //  ══════════════════════════════════════════════════════════════
 //  Shift and pad semantics on Seq<int> (Z3-friendly, no generics)
 //  ══════════════════════════════════════════════════════════════
@@ -1945,9 +2022,15 @@ pub fn mul_schoolbook_to<T: LimbOps>(
         forall |j: int| 0 <= j < 2 * n ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
         // Frame: indices outside [out_off, out_off+2n) are unchanged
         forall |j: int| 0 <= j < out@.len() && !(out_off as int <= j < out_off + 2 * n) ==> out@[j] == old(out)@[j],
+        // Value equation: the 2n-limb result equals a * b
+        vec_val(out@.subrange(out_off as int, (out_off + 2 * n) as int))
+            == vec_val(a@.subrange(0, n as int)) * vec_val(b@.subrange(0, n as int)),
 {
     let ghost old_out = out@;
     let ghost out_len = out@.len();
+    let ghost sa = sem_seq(a@.subrange(0, n as int));
+    let ghost sb = sem_seq(b@.subrange(0, n as int));
+    let ghost a_val = limbs_val(sa);
     let nn: usize = 2 * n;
 
     // Zero the output region
@@ -1959,6 +2042,27 @@ pub fn mul_schoolbook_to<T: LimbOps>(
         out.set(out_off + i, T::zero_val());
     }
 
+    // After zeroing: vec_val of the output region is 0
+    proof {
+        let zero_sub = out@.subrange(out_off as int, (out_off + nn) as int);
+        assert forall |k: int| 0 <= k < zero_sub.len()
+            implies (#[trigger] zero_sub[k]).sem() == 0 by {
+            assert(zero_sub[k] == out@[(out_off as int) + k]);
+        }
+        // vec_val of an all-zero sequence is 0
+        assert(sem_seq(zero_sub) =~= Seq::new(zero_sub.len(), |_i: int| 0int)) by {
+            assert forall |k: int| 0 <= k < sem_seq(zero_sub).len()
+                implies sem_seq(zero_sub)[k] == 0int by {
+                assert(sem_seq(zero_sub)[k] == zero_sub[k].sem());
+            }
+        }
+        lemma_limbs_val_zeros(zero_sub.len() as nat);
+        // Establish initial value of empty subrange of sb
+        assert(sb.subrange(0, 0int) =~= Seq::<int>::empty());
+        reveal_with_fuel(limbs_val, 2);
+        assert(limbs_val(Seq::<int>::empty()) == 0int);
+    }
+
     // Schoolbook: for each limb b[i], multiply a by b[i] and accumulate into out
     for i in 0..n
         invariant
@@ -1967,9 +2071,21 @@ pub fn mul_schoolbook_to<T: LimbOps>(
             out@.len() == out_len, out_len >= out_off + nn,
             out_off + nn < usize::MAX,
             valid_limbs(a@), valid_limbs(b@),
+            sa == sem_seq(a@.subrange(0, n as int)),
+            sb == sem_seq(b@.subrange(0, n as int)),
+            a_val == limbs_val(sa),
             forall |j: int| 0 <= j < out_len && !(out_off as int <= j < out_off as int + nn) ==> out@[j] == old_out[j],
             forall |j: int| 0 <= j < nn ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
+            // Zero-tail invariant: positions [i+n, 2n) still 0
+            forall |k: int| (i + n) <= k < nn ==> #[trigger] out@[out_off as int + k].sem() == 0,
+            // Value invariant: out_subrange == a * (first i limbs of b)
+            vec_val(out@.subrange(out_off as int, (out_off + nn) as int))
+                == a_val * limbs_val(sb.subrange(0, i as int)),
     {
+        let ghost v_initial = vec_val(out@.subrange(out_off as int, (out_off + nn) as int));
+        let ghost row_lim = sb[i as int];
+        let ghost p_i = limb_power(i as nat);
+
         let mut carry: T = T::zero_val();
         for j in 0..n
             invariant
@@ -1979,17 +2095,356 @@ pub fn mul_schoolbook_to<T: LimbOps>(
                 out_off + nn < usize::MAX,
                 i < n,
                 valid_limbs(a@), valid_limbs(b@),
+                sa == sem_seq(a@.subrange(0, n as int)),
+                sb == sem_seq(b@.subrange(0, n as int)),
+                a_val == limbs_val(sa),
+                row_lim == sb[i as int],
+                p_i == limb_power(i as nat),
+                v_initial == a_val * limbs_val(sb.subrange(0, i as int)),
                 0 <= carry.sem() < LIMB_BASE(),
                 forall |k: int| 0 <= k < out_len && !(out_off as int <= k < out_off as int + nn) ==> out@[k] == old_out[k],
                 forall |k: int| 0 <= k < nn ==> 0 <= (#[trigger] out@[out_off as int + k]).sem() < LIMB_BASE(),
+                // Zero-tail still holds (inner loop only writes positions [i, i+n))
+                forall |k: int| (i + n) <= k < nn ==> #[trigger] out@[out_off as int + k].sem() == 0,
+                // Inner value invariant
+                vec_val(out@.subrange(out_off as int, (out_off + nn) as int))
+                    + carry.sem() * limb_power((i + j) as nat)
+                    == v_initial + limbs_val(sa.subrange(0, j as int)) * row_lim * p_i,
         {
             let (prod_lo, prod_hi) = a[j].mul2(&b[i]);
             let (sum1, c1) = prod_lo.add3(&out[out_off + i + j], &carry);
             let (new_carry, _c2) = prod_hi.add3(&c1, &T::zero_val());
+
+            let ghost out_at = out@[(out_off + i + j) as int].sem();
+            let ghost aj = sa[j as int];
+            let ghost bi = row_lim;
+            let ghost car = carry.sem();
+            let ghost base = LIMB_BASE();
+            let ghost prod = aj * bi;
+
+            proof {
+                // Establish bounds: aj, bi from valid_limbs; out_at from loop invariant
+                assert(a@.subrange(0, n as int)[j as int] == a@[j as int]);
+                assert(b@.subrange(0, n as int)[i as int] == b@[i as int]);
+                assert(aj == a@[j as int].sem());
+                assert(bi == b@[i as int].sem());
+                assert(0 <= a@[j as int].sem() && a@[j as int].sem() < LIMB_BASE());
+                assert(0 <= b@[i as int].sem() && b@[i as int].sem() < LIMB_BASE());
+                assert(0 <= aj && aj < base);
+                assert(0 <= bi && bi < base);
+                // out_at: instantiate loop invariant at k = i + j
+                let k_oj: int = (i + j) as int;
+                assert(0 <= k_oj && k_oj < nn);
+                assert(out@[(out_off + i + j) as int] == out@[out_off as int + k_oj]);
+                assert(0 <= out@[out_off as int + k_oj].sem() && out@[out_off as int + k_oj].sem() < LIMB_BASE());
+                assert(0 <= out_at && out_at < base);
+
+                // mul2 facts
+                assert(prod_lo.sem() == prod % base);
+                assert(prod_hi.sem() == prod / base);
+                let plo = prod_lo.sem();
+                let phi = prod_hi.sem();
+                let aj_v: int = aj;
+                let bi_v: int = bi;
+                assert(aj_v == aj);
+                assert(bi_v == bi);
+                assert(aj_v >= 0 && aj_v < base);
+                assert(bi_v >= 0 && bi_v < base);
+                assert(prod == aj_v * bi_v);
+                assert(0 <= prod) by(nonlinear_arith)
+                    requires prod == aj_v * bi_v, aj_v >= 0, bi_v >= 0;
+                assert(prod <= (base - 1) * (base - 1)) by(nonlinear_arith)
+                    requires prod == aj_v * bi_v, 0 <= aj_v, aj_v < base, 0 <= bi_v, bi_v < base;
+                assert(plo + phi * base == prod) by(nonlinear_arith)
+                    requires plo == prod % base, phi == prod / base, base > 0;
+                assert(0 <= plo && plo < base) by(nonlinear_arith)
+                    requires plo == prod % base, base > 0, prod >= 0;
+                assert(0 <= phi) by(nonlinear_arith)
+                    requires phi == prod / base, base > 0, prod >= 0;
+
+                // add3(prod_lo, out[off+i+j], carry)
+                let sum_in = plo + out_at + car;
+                let s1 = sum1.sem();
+                let cc1 = c1.sem();
+                assert(s1 == sum_in % base);
+                assert(cc1 == sum_in / base);
+                assert(s1 + cc1 * base == sum_in) by(nonlinear_arith)
+                    requires s1 == sum_in % base, cc1 == sum_in / base, base > 0;
+                assert(cc1 >= 0) by(nonlinear_arith)
+                    requires cc1 == sum_in / base, sum_in >= 0, base > 0;
+
+                // add3(prod_hi, c1, 0)
+                let phi_plus_c1 = phi + cc1;
+                let nc = new_carry.sem();
+                let cc2 = _c2.sem();
+                assert(nc == phi_plus_c1 % base);
+                assert(cc2 == phi_plus_c1 / base);
+                assert(nc + cc2 * base == phi_plus_c1) by(nonlinear_arith)
+                    requires nc == phi_plus_c1 % base, cc2 == phi_plus_c1 / base, base > 0;
+                assert(cc2 >= 0) by(nonlinear_arith)
+                    requires cc2 == phi_plus_c1 / base, phi_plus_c1 >= 0, base > 0;
+
+                // Joint identity:
+                // prod + out_at + car == s1 + nc * base + cc2 * base * base
+                assert(prod + out_at + car == s1 + nc * base + cc2 * base * base) by(nonlinear_arith)
+                    requires
+                        prod == plo + phi * base,
+                        s1 + cc1 * base == plo + out_at + car,
+                        nc + cc2 * base == phi + cc1;
+
+                // Bound the joint sum
+                assert(prod + out_at + car <= base * base - 1) by(nonlinear_arith)
+                    requires
+                        prod <= (base - 1) * (base - 1),
+                        out_at < base, car < base, base > 0;
+
+                // Hence cc2 == 0 (can't have cc2 ≥ 1 since cc2*base^2 would exceed base^2 - 1)
+                assert(cc2 == 0) by(nonlinear_arith)
+                    requires
+                        prod + out_at + car == s1 + nc * base + cc2 * base * base,
+                        prod + out_at + car <= base * base - 1,
+                        s1 >= 0, nc >= 0, cc2 >= 0, base > 0;
+
+                // Hence sum equation simplifies
+                assert(prod + out_at + car == s1 + nc * base) by(nonlinear_arith)
+                    requires
+                        prod + out_at + car == s1 + nc * base + cc2 * base * base,
+                        cc2 == 0;
+
+                // Bound on new_carry
+                assert(nc < base) by(nonlinear_arith)
+                    requires
+                        prod + out_at + car == s1 + nc * base,
+                        prod + out_at + car <= base * base - 1,
+                        s1 >= 0, base > 0;
+            }
+
+            let ghost pre_seq = out@;
+            let ghost pre_set = out@.subrange(out_off as int, (out_off + nn) as int);
+            let ghost local_idx = (i + j) as int;
             out.set(out_off + i + j, sum1);
+            proof {
+                let post_set = out@.subrange(out_off as int, (out_off + nn) as int);
+                let nc = new_carry.sem();
+                let s1 = sum1.sem();
+                let base = LIMB_BASE();
+                let p_ij = limb_power((i + j) as nat);
+                let p_ij1 = limb_power((i + j + 1) as nat);
+
+                // pre_set and post_set differ only at local_idx
+                assert(pre_set.len() == post_set.len() == nn);
+                assert(0 <= local_idx && local_idx < nn);
+                assert(pre_set[local_idx] == pre_seq[(out_off as int) + local_idx]);
+                assert(pre_set[local_idx].sem() == out_at);
+                assert(post_set[local_idx] == out@[(out_off as int) + local_idx]);
+                assert(post_set[local_idx] == sum1);
+                assert(post_set[local_idx].sem() == s1);
+
+                // Frame property of `out.set(out_off + i + j, sum1)`:
+                // out@[k] == pre_seq[k] for all k != out_off + i + j.
+                assert forall |k: int| 0 <= k < nn && k != local_idx
+                    implies pre_set[k] == post_set[k] by {
+                    assert(pre_set[k] == pre_seq[(out_off as int) + k]);
+                    assert(post_set[k] == out@[(out_off as int) + k]);
+                    assert((out_off as int) + k != (out_off as int) + local_idx);
+                }
+
+                // Extend sa subrange by one
+                lemma_limbs_val_subrange_extend(sa, j as nat);
+
+                // Apply value-set-one lemma
+                lemma_vec_val_set_one::<T>(pre_set, post_set, local_idx);
+                // vec_val(post_set) == vec_val(pre_set) + (s1 - out_at) * p_ij
+
+                // limb_power(i+j+1) == base * limb_power(i+j)
+                reveal_with_fuel(limb_power, 2);
+                assert(p_ij1 == base * p_ij);
+
+                // Inner invariant maintenance
+                let v_pre = vec_val(pre_set);
+                let v_post = vec_val(post_set);
+                let car = carry.sem();
+                let p_j = limb_power(j as nat);
+                let l_old = limbs_val(sa.subrange(0, j as int));
+                let l_new = limbs_val(sa.subrange(0, (j + 1) as int));
+
+                assert(v_post == v_pre + (s1 - out_at) * p_ij);
+                assert(v_pre + car * p_ij == v_initial + l_old * row_lim * p_i);
+                // Per-step equation: prod + out_at + car == s1 + nc * base
+                assert(prod + out_at + car == s1 + new_carry.sem() * base);
+                assert(prod == aj * bi);
+                assert(bi == row_lim);
+                assert(prod == aj * row_lim);
+
+                // sa[j] == aj
+                assert(sa[j as int] == aj);
+                assert(l_new == l_old + aj * p_j);
+
+                // p_i * p_j == p_ij
+                lemma_limb_power_add(i as nat, j as nat);
+                assert(limb_power((i + j) as nat) == p_i * p_j);
+                assert(p_i * p_j == p_ij);
+
+                // Step 1: rearrange v_post
+                assert(v_post + new_carry.sem() * p_ij1
+                    == v_pre + (s1 - out_at) * p_ij + new_carry.sem() * p_ij1) by(nonlinear_arith)
+                    requires
+                        v_post == v_pre + (s1 - out_at) * p_ij;
+
+                // p_ij1 == base * p_ij
+                assert(p_ij1 == base * p_ij);
+
+                // Step 2: collect terms
+                assert((s1 - out_at) * p_ij + new_carry.sem() * p_ij1
+                    == (s1 - out_at + new_carry.sem() * base) * p_ij) by(nonlinear_arith)
+                    requires p_ij1 == base * p_ij;
+
+                // Step 3: use per-step equation: s1 + nc*base = prod + out_at + car
+                // → s1 - out_at + nc*base = prod + car
+                assert(s1 - out_at + new_carry.sem() * base == prod + car) by(nonlinear_arith)
+                    requires prod + out_at + car == s1 + new_carry.sem() * base;
+
+                // Step 4: combine
+                assert(v_post + new_carry.sem() * p_ij1 == v_pre + (prod + car) * p_ij) by(nonlinear_arith)
+                    requires
+                        v_post + new_carry.sem() * p_ij1
+                            == v_pre + (s1 - out_at) * p_ij + new_carry.sem() * p_ij1,
+                        (s1 - out_at) * p_ij + new_carry.sem() * p_ij1
+                            == (s1 - out_at + new_carry.sem() * base) * p_ij,
+                        s1 - out_at + new_carry.sem() * base == prod + car;
+
+                // Step 5: distribute (prod + car) * p_ij = prod * p_ij + car * p_ij
+                assert(v_post + new_carry.sem() * p_ij1 == v_pre + prod * p_ij + car * p_ij) by(nonlinear_arith)
+                    requires v_post + new_carry.sem() * p_ij1 == v_pre + (prod + car) * p_ij;
+
+                // Step 6: substitute v_pre + car * p_ij = v_initial + l_old * row_lim * p_i
+                assert(v_post + new_carry.sem() * p_ij1
+                    == v_initial + l_old * row_lim * p_i + prod * p_ij) by(nonlinear_arith)
+                    requires
+                        v_post + new_carry.sem() * p_ij1 == v_pre + prod * p_ij + car * p_ij,
+                        v_pre + car * p_ij == v_initial + l_old * row_lim * p_i;
+
+                // Step 7: prod * p_ij == aj * row_lim * p_i * p_j
+                assert(prod * p_ij == aj * row_lim * p_i * p_j) by(nonlinear_arith)
+                    requires prod == aj * row_lim, p_ij == p_i * p_j;
+
+                // Step 8: l_old * row_lim * p_i + aj * row_lim * p_i * p_j
+                //         == (l_old + aj * p_j) * row_lim * p_i == l_new * row_lim * p_i
+                assert(l_old * row_lim * p_i + aj * row_lim * p_i * p_j
+                    == l_new * row_lim * p_i) by(nonlinear_arith)
+                    requires l_new == l_old + aj * p_j;
+
+                // Step 9: combine
+                assert(v_post + new_carry.sem() * p_ij1 == v_initial + l_new * row_lim * p_i) by(nonlinear_arith)
+                    requires
+                        v_post + new_carry.sem() * p_ij1
+                            == v_initial + l_old * row_lim * p_i + prod * p_ij,
+                        prod * p_ij == aj * row_lim * p_i * p_j,
+                        l_old * row_lim * p_i + aj * row_lim * p_i * p_j
+                            == l_new * row_lim * p_i;
+
+                // Frame and zero-tail preservation
+                assert forall |k: int| (i + n) <= k < nn
+                    implies #[trigger] out@[out_off as int + k].sem() == 0 by {
+                    if (out_off as int + k) != local_idx + (out_off as int) {
+                        assert(out@[out_off as int + k] == pre_seq[out_off as int + k]);
+                    }
+                }
+                assert forall |k: int| 0 <= k < out_len && !(out_off as int <= k < out_off as int + nn)
+                    implies #[trigger] out@[k] == old_out[k] by {
+                    assert(out@[k] == pre_seq[k]);
+                }
+                assert forall |k: int| 0 <= k < nn
+                    implies 0 <= (#[trigger] out@[out_off as int + k]).sem() < LIMB_BASE() by {
+                    if k == local_idx {
+                        assert(out@[out_off as int + k] == sum1);
+                    } else {
+                        assert(out@[out_off as int + k] == pre_seq[out_off as int + k]);
+                    }
+                }
+            }
             carry = new_carry;
         }
+
+        // After inner loop ends: write the final carry into position i+n
+        let ghost pre_seq2 = out@;
+        let ghost pre_carry_set = out@.subrange(out_off as int, (out_off + nn) as int);
+        let ghost carry_idx = (i + n) as int;
         out.set(out_off + i + n, carry);
+        proof {
+            let post_carry_set = out@.subrange(out_off as int, (out_off + nn) as int);
+            let car = carry.sem();
+            let base = LIMB_BASE();
+            let p_in = limb_power((i + n) as nat);
+
+            // Position carry_idx was 0 before the set (zero-tail invariant)
+            assert(pre_carry_set[carry_idx] == pre_seq2[(out_off as int) + carry_idx]);
+            assert(pre_carry_set[carry_idx].sem() == 0);
+            assert(post_carry_set[carry_idx] == out@[(out_off as int) + carry_idx]);
+            assert(post_carry_set[carry_idx] == carry);
+
+            assert forall |k: int| 0 <= k < nn && k != carry_idx
+                implies pre_carry_set[k] == post_carry_set[k] by {
+                assert(pre_carry_set[k] == pre_seq2[(out_off as int) + k]);
+                assert(post_carry_set[k] == out@[(out_off as int) + k]);
+                assert((out_off as int) + k != (out_off as int) + carry_idx);
+            }
+
+            lemma_vec_val_set_one::<T>(pre_carry_set, post_carry_set, carry_idx);
+            // vec_val(post_carry_set) == vec_val(pre_carry_set) + (car - 0) * p_in
+
+            // From inner loop final invariant (j == n):
+            // vec_val(pre_carry_set) + car * p_in == v_initial + limbs_val(sa.subrange(0, n)) * row_lim * p_i
+            // Since sa.subrange(0, n) == sa, limbs_val(sa) == a_val
+            assert(sa.subrange(0, n as int) =~= sa);
+
+            // Extend sb subrange by one for the outer invariant
+            lemma_limbs_val_subrange_extend(sb, i as nat);
+
+            // Combine via nonlinear_arith
+            let v_pre = vec_val(pre_carry_set);
+            let v_post = vec_val(post_carry_set);
+            assert(v_post == v_pre + car * p_in);
+            assert(v_pre + car * p_in == v_initial + a_val * row_lim * p_i);
+            assert(v_initial == a_val * limbs_val(sb.subrange(0, i as int)));
+            assert(limbs_val(sb.subrange(0, (i + 1) as int))
+                == limbs_val(sb.subrange(0, i as int)) + sb[i as int] * limb_power(i as nat));
+            assert(sb[i as int] == row_lim);
+
+            assert(v_post == a_val * limbs_val(sb.subrange(0, (i + 1) as int))) by(nonlinear_arith)
+                requires
+                    v_post == v_initial + a_val * row_lim * p_i,
+                    v_initial == a_val * limbs_val(sb.subrange(0, i as int)),
+                    limbs_val(sb.subrange(0, (i + 1) as int))
+                        == limbs_val(sb.subrange(0, i as int)) + row_lim * p_i,
+                    p_i == limb_power(i as nat);
+
+            // Frame and zero-tail update
+            assert forall |k: int| (i + 1 + n) <= k < nn
+                implies #[trigger] out@[out_off as int + k].sem() == 0 by {
+                assert(k != carry_idx);
+                assert(out@[out_off as int + k] == pre_seq2[out_off as int + k]);
+            }
+            assert forall |k: int| 0 <= k < out_len && !(out_off as int <= k < out_off as int + nn)
+                implies #[trigger] out@[k] == old_out[k] by {
+                assert(out@[k] == pre_seq2[k]);
+            }
+            assert forall |k: int| 0 <= k < nn
+                implies 0 <= (#[trigger] out@[out_off as int + k]).sem() < LIMB_BASE() by {
+                if k == carry_idx {
+                    assert(out@[out_off as int + k] == carry);
+                } else {
+                    assert(out@[out_off as int + k] == pre_seq2[out_off as int + k]);
+                }
+            }
+        }
+    }
+
+    // After outer loop ends (i == n): vec_val == a_val * limbs_val(sb)
+    proof {
+        assert(sb.subrange(0, n as int) =~= sb);
+        // vec_val(a@.subrange(0, n)) == limbs_val(sa)
+        // vec_val(b@.subrange(0, n)) == limbs_val(sb)
     }
 }
 
