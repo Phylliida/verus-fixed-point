@@ -14,6 +14,11 @@ use super::limbs::limb_base;
 use super::limbs::{lemma_limb_base_is_pow2_32, lemma_karatsuba_identity, lemma_mul_distribute};
 #[cfg(verus_keep_ghost)]
 use super::limbs as limb_base_conv;
+#[cfg(verus_keep_ghost)]
+use super::limb_ops_proofs::{
+    lemma_vec_val_set_one, lemma_truncated_product_seq,
+    signed_val_of, lemma_signed_add_correct_seq,
+};
 
 verus! {
 
@@ -1144,13 +1149,77 @@ pub fn signed_add_to<T: LimbOps>(
         out_sign.sem() == 0 || out_sign.sem() == 1,
         // Valid limbs on output region
         forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
+        // Signed-magnitude sum equation: 3-way modular disjunction
+        ({
+            let va = vec_val(a@.subrange(0, n as int));
+            let vb = vec_val(b@.subrange(0, n as int));
+            let vo = vec_val(out@.subrange(out_off as int, (out_off + n) as int));
+            let sa_signed = if a_sign.sem() == 0 { va } else { -va };
+            let sb_signed = if b_sign.sem() == 0 { vb } else { -vb };
+            let so_signed = if out_sign.sem() == 0 { vo } else { -vo };
+            let true_sum = sa_signed + sb_signed;
+            let P = limb_power(n as nat);
+            so_signed == true_sum
+                || (so_signed == true_sum - P && true_sum >= P)
+                || (so_signed == true_sum + P && true_sum <= -(P as int))
+        }),
 {
+    let ghost a_sub = a@.subrange(0, n as int);
+    let ghost b_sub = b@.subrange(0, n as int);
+    proof {
+        assert(valid_limbs(a_sub)) by {
+            assert forall |k: int| 0 <= k < a_sub.len()
+                implies 0 <= (#[trigger] a_sub[k]).sem() && a_sub[k].sem() < LIMB_BASE() by {
+                assert(a_sub[k] == a@[k]);
+            }
+        }
+        assert(valid_limbs(b_sub)) by {
+            assert forall |k: int| 0 <= k < b_sub.len()
+                implies 0 <= (#[trigger] b_sub[k]).sem() && b_sub[k].sem() < LIMB_BASE() by {
+                assert(b_sub[k] == b@[k]);
+            }
+        }
+    }
+
     // Compute a + b (unsigned) → tmp1
-    let _sum_carry = add_limbs_to(a, b, tmp1, tmp1_off, n);
+    let sum_carry = add_limbs_to(a, b, tmp1, tmp1_off, n);
+    let ghost sum_sub = tmp1@.subrange(tmp1_off as int, (tmp1_off + n) as int);
+    proof {
+        // sum equation translated to subranges
+        assert(valid_limbs(sum_sub)) by {
+            assert forall |k: int| 0 <= k < sum_sub.len()
+                implies 0 <= (#[trigger] sum_sub[k]).sem() && sum_sub[k].sem() < LIMB_BASE() by {
+                assert(sum_sub[k] == tmp1@[(tmp1_off as int) + k]);
+            }
+        }
+        assert(sem_seq(sum_sub) =~= sem_seq(tmp1@.subrange(tmp1_off as int, (tmp1_off + n) as int)));
+        assert(sem_seq(a_sub) =~= sem_seq(a@.subrange(0, n as int)));
+        assert(sem_seq(b_sub) =~= sem_seq(b@.subrange(0, n as int)));
+    }
+
     // Compute a - b → tmp2
     let borrow_ab = sub_limbs_to(a, b, tmp2, tmp2_off, n);
+    let ghost amb_sub = tmp2@.subrange(tmp2_off as int, (tmp2_off + n) as int);
+    proof {
+        assert(valid_limbs(amb_sub)) by {
+            assert forall |k: int| 0 <= k < amb_sub.len()
+                implies 0 <= (#[trigger] amb_sub[k]).sem() && amb_sub[k].sem() < LIMB_BASE() by {
+                assert(amb_sub[k] == tmp2@[(tmp2_off as int) + k]);
+            }
+        }
+    }
+
     // Compute b - a → out (will be overwritten later if not used)
-    let _borrow_ba = sub_limbs_to(b, a, out, out_off, n);
+    let borrow_ba = sub_limbs_to(b, a, out, out_off, n);
+    let ghost bma_sub = out@.subrange(out_off as int, (out_off + n) as int);
+    proof {
+        assert(valid_limbs(bma_sub)) by {
+            assert forall |k: int| 0 <= k < bma_sub.len()
+                implies 0 <= (#[trigger] bma_sub[k]).sem() && bma_sub[k].sem() < LIMB_BASE() by {
+                assert(bma_sub[k] == out@[(out_off as int) + k]);
+            }
+        }
+    }
 
     // same_sign indicator
     let (sign_diff, sign_borrow) = a_sign.sub_borrow(b_sign, &T::zero_val());
@@ -1158,38 +1227,197 @@ pub fn signed_add_to<T: LimbOps>(
     let borrow_zero = sign_borrow.is_zero_limb();
     let (same_sign, _) = diff_zero.mul2(&borrow_zero);
 
-    // diff_sign result: select a-b (tmp2) or b-a (out) based on borrow_ab
-    // Write to tmp1 (reuse since sum is no longer needed after final select)
-    // Wait — tmp1 has the sum, which we still need for same_sign case.
-    // We need all three alive: sum(tmp1), a-b(tmp2), b-a(out).
-    // Then: diff_selected = select(borrow_ab, tmp2, out) → can't write to tmp2 or out.
-    // Solution: do the TWO selects in sequence, writing directly to out.
-    //
-    // Step 1: If same_sign, out = tmp1 (sum). If diff_sign, out = select(borrow, tmp2, out).
-    // But we can't read out and write out simultaneously.
-    //
-    // Simplest: do element-wise select in a loop.
+    proof {
+        // Establish (a_sign == b_sign) <==> same_sign == 1
+        let asv = a_sign.sem();
+        let bsv = b_sign.sem();
+        let sd = sign_diff.sem();
+        let sbo = sign_borrow.sem();
+        let dz = diff_zero.sem();
+        let bz = borrow_zero.sem();
+        let ss = same_sign.sem();
+        // mul2 spec: same_sign.sem() == (dz * bz) % BASE
+        assert(ss == (dz * bz) % LIMB_BASE());
+        // sub_borrow spec: sd == (asv - bsv - 0 + BASE) % BASE; sbo == 1 iff asv - bsv < 0
+        if asv == bsv {
+            assert(sd == 0) by(nonlinear_arith)
+                requires sd == (asv - bsv - 0 + LIMB_BASE()) % LIMB_BASE(),
+                         asv == bsv, LIMB_BASE() > 0;
+            assert(sbo == 0);
+            assert(dz == 1);
+            assert(bz == 1);
+            assert(dz * bz == 1) by(nonlinear_arith) requires dz == 1, bz == 1;
+            assert(1int % LIMB_BASE() == 1) by(nonlinear_arith) requires LIMB_BASE() > 1;
+            assert(ss == 1);
+        } else if asv == 0 && bsv == 1 {
+            // 0 - 1 = -1 < 0 → borrow=1, diff = -1+BASE = BASE-1 ≠ 0
+            assert(sd == LIMB_BASE() - 1) by(nonlinear_arith)
+                requires sd == (0 - 1 - 0 + LIMB_BASE()) % LIMB_BASE(), LIMB_BASE() > 1;
+            assert(sbo == 1);
+            assert(dz == 0);
+            assert(bz == 0);
+            assert(dz * bz == 0) by(nonlinear_arith) requires dz == 0, bz == 0;
+            assert(0int % LIMB_BASE() == 0) by(nonlinear_arith) requires LIMB_BASE() > 0;
+            assert(ss == 0);
+        } else {
+            // asv == 1, bsv == 0: 1 - 0 = 1 ≥ 0 → borrow=0, diff = 1
+            assert(sd == 1) by(nonlinear_arith)
+                requires sd == (1 - 0 - 0 + LIMB_BASE()) % LIMB_BASE(), LIMB_BASE() > 2;
+            assert(sbo == 0);
+            assert(dz == 0);
+            assert(bz == 1);
+            assert(dz * bz == 0) by(nonlinear_arith) requires dz == 0, bz == 1;
+            assert(0int % LIMB_BASE() == 0) by(nonlinear_arith) requires LIMB_BASE() > 0;
+            assert(ss == 0);
+        }
+    }
+
     let diff_sign = T::select_limb(&borrow_ab, a_sign.clone_limb(), b_sign.clone_limb());
     // same_sign=1 → use a_sign (common sign), same_sign=0 → use diff_sign
     let result_sign = T::select_limb(&same_sign, diff_sign, a_sign.clone_limb());
 
+    // Capture the SELECTED sequence (one of sum_sub, amb_sub, bma_sub) determined by indicators
+    let ghost ss_v = same_sign.sem();
+    let ghost bab_v = borrow_ab.sem();
+    let ghost selected_seq: Seq<T> = if ss_v == 1 {
+        sum_sub
+    } else if bab_v == 0 {
+        amb_sub
+    } else {
+        bma_sub
+    };
+
+    proof {
+        assert(selected_seq.len() == n as int);
+        assert(valid_limbs(selected_seq));
+    }
+
     // Element-wise double select: same_sign=1 → sum, same_sign=0 → diff
     let ghost out_len = out@.len();
+    let ghost out_pre_loop = out@;
     for i in 0..n
         invariant
             out@.len() == out_len, out_len >= out_off + n,
             out_off + n < usize::MAX, tmp1_off + n < usize::MAX, tmp2_off + n < usize::MAX,
             tmp1@.len() >= tmp1_off + n, tmp2@.len() >= tmp2_off + n,
-            same_sign.sem() == 0 || same_sign.sem() == 1,
-            borrow_ab.sem() == 0 || borrow_ab.sem() == 1,
+            ss_v == same_sign.sem(),
+            bab_v == borrow_ab.sem(),
+            ss_v == 0 || ss_v == 1,
+            bab_v == 0 || bab_v == 1,
+            sum_sub == tmp1@.subrange(tmp1_off as int, (tmp1_off + n) as int),
+            amb_sub == tmp2@.subrange(tmp2_off as int, (tmp2_off + n) as int),
+            bma_sub == out_pre_loop.subrange(out_off as int, (out_off + n) as int),
+            selected_seq.len() == n as int,
+            ss_v == 1 ==> selected_seq == sum_sub,
+            ss_v == 0 && bab_v == 0 ==> selected_seq == amb_sub,
+            ss_v == 0 && bab_v == 1 ==> selected_seq == bma_sub,
             forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] tmp1@[(tmp1_off as int + j) as int]).sem() < LIMB_BASE(),
             forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] tmp2@[(tmp2_off as int + j) as int]).sem() < LIMB_BASE(),
             forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
+            // Loop invariant: out[off+j] for j < i has selected value, j >= i still has bma value
+            forall |j: int| 0 <= j < i
+                ==> #[trigger] out@[(out_off as int + j) as int].sem() == selected_seq[j].sem(),
+            forall |j: int| i <= j < n
+                ==> #[trigger] out@[(out_off as int + j) as int].sem() == bma_sub[j].sem(),
+            // Frame: out outside [out_off, out_off+n) unchanged
+            forall |k: int| 0 <= k < out_len && !(out_off as int <= k < out_off as int + n) ==> out@[k] == out_pre_loop[k],
     {
         let diff_val = T::select_limb(&borrow_ab, tmp2[tmp2_off + i].clone_limb(), out[out_off + i].clone_limb());
         // same_sign=1 → sum (tmp1), same_sign=0 → diff
         let final_val = T::select_limb(&same_sign, diff_val, tmp1[tmp1_off + i].clone_limb());
+
+        proof {
+            // Show that final_val.sem() == selected_seq[i].sem()
+            let i_int = i as int;
+            assert(tmp2[tmp2_off + i] == tmp2@[(tmp2_off as int) + i_int]);
+            assert(out[out_off + i] == out@[(out_off as int) + i_int]);
+            assert(out@[(out_off as int) + i_int].sem() == bma_sub[i_int].sem());
+            assert(amb_sub[i_int] == tmp2@[(tmp2_off as int) + i_int]);
+            assert(tmp1[tmp1_off + i] == tmp1@[(tmp1_off as int) + i_int]);
+            assert(sum_sub[i_int] == tmp1@[(tmp1_off as int) + i_int]);
+
+            // final_val.sem() == selected_seq[i].sem()
+            if ss_v == 1 {
+                assert(selected_seq == sum_sub);
+                assert(final_val.sem() == tmp1[tmp1_off + i].sem());
+                assert(final_val.sem() == sum_sub[i_int].sem());
+                assert(final_val.sem() == selected_seq[i_int].sem());
+            } else if bab_v == 0 {
+                assert(selected_seq == amb_sub);
+                assert(diff_val.sem() == tmp2[tmp2_off + i].sem());
+                assert(final_val.sem() == diff_val.sem());
+                assert(final_val.sem() == amb_sub[i_int].sem());
+                assert(final_val.sem() == selected_seq[i_int].sem());
+            } else {
+                assert(selected_seq == bma_sub);
+                assert(diff_val.sem() == out[out_off + i].sem());
+                assert(final_val.sem() == diff_val.sem());
+                assert(final_val.sem() == bma_sub[i_int].sem());
+                assert(final_val.sem() == selected_seq[i_int].sem());
+            }
+        }
+        let ghost out_pre_set = out@;
         out.set(out_off + i, final_val);
+        proof {
+            let i_int = i as int;
+            assert(out@[(out_off as int) + i_int] == final_val);
+            // Re-establish invariants
+            assert forall |j: int| 0 <= j < i + 1
+                implies #[trigger] out@[(out_off as int + j) as int].sem() == selected_seq[j].sem() by {
+                if j == i_int {
+                    assert(out@[(out_off as int) + j] == final_val);
+                } else {
+                    assert(out@[(out_off as int) + j] == out_pre_set[(out_off as int) + j]);
+                }
+            }
+            assert forall |j: int| (i + 1) <= j < n
+                implies #[trigger] out@[(out_off as int + j) as int].sem() == bma_sub[j].sem() by {
+                assert(j != i_int);
+                assert(out@[(out_off as int) + j] == out_pre_set[(out_off as int) + j]);
+            }
+            assert forall |j: int| 0 <= j < n
+                implies 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE() by {
+                if j == i_int {
+                    assert(out@[(out_off as int) + j] == final_val);
+                } else {
+                    assert(out@[(out_off as int) + j] == out_pre_set[(out_off as int) + j]);
+                }
+            }
+            assert forall |k: int| 0 <= k < out_len && !(out_off as int <= k < out_off as int + n)
+                implies out@[k] == out_pre_loop[k] by {
+                assert((out_off as int) + i_int != k);
+                assert(out@[k] == out_pre_set[k]);
+            }
+        }
+    }
+
+    proof {
+        // After loop: vec_val(out subrange) == vec_val(selected_seq)
+        let final_sub = out@.subrange(out_off as int, (out_off + n) as int);
+        assert(final_sub.len() == selected_seq.len());
+        assert forall |j: int| 0 <= j < final_sub.len()
+            implies (#[trigger] final_sub[j]).sem() == selected_seq[j].sem() by {
+            assert(final_sub[j] == out@[(out_off as int) + j]);
+        }
+        lemma_vec_val_eq_from_sem_eq::<T>(final_sub, selected_seq);
+        assert(valid_limbs(final_sub)) by {
+            assert forall |j: int| 0 <= j < final_sub.len()
+                implies 0 <= (#[trigger] final_sub[j]).sem() && final_sub[j].sem() < LIMB_BASE() by {
+                assert(final_sub[j] == out@[(out_off as int) + j]);
+            }
+        }
+
+        // Apply lemma_signed_add_correct_seq
+        lemma_signed_add_correct_seq::<T>(
+            a_sub, a_sign.sem(),
+            b_sub, b_sign.sem(),
+            sum_sub, sum_carry.sem(),
+            amb_sub, borrow_ab.sem(),
+            bma_sub, borrow_ba.sem(),
+            same_sign.sem(),
+            final_sub, result_sign.sem(),
+            n as nat,
+        );
     }
 
     result_sign
@@ -1852,187 +2080,6 @@ pub proof fn lemma_vec_val_split<T: LimbOps>(a: Seq<T>, mid: nat)
     assert(sem_seq(a).subrange(0, mid as int) =~= sem_seq(a.subrange(0, mid as int)));
     assert(sem_seq(a).subrange(mid as int, sem_seq(a).len() as int)
         =~= sem_seq(a.subrange(mid as int, a.len() as int)));
-}
-
-///  Truncated product on Seq<T>: vec_val of the n-limb middle slice of the
-///  2n-limb product equals ((a_val * b_val) / limb_power(frac_limbs)) % limb_power(n).
-///  This is the Seq-friendly version of lemma_truncated_product.
-pub proof fn lemma_truncated_product_seq<T: LimbOps>(
-    product: Seq<T>, truncated: Seq<T>,
-    a_val: int, b_val: int,
-    n: nat, frac_limbs: nat,
-)
-    requires
-        product.len() == 2 * n,
-        valid_limbs(product),
-        vec_val(product) == a_val * b_val,
-        truncated.len() == n,
-        valid_limbs(truncated),
-        forall |j: int| 0 <= j < n as int ==>
-            (#[trigger] truncated[j]).sem() == product[(frac_limbs + j) as int].sem(),
-        frac_limbs + n <= 2 * n,
-        frac_limbs <= n,
-        n > 0,
-    ensures
-        vec_val(truncated) == ((a_val * b_val) / limb_power(frac_limbs)) % limb_power(n),
-{
-    let scale = limb_power(frac_limbs);
-    let P = limb_power(n);
-    let ab = a_val * b_val;
-
-    // Step 1: Split product at frac_limbs → lo + upper * scale
-    lemma_vec_val_split::<T>(product, frac_limbs);
-    let lo = vec_val(product.subrange(0, frac_limbs as int));
-    let upper_seq = product.subrange(frac_limbs as int, product.len() as int);
-
-    // Step 2: Split upper at n → mid + hi * P
-    lemma_vec_val_split::<T>(upper_seq, n);
-    let mid = vec_val(upper_seq.subrange(0, n as int));
-    let hi = vec_val(upper_seq.subrange(n as int, upper_seq.len() as int));
-
-    // Step 3: truncated == upper[0..n] semantically
-    assert(truncated.len() == upper_seq.subrange(0, n as int).len());
-    assert forall |j: int| 0 <= j < truncated.len()
-        implies (#[trigger] truncated[j]).sem() == upper_seq.subrange(0, n as int)[j].sem() by {
-        assert(upper_seq.subrange(0, n as int)[j] == upper_seq[j]);
-        assert(upper_seq[j] == product[(frac_limbs as int) + j]);
-    }
-    lemma_vec_val_eq_from_sem_eq::<T>(truncated, upper_seq.subrange(0, n as int));
-    assert(vec_val(truncated) == mid);
-
-    // Step 4: Bounds on lo, mid, hi
-    let lo_seq = product.subrange(0, frac_limbs as int);
-    assert forall |j: int| 0 <= j < lo_seq.len()
-        implies 0 <= (#[trigger] lo_seq[j]).sem() && lo_seq[j].sem() < LIMB_BASE() by {
-        assert(lo_seq[j] == product[j]);
-    }
-    lemma_vec_val_bounded::<T>(lo_seq);
-    assert(0 <= lo && lo < scale);
-    lemma_vec_val_bounded::<T>(truncated);
-    assert(0 <= mid && mid < P);
-    let hi_seq = upper_seq.subrange(n as int, upper_seq.len() as int);
-    assert forall |j: int| 0 <= j < hi_seq.len()
-        implies 0 <= (#[trigger] hi_seq[j]).sem() && hi_seq[j].sem() < LIMB_BASE() by {
-        assert(hi_seq[j] == upper_seq[j + n as int]);
-        assert(upper_seq[j + n as int] == product[(frac_limbs as int) + j + n as int]);
-    }
-    lemma_vec_val_bounded::<T>(hi_seq);
-    assert(hi >= 0);
-
-    // Step 5: ab == lo + (mid + hi*P) * scale
-    assert(ab == lo + vec_val(upper_seq) * scale);
-    assert(vec_val(upper_seq) == mid + hi * P);
-    assert(ab == lo + (mid + hi * P) * scale) by(nonlinear_arith)
-        requires
-            ab == lo + vec_val(upper_seq) * scale,
-            vec_val(upper_seq) == mid + hi * P;
-
-    // Step 6: ab % scale == lo
-    assert(scale > 0) by {
-        lemma_vec_val_bounded::<T>(lo_seq);
-    }
-    assert(ab % scale == lo) by {
-        assert(ab == scale * (mid + hi * P) + lo) by(nonlinear_arith)
-            requires ab == lo + (mid + hi * P) * scale;
-        vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(mid + hi * P, lo, scale);
-        vstd::arithmetic::div_mod::lemma_small_mod(lo as nat, scale as nat);
-    };
-
-    // Step 7: ab / scale == mid + hi * P
-    assert(ab == scale * (mid + hi * P) + lo) by(nonlinear_arith)
-        requires ab == lo + (mid + hi * P) * scale;
-    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(ab, scale);
-    assert(ab / scale == mid + hi * P) by(nonlinear_arith)
-        requires
-            ab == scale * (ab / scale) + ab % scale,
-            ab % scale == lo,
-            ab == scale * (mid + hi * P) + lo,
-            scale > 0;
-
-    // Step 8: (mid + hi*P) % P == mid
-    assert(P > 0);
-    assert((mid + hi * P) % P == mid) by {
-        assert(mid + hi * P == P * hi + mid) by(nonlinear_arith);
-        vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(hi, mid, P);
-        vstd::arithmetic::div_mod::lemma_small_mod(mid as nat, P as nat);
-    };
-}
-
-///  Updating one element of a Seq<T> changes vec_val by a multiple of limb_power(idx).
-///  vec_val(s_post) == vec_val(s_pre) + (s_post[idx].sem() - s_pre[idx].sem()) * limb_power(idx).
-pub proof fn lemma_vec_val_set_one<T: LimbOps>(
-    s_pre: Seq<T>, s_post: Seq<T>, idx: int,
-)
-    requires
-        s_pre.len() == s_post.len(),
-        0 <= idx,
-        idx < s_pre.len(),
-        forall |k: int| 0 <= k < s_pre.len() && k != idx ==> s_pre[k] == s_post[k],
-    ensures
-        vec_val(s_post) == vec_val(s_pre)
-            + (s_post[idx].sem() - s_pre[idx].sem()) * limb_power(idx as nat),
-{
-    lemma_vec_val_split::<T>(s_pre, idx as nat);
-    lemma_vec_val_split::<T>(s_post, idx as nat);
-
-    let lo_pre = s_pre.subrange(0, idx);
-    let lo_post = s_post.subrange(0, idx);
-    let hi_pre = s_pre.subrange(idx, s_pre.len() as int);
-    let hi_post = s_post.subrange(idx, s_post.len() as int);
-
-    // Lo parts are equal
-    assert(lo_pre =~= lo_post);
-
-    // Now split each hi part at index 1 to isolate s[idx]
-    lemma_vec_val_split::<T>(hi_pre, 1);
-    lemma_vec_val_split::<T>(hi_post, 1);
-
-    let head_pre = hi_pre.subrange(0, 1);
-    let head_post = hi_post.subrange(0, 1);
-    let tail_pre = hi_pre.subrange(1, hi_pre.len() as int);
-    let tail_post = hi_post.subrange(1, hi_post.len() as int);
-
-    // Single-element vec_val
-    reveal_with_fuel(limbs_val, 2);
-    reveal_with_fuel(limb_power, 2);
-    assert(head_pre.len() == 1);
-    assert(head_post.len() == 1);
-    assert(head_pre[0] == s_pre[idx]);
-    assert(head_post[0] == s_post[idx]);
-    assert(sem_seq(head_pre).len() == 1);
-    assert(sem_seq(head_pre)[0] == s_pre[idx].sem());
-    assert(sem_seq(head_pre).subrange(1, 1) =~= Seq::<int>::empty());
-    assert(vec_val(head_pre) == s_pre[idx].sem());
-    assert(sem_seq(head_post)[0] == s_post[idx].sem());
-    assert(sem_seq(head_post).subrange(1, 1) =~= Seq::<int>::empty());
-    assert(vec_val(head_post) == s_post[idx].sem());
-
-    // Tail parts are equal: tail_pre[k] == s_pre[idx + 1 + k] == s_post[idx + 1 + k] == tail_post[k]
-    assert forall |k: int| 0 <= k < tail_pre.len() implies tail_pre[k] == tail_post[k] by {
-        assert(tail_pre[k] == hi_pre[k + 1]);
-        assert(hi_pre[k + 1] == s_pre[idx + 1 + k]);
-        assert(tail_post[k] == hi_post[k + 1]);
-        assert(hi_post[k + 1] == s_post[idx + 1 + k]);
-    }
-    assert(tail_pre =~= tail_post);
-
-    let p_idx = limb_power(idx as nat);
-    let p_idx1 = limb_power((idx + 1) as nat);
-    assert(p_idx1 == LIMB_BASE() * p_idx);
-    assert(limb_power(1nat) == LIMB_BASE());
-
-    // Combine via nonlinear_arith
-    assert(vec_val(s_post) == vec_val(s_pre)
-        + (s_post[idx].sem() - s_pre[idx].sem()) * p_idx) by(nonlinear_arith)
-        requires
-            vec_val(s_pre) == vec_val(lo_pre) + vec_val(hi_pre) * p_idx,
-            vec_val(s_post) == vec_val(lo_post) + vec_val(hi_post) * p_idx,
-            vec_val(lo_pre) == vec_val(lo_post),
-            vec_val(hi_pre) == vec_val(head_pre) + vec_val(tail_pre) * LIMB_BASE(),
-            vec_val(hi_post) == vec_val(head_post) + vec_val(tail_post) * LIMB_BASE(),
-            vec_val(head_pre) == s_pre[idx].sem(),
-            vec_val(head_post) == s_post[idx].sem(),
-            vec_val(tail_pre) == vec_val(tail_post);
 }
 
 //  ══════════════════════════════════════════════════════════════

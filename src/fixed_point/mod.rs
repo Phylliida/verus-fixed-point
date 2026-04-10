@@ -15,6 +15,7 @@ pub mod number_theory;
 pub mod ntt;
 pub mod newton_convergence;
 pub mod limb_ops;
+pub mod limb_ops_proofs;
 pub mod prime_field;
 pub mod bounded_prime_field;
 
