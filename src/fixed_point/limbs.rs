@@ -439,9 +439,14 @@ pub proof fn lemma_limbs_to_nat_prepend_zeros(a: Seq<u32>, n: nat)
     decreases n,
 {
     let zeros = Seq::new(n, |_j: int| 0u32);
+    // Connect the local `zeros` to the postcondition's spelling.
+    assert(Seq::new(n, |_j: int| 0u32) == zeros);
     if n == 0 {
         assert(zeros.add(a) =~= a);
+        assert(limbs_to_nat(zeros.add(a)) == limbs_to_nat(a));
         lemma_pow2_zero();
+        assert((n * 32) as nat == 0nat);
+        assert(pow2((n * 32) as nat) == 1);
     } else {
         //  zeros(n) ++ a == [0] ++ (zeros(n-1) ++ a)
         let inner = Seq::new((n - 1) as nat, |_j: int| 0u32).add(a);
@@ -452,15 +457,24 @@ pub proof fn lemma_limbs_to_nat_prepend_zeros(a: Seq<u32>, n: nat)
         //  ltn(full) = full[0] + BASE * ltn(full[1..]) = 0 + BASE * ltn(inner)
         //  By IH: ltn(inner) == ltn(a) * pow2((n-1)*32)
         lemma_limbs_to_nat_prepend_zeros(a, (n - 1) as nat);
+        assert(limbs_to_nat(inner) == limbs_to_nat(a) * pow2(((n - 1) * 32) as nat));
+
+        //  Unfold limbs_to_nat(full) once to get limb_base() * ltn(inner).
+        assert(limbs_to_nat(full) == limb_base() * limbs_to_nat(inner));
+        assert(limbs_to_nat(full) == limb_base() * (limbs_to_nat(a) * pow2(((n - 1) * 32) as nat)));
 
         //  ltn(full) = BASE * ltn(a) * pow2((n-1)*32) = ltn(a) * BASE * pow2((n-1)*32)
         //            = ltn(a) * pow2(32) * pow2((n-1)*32) = ltn(a) * pow2(n*32)
         lemma_limb_base_is_pow2_32();
         lemma_pow2_add(32, ((n - 1) * 32) as nat);
         assert(32 + (n - 1) * 32 == n * 32);
-        assert(limbs_to_nat(full) == limb_base() * (limbs_to_nat(a) * pow2(((n - 1) * 32) as nat)));
-        assert(limb_base() * (limbs_to_nat(a) * pow2(((n - 1) * 32) as nat))
-            == limbs_to_nat(a) * (limb_base() * pow2(((n - 1) * 32) as nat))) by (nonlinear_arith);
+        // limb_base() * pow2((n-1)*32) == pow2(32) * pow2((n-1)*32) == pow2(n*32)
+        assert(limb_base() * pow2(((n - 1) * 32) as nat) == pow2((n * 32) as nat));
+        // Re-associate via nonlinear_arith.
+        assert(limbs_to_nat(full) == limbs_to_nat(a) * pow2((n * 32) as nat)) by (nonlinear_arith)
+            requires
+                limbs_to_nat(full) == limb_base() * (limbs_to_nat(a) * pow2(((n - 1) * 32) as nat)),
+                limb_base() * pow2(((n - 1) * 32) as nat) == pow2((n * 32) as nat);
     }
 }
 
@@ -474,9 +488,19 @@ pub proof fn lemma_limbs_to_nat_split(limbs: Seq<u32>, mid: nat)
     decreases mid,
 {
     if mid == 0 {
-        assert(limbs.subrange(0, 0int) =~= Seq::<u32>::empty());
-        assert(limbs.subrange(0, limbs.len() as int) =~= limbs);
+        let empty = limbs.subrange(0, 0int);
+        let full = limbs.subrange(0, limbs.len() as int);
+        assert(empty =~= Seq::<u32>::empty());
+        assert(full =~= limbs);
+        assert(limbs_to_nat(empty) == 0);
+        assert(limbs_to_nat(full) == limbs_to_nat(limbs));
         lemma_pow2_zero();
+        assert((mid * 32) as nat == 0nat);
+        assert(pow2((mid * 32) as nat) == 1);
+        assert(limbs_to_nat(limbs)
+            == limbs_to_nat(limbs.subrange(0, mid as int))
+                + limbs_to_nat(limbs.subrange(mid as int, limbs.len() as int))
+                    * pow2((mid * 32) as nat));
     } else {
         //  Induction: split off the first element
         //  limbs = [limbs[0]] ++ limbs[1..]
@@ -533,6 +557,18 @@ pub proof fn lemma_limbs_to_nat_split(limbs: Seq<u32>, mid: nat)
             requires
                 limb_base() * pow2(((mid - 1) * 32) as nat) == pow2((mid * 32) as nat),
         {}
+
+        //  Substitute the simplified hi term into the chain.
+        assert(limbs_to_nat(limbs)
+            == limbs_to_nat(lo) + limbs_to_nat(limbs_hi) * pow2((mid * 32) as nat));
+
+        //  Match the postcondition's exact spelling.
+        assert(lo == limbs.subrange(0, mid as int));
+        assert(limbs_hi == limbs.subrange(mid as int, limbs.len() as int));
+        assert(limbs_to_nat(limbs)
+            == limbs_to_nat(limbs.subrange(0, mid as int))
+                + limbs_to_nat(limbs.subrange(mid as int, limbs.len() as int))
+                    * pow2((mid * 32) as nat));
     }
 }
 

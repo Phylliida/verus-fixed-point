@@ -292,6 +292,9 @@ pub proof fn lemma_mod_inverse_unique(a: nat, x: nat, y: nat, p: nat)
         requires xi * ai == pi * q1 + 1, yi * ai == pi * q2 + 1;
     //  p | (x - y) * a
     lemma_fundamental_div_mod_converse((xi - yi) * ai, pi, q1 - q2, 0);
+    //  Commutativity: ((xi - yi) * ai) % pi == (ai * (xi - yi)) % pi
+    assert((xi - yi) * ai == ai * (xi - yi)) by (nonlinear_arith);
+    assert((ai * (xi - yi)) % pi == 0);
     //  By Euclid: p | (x - y)
     lemma_euclid(a, xi - yi, p);
     //  |x - y| < p and p | (x - y), so x - y == 0
