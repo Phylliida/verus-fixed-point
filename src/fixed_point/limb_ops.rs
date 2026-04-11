@@ -1442,9 +1442,38 @@ pub fn signed_sub_to<T: LimbOps>(
         tmp1@.len() == old(tmp1)@.len(), tmp2@.len() == old(tmp2)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
         forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
+        // Signed-magnitude difference equation: 3-way modular disjunction.
+        // Mirrors signed_add_to's postcondition with b negated.
+        ({
+            let va = vec_val(a@.subrange(0, n as int));
+            let vb = vec_val(b@.subrange(0, n as int));
+            let vo = vec_val(out@.subrange(out_off as int, (out_off + n) as int));
+            let sa_signed = if a_sign.sem() == 0 { va } else { -va };
+            let sb_signed = if b_sign.sem() == 0 { vb } else { -vb };
+            let so_signed = if out_sign.sem() == 0 { vo } else { -vo };
+            let true_diff = sa_signed - sb_signed;
+            let p = limb_power(n as nat);
+            so_signed == true_diff
+                || (so_signed == true_diff - p && true_diff >= p)
+                || (so_signed == true_diff + p && true_diff <= -(p as int))
+        }),
 {
     let neg_b_sign = T::select_limb(b_sign, T::const_u32(1u32), T::zero_val());
-    signed_add_to(a, a_sign, b, &neg_b_sign, out, out_off, tmp1, tmp1_off, tmp2, tmp2_off, n)
+    let out_sign = signed_add_to(a, a_sign, b, &neg_b_sign, out, out_off, tmp1, tmp1_off, tmp2, tmp2_off, n);
+    proof {
+        // signed_add_to gave us the disjunction in terms of `neg_b_sign`'s sign.
+        // Since `neg_b_sign.sem() == 1 - b_sign.sem()`, the value
+        // `(if neg_b_sign.sem() == 0 { vb } else { -vb })` equals
+        // `-(if b_sign.sem() == 0 { vb } else { -vb })` = `-sb_signed`.
+        // So the disjunction in terms of `sa_signed + (-sb_signed) = sa_signed - sb_signed`
+        // is exactly what we want.
+        let va = vec_val(a@.subrange(0, n as int));
+        let vb = vec_val(b@.subrange(0, n as int));
+        let nb_signed = if neg_b_sign.sem() == 0 { vb } else { -vb };
+        let sb_signed = if b_sign.sem() == 0 { vb } else { -vb };
+        assert(nb_signed == -sb_signed);
+    }
+    out_sign
 }
 
 ///  Signed fixed-point multiply. No Vec::new.
