@@ -2755,8 +2755,13 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         assert(b_sub1@.subrange(0, half as int) =~= b_lo_seq);
     }
     mul_schoolbook_to(a_sub1, b_sub1, out, out_off, half);
-    let ghost z0_val = vec_val(out@.subrange(out_off as int, (out_off + n) as int));
-    proof { assert(z0_val == vec_val(a_lo_seq) * vec_val(b_lo_seq)); }
+    let ghost out_post_step1 = out@;
+    let ghost z0_val_step1 = vec_val(out@.subrange(out_off as int, (out_off + n) as int));
+    proof {
+        assert(a_sub1@.subrange(0, half as int) =~= a_lo_seq);
+        assert(b_sub1@.subrange(0, half as int) =~= b_lo_seq);
+        assert(z0_val_step1 == vec_val(a_lo_seq) * vec_val(b_lo_seq));
+    }
 
     // Step 2: z2 = a_hi × b_hi → out[out_off+n..out_off+2n]
     let a_len = a.len();
@@ -2768,8 +2773,13 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         assert(b_sub2@.subrange(0, half as int) =~= b_hi_seq);
     }
     mul_schoolbook_to(a_sub2, b_sub2, out, out_off + n, half);
-    let ghost z2_val = vec_val(out@.subrange((out_off + n) as int, (out_off + 2 * n) as int));
-    proof { assert(z2_val == vec_val(a_hi_seq) * vec_val(b_hi_seq)); }
+    let ghost z2_is_product: bool = vec_val(out@.subrange((out_off + n) as int, (out_off + 2 * n) as int))
+        == vec_val(a_hi_seq) * vec_val(b_hi_seq);
+    proof {
+        assert(a_sub2@.subrange(0, half as int) =~= a_hi_seq);
+        assert(b_sub2@.subrange(0, half as int) =~= b_hi_seq);
+        assert(z2_is_product);
+    }
 
     // After steps 1-2: out[out_off..out_off+2n] has valid limbs from two schoolbook calls
     proof {
@@ -2797,23 +2807,41 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
     let a_lo_slice = slice_subrange(a, a_off, a.len());
     let a_hi_slice = slice_subrange(a, a_off + half, a.len());
     let asum_carry = add_limbs_to(a_lo_slice, a_hi_slice, scratch, asum_off, half);
-    // Postcondition: limbs_val(sem_seq(scratch[asum_off..asum_off+half])) + asum_carry * P(half)
-    //   == limbs_val(sem_seq(a_lo[0..half])) + limbs_val(sem_seq(a_hi[0..half]))
+    // Capture a_sum IMMEDIATELY while postcondition is fresh
+    let ghost a_sum_seq = scratch@.subrange(asum_off as int, (asum_off + half) as int);
+    proof {
+        assert(a_lo_slice@.subrange(0, half as int) =~= a_lo_seq);
+        assert(a_hi_slice@.subrange(0, half as int) =~= a_hi_seq);
+        assert(valid_limbs(a_sum_seq)) by {
+            assert forall |j: int| 0 <= j < a_sum_seq.len()
+                implies 0 <= (#[trigger] a_sum_seq[j]).sem() < LIMB_BASE()
+            by { assert(a_sum_seq[j] == scratch@[(asum_off as int + j) as int]); }
+        }
+        lemma_vec_val_bounded::<T>(a_sum_seq);
+    }
+    // Capture step 3a value equation NOW
+    let ghost step3_a_eq: bool = vec_val(a_sum_seq) + asum_carry.sem() * limb_power(half as nat)
+        == vec_val(a_lo_seq) + vec_val(a_hi_seq);
+    proof { assert(step3_a_eq); }
 
     let b_lo_slice = slice_subrange(b, b_off, b.len());
     let b_hi_slice = slice_subrange(b, b_off + half, b.len());
     let bsum_carry = add_limbs_to(b_lo_slice, b_hi_slice, scratch, bsum_off, half);
-
-    // Ghost: capture a_sum value equation in terms of vec_val
-    let ghost a_sum_seq = scratch@.subrange(asum_off as int, (asum_off + half) as int);
+    // Capture b_sum IMMEDIATELY
     let ghost b_sum_seq = scratch@.subrange(bsum_off as int, (bsum_off + half) as int);
     proof {
-        // Connect add_limbs_to postcondition to vec_val of ghost sequences
-        assert(a_lo_slice@.subrange(0, half as int) =~= a_lo_seq);
-        assert(a_hi_slice@.subrange(0, half as int) =~= a_hi_seq);
         assert(b_lo_slice@.subrange(0, half as int) =~= b_lo_seq);
         assert(b_hi_slice@.subrange(0, half as int) =~= b_hi_seq);
+        assert(valid_limbs(b_sum_seq)) by {
+            assert forall |j: int| 0 <= j < b_sum_seq.len()
+                implies 0 <= (#[trigger] b_sum_seq[j]).sem() < LIMB_BASE()
+            by { assert(b_sum_seq[j] == scratch@[(bsum_off as int + j) as int]); }
+        }
+        lemma_vec_val_bounded::<T>(b_sum_seq);
     }
+    let ghost step3_b_eq: bool = vec_val(b_sum_seq) + bsum_carry.sem() * limb_power(half as nat)
+        == vec_val(b_lo_seq) + vec_val(b_hi_seq);
+    proof { assert(step3_b_eq); }
 
     // Step 4: z1_full = a_sum × b_sum → scratch[scratch_off..scratch_off+n]
     // Copy a_sum and b_sum to temporary Vecs to avoid aliasing, then call mul_schoolbook_to.
@@ -2870,76 +2898,33 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         assert(b_sum_vec@.subrange(0, half as int) =~= b_sum_vec@);
     }
 
-    // Step 4b: Carry correction using the copied Vecs (no aliasing issues).
-    // Add asum_carry * b_sum at offset half (branchless via select_limb)
-    let mut cc1 = T::zero_val();
-    for k in 0..half
-        invariant half == n / 2, n >= 4, n <= 0x1FFF_FFFF,
-            scratch@.len() == old(scratch)@.len(), scratch@.len() >= scratch_off + 2 * n,
-            scratch_off + 2 * n < usize::MAX,
-            asum_off == scratch_off + n, bsum_off == scratch_off + n + half,
-            asum_carry.sem() == 0 || asum_carry.sem() == 1,
-            cc1.sem() == 0 || cc1.sem() == 1,
-            a_sum_vec@.len() == half, b_sum_vec@.len() == half,
-            valid_limbs(a_sum_vec@), valid_limbs(b_sum_vec@),
-            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] scratch@[(scratch_off as int + j) as int]).sem() < LIMB_BASE(),
-    {
-        let addend = T::select_limb(&asum_carry, T::zero_val(), b_sum_vec[k].clone_limb());
-        let ghost hk = (half + k) as int;
-        let ghost sv = scratch@[(scratch_off as int + hk) as int].sem();
-        proof { assert(0 <= hk && hk < n as int); }
-        let (s, nc) = scratch[scratch_off + half + k].add3(&addend, &cc1);
-        proof {
-            let x = sv + addend.sem() + cc1.sem();
-            assert(x < 2 * LIMB_BASE());
-            assert(nc.sem() <= 1) by(nonlinear_arith)
-                requires nc.sem() == x / LIMB_BASE(), x >= 0,
-                         x < 2 * LIMB_BASE(), LIMB_BASE() > 0;
-        }
-        scratch.set(scratch_off + half + k, s);
-        cc1 = nc;
-    }
+    // Step 4b: Carry correction — use helper with proven value equation
+    let ghost schoolbook_val = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
+    let z1_overflow = {
+        use crate::fixed_point::limb_ops_proofs::karatsuba_carry_correct;
+        karatsuba_carry_correct(scratch, scratch_off, &a_sum_vec, &b_sum_vec, &asum_carry, &bsum_carry, n, half)
+    };
+    // Postcondition gives: z1_full_n_new + z1_overflow*P == schoolbook_val + ca*B*b_sum + cb*B*a_sum + ca*cb*B²
 
-    // Add bsum_carry * a_sum at offset half
-    let mut cc2 = T::zero_val();
-    for k in 0..half
-        invariant half == n / 2, n >= 4, n <= 0x1FFF_FFFF,
-            scratch@.len() == old(scratch)@.len(), scratch@.len() >= scratch_off + 2 * n,
-            scratch_off + 2 * n < usize::MAX,
-            asum_off == scratch_off + n, bsum_off == scratch_off + n + half,
-            bsum_carry.sem() == 0 || bsum_carry.sem() == 1,
-            cc2.sem() == 0 || cc2.sem() == 1,
-            a_sum_vec@.len() == half, b_sum_vec@.len() == half,
-            valid_limbs(a_sum_vec@), valid_limbs(b_sum_vec@),
-            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] scratch@[(scratch_off as int + j) as int]).sem() < LIMB_BASE(),
-    {
-        let addend = T::select_limb(&bsum_carry, T::zero_val(), a_sum_vec[k].clone_limb());
-        let ghost hk2 = (half + k) as int;
-        let ghost sv = scratch@[(scratch_off as int + hk2) as int].sem();
-        proof { assert(0 <= hk2 && hk2 < n as int); }
-        let (s, nc) = scratch[scratch_off + half + k].add3(&addend, &cc2);
-        proof {
-            let x = sv + addend.sem() + cc2.sem();
-            assert(x < 2 * LIMB_BASE());
-            assert(nc.sem() <= 1) by(nonlinear_arith)
-                requires nc.sem() == x / LIMB_BASE(), x >= 0,
-                         x < 2 * LIMB_BASE(), LIMB_BASE() > 0;
+    // Capture z0_val and z2_val HERE, right before the sub loops that use them.
+    // Bridge: out[out_off..out_off+n] hasn't changed since step 1 (steps 2-4b didn't touch it)
+    let ghost z0_val = vec_val(out@.subrange(out_off as int, (out_off + n) as int));
+    let ghost z2_val = vec_val(out@.subrange((out_off + n) as int, (out_off + 2 * n) as int));
+    proof {
+        // out[out_off..out_off+n] preserved through steps 2-4b (frame chain)
+        assert forall |j: int| out_off as int <= j < (out_off + n) as int
+            implies out@[j] == out_post_step1[j]
+        by {
+            // Step 2 frame: j < out_off+n, step 2 wrote to [out_off+n, out_off+2n)
+            // Steps 3-4b: only modified scratch, not out
         }
-        scratch.set(scratch_off + half + k, s);
-        cc2 = nc;
+        assert(out@.subrange(out_off as int, (out_off + n) as int)
+            =~= out_post_step1.subrange(out_off as int, (out_off + n) as int));
+        assert(z0_val == z0_val_step1);
+        assert(z0_val == vec_val(a_lo_seq) * vec_val(b_lo_seq));
     }
-
-    // z1_overflow at position n: cc1 + cc2 + asum_carry*bsum_carry
-    let (ca_cb, _) = asum_carry.mul2(&bsum_carry);
-    let (temp_ov, _) = cc1.add3(&cc2, &T::zero_val());
-    let (z1_overflow, _) = temp_ov.add3(&ca_cb, &T::zero_val());
 
     // Step 5: z1 = z1_full - z0 - z2
-    // After step 4+4b, scratch[scratch_off..scratch_off+n] has corrected z1_full (valid limbs).
-    // z1_overflow holds the extra limb at position n.
-    // out[out_off..out_off+2n] has z0 and z2 from schoolbook (valid limbs).
-    //
-    // Ghost: z1_full_val = vec_val(scratch[scratch_off..scratch_off+n]) + z1_overflow * limb_power(n)
     let ghost z1_full_n_val = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
     let ghost z1_full_val = z1_full_n_val + z1_overflow.sem() * limb_power(n as nat);
 
@@ -3021,9 +3006,14 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         }
         borrow1 = bw;
     }
-    // After sub1: vec_val(scratch_region) = z1_full_n_val - z0_val + borrow1 * P
+    // After sub1: the loop invariant at i=n gives us the value equation
     let ghost scratch_post_sub1_val = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
-    let ghost z0_val = vec_val(out@.subrange(out_off as int, (out_off + n) as int));
+    proof {
+        // From sub1 loop invariant at i=n:
+        // vec_val(scratch_region) == z1_full_n_val - vec_val(out[0..n]) + borrow1*P
+        // z0_val was captured right before step 5, equals vec_val(out[0..n])
+        assert(scratch_post_sub1_val == z1_full_n_val - z0_val + borrow1.sem() * limb_power(n as nat));
+    }
 
     let ghost scratch_post_sub1 = scratch@;
     let mut borrow2 = T::zero_val();
@@ -3137,7 +3127,7 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
 
         let P = limb_power(n as nat);
         let z1_n = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
-        let z2_val = vec_val(out@.subrange((out_off + n) as int, (out_off + 2 * n) as int));
+        // z0_val and z2_val captured before step 5, still valid
 
         // From sub1 value equation (at end of loop, i=n):
         // scratch_post_sub1_val = z1_full_n_val - z0_val + borrow1 * P
@@ -3155,13 +3145,7 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         lemma_vec_val_bounded::<T>(b_lo_seq);
         lemma_vec_val_bounded::<T>(b_hi_seq);
         let B = limb_power(half as nat);
-        // P = B^2 (since n = 2*half)
         lemma_limb_power_add(half as nat, half as nat);
-
-        // z0_val = a_lo * b_lo (from mul_schoolbook_to)
-        // z2_val = a_hi * b_hi
-        // z1_full_val >= z0_val + z2_val (cross terms >= 0)
-        // z1_full_val < z0_val + z2_val + 2*P (cross terms < 2*B^2 = 2*P)
 
         // z1_n is valid limbs → z1_n < P
         assert(valid_limbs(scratch@.subrange(scratch_off as int, (scratch_off + n) as int))) by {
@@ -3174,7 +3158,7 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         }
         lemma_vec_val_bounded::<T>(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
 
-        // Combined value equation
+        // Combined value equation from sub_borrow loops
         assert(z1_n + (z1_overflow.sem() - borrow1.sem() - borrow2.sem()) * P
             == z1_full_val - z0_val - z2_val) by(nonlinear_arith)
             requires
@@ -3182,11 +3166,33 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
                 z1_n == scratch_post_sub1_val - z2_val + borrow2.sem() * P,
                 z1_full_val == z1_full_n_val + z1_overflow.sem() * P;
 
-        // Karatsuba identity bounds: z1_full = (a_lo+a_hi)(b_lo+b_hi) = z0+cross+z2
-        // So z1_full >= z0 + z2 and z1_full - z0 - z2 = cross < 2*P
-        // We need z1_full_val, z0_val, z2_val in terms of the algebraic values
-        // These follow from z0_val and z2_val being the schoolbook results
+        // Step A: establish z1_full bounds via lemma_karatsuba_z1_full_bounds
+        // Needs: step 3 value equations (from add_limbs_to postconditions)
+        //        step 4 value equation (from mul_schoolbook_to postcondition)
+        //        step 4b value equation (from karatsuba_carry_correct postcondition)
+        use crate::fixed_point::limb_ops_proofs::lemma_karatsuba_z1_full_bounds;
 
+        // Establish preconditions for lemma_karatsuba_z1_full_bounds
+        let a_sum_val = vec_val(a_sum_seq);
+        let b_sum_val = vec_val(b_sum_seq);
+        // valid_limbs and bounded established earlier (right after capture)
+
+        // Re-establish captured equations from earlier (beat context pollution)
+        assert(step3_a_eq);
+        assert(step3_b_eq);
+
+        lemma_karatsuba_z1_full_bounds(
+            a_sum_val, b_sum_val,
+            asum_carry.sem(), bsum_carry.sem(),
+            vec_val(a_lo_seq), vec_val(a_hi_seq),
+            vec_val(b_lo_seq), vec_val(b_hi_seq),
+            schoolbook_val,
+            z1_full_val, z0_val, z2_val,
+            B, P,
+        );
+        // Now we have: z1_full >= z0+z2 and z1_full < z0+z2+2P
+
+        // Step B: prove overflow is 0 or 1
         lemma_karatsuba_z1_overflow_bound(
             z1_full_val, z0_val, z2_val,
             z1_overflow.sem(), borrow1.sem(), borrow2.sem(),
