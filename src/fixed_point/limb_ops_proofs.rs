@@ -1187,7 +1187,7 @@ pub fn karatsuba_combine<T: LimbOps>(
         forall |j: int| 0 <= j < 2 * n ==> 0 <= (#[trigger] out@[(out_off as int + j)]).sem() < LIMB_BASE(),
         forall |j: int| 0 <= j < out@.len() && !(out_off as int <= j < (out_off + 2 * n) as int)
             ==> out@[j] == old(out)@[j],
-        // Value equation: output == (a_hi*B + a_lo) * (b_hi*B + b_lo) via Karatsuba identity
+        // Value equation
         vec_val(out@.subrange(out_off as int, (out_off + 2 * n) as int))
             == (a_hi_v_g@ * limb_power(half as nat) + a_lo_v_g@)
              * (b_hi_v_g@ * limb_power(half as nat) + b_lo_v_g@),
@@ -1410,29 +1410,32 @@ pub fn karatsuba_combine<T: LimbOps>(
     }
 
     // Step 6: add z1 to output at offset half
-    {
-        let scratch_slice = slice_subrange(&*scratch, scratch_off, scratch.len());
-        proof {
-            assert forall |j: int| 0 <= j < n as int
-                implies 0 <= (#[trigger] scratch_slice@[(j as int)]).sem() < LIMB_BASE()
-            by { assert(scratch_slice@[j] == scratch@[(scratch_off as int + j) as int]); }
-            assert forall |j: int| 0 <= j < (n + half) as int
-                implies 0 <= (#[trigger] out@[((out_off + half) as int + j)]).sem() < LIMB_BASE()
-            by {
-                let jj = (half as int + j);
-                assert(0 <= jj && jj < 2 * n as int);
-                assert(out@[(out_off as int + jj) as int].sem() < LIMB_BASE());
-            }
+    let scratch_slice = slice_subrange(&*scratch, scratch_off, scratch.len());
+    proof {
+        assert forall |j: int| 0 <= j < n as int
+            implies 0 <= (#[trigger] scratch_slice@[(j as int)]).sem() < LIMB_BASE()
+        by { assert(scratch_slice@[j] == scratch@[(scratch_off as int + j) as int]); }
+        assert forall |j: int| 0 <= j < (n + half) as int
+            implies 0 <= (#[trigger] out@[((out_off + half) as int + j)]).sem() < LIMB_BASE()
+        by {
+            let jj = (half as int + j);
+            assert(0 <= jj && jj < 2 * n as int);
+            assert(out@[(out_off as int + jj) as int].sem() < LIMB_BASE());
         }
-        let _carry = add_inplace_propagate(
-            out, out_off + half,
-            scratch_slice, 0,
-            n,
-            &z1_final_overflow,
-            half,
-        );
     }
-    // Postcondition: value equation via Karatsuba identity
+    let ghost out_pre_step6 = out@;
+    let step6_carry = add_inplace_propagate(
+        out, out_off + half,
+        scratch_slice, 0,
+        n,
+        &z1_final_overflow,
+        half,
+    );
+    // add_inplace_propagate postcondition:
+    //   vec_val(out[half..2n]) + carry*P(n+half)
+    //     == vec_val(old[half..2n]) + z1_n_limbs + overflow*P(n)
+
+    // Postcondition: value equation
     proof {
         use crate::fixed_point::limbs::lemma_karatsuba_identity;
 
@@ -1440,32 +1443,123 @@ pub fn karatsuba_combine<T: LimbOps>(
         let P = limb_power(n as nat);
         lemma_limb_power_add(half as nat, half as nat);
         assert(P == B * B);
+        let P2n = limb_power((2 * n) as nat);
+        lemma_limb_power_add(n as nat, n as nat);
+        assert(P2n == P * P);
+        let Pnh = limb_power((n + half) as nat);
+        lemma_limb_power_add(n as nat, half as nat);
 
-        // add_inplace_propagate wrote to out[half..2n]. Its value equation says:
-        // vec_val(out[half..2n]) + carry*P(n+half) = vec_val(old_out[half..2n]) + z1_val + overflow*P(n)
-        // where z1_val = vec_val(z1_limbs), overflow = z1_final_overflow
+        // Split output and old_out at half
+        let out_region = out@.subrange(out_off as int, (out_off + 2 * n) as int);
+        lemma_vec_val_split::<T>(out_region, half as nat);
+        let out_lo = out_region.subrange(0, half as int);
+        let out_hi = out_region.subrange(half as int, (2 * n) as int);
+        assert(out_hi =~= out@.subrange((out_off + half) as int, (out_off + 2 * n) as int));
 
-        // But we DON'T have z1_val separately. We have the add_inplace_propagate postcondition
-        // on vec_val(out[half..2n]). Combined with the unchanged [0..half), we get
-        // vec_val(out[0..2n]) via vec_val_split at half.
+        let old_region = old_out.subrange(out_off as int, (out_off + 2 * n) as int);
+        lemma_vec_val_split::<T>(old_region, half as nat);
+        let old_lo = old_region.subrange(0, half as int);
+        let old_hi = old_region.subrange(half as int, (2 * n) as int);
+        assert(old_hi =~= old_out.subrange((out_off + half) as int, (out_off + 2 * n) as int));
 
-        // The old_out region [0..2n] had: z0 at [0..n], z2 at [n..2n]
-        // via vec_val_split at n: vec_val(old_out_region) = z0_val + z2_val * P
-        lemma_vec_val_split::<T>(old_out.subrange(out_off as int, (out_off + 2 * n) as int), n as nat);
-        assert(old_out.subrange(out_off as int, (out_off + 2 * n) as int).subrange(0, n as int)
-            =~= old_out.subrange(out_off as int, (out_off + n) as int));
-        assert(old_out.subrange(out_off as int, (out_off + 2 * n) as int).subrange(n as int, (2 * n) as int)
-            =~= old_out.subrange((out_off + n) as int, (out_off + 2 * n) as int));
+        // out_lo unchanged: [0..half) wasn't modified by add_inplace_propagate (frame)
+        assert(out_lo =~= old_lo);
 
-        // Karatsuba identity: (a_hi*B + a_lo)(b_hi*B + b_lo) = z0 + z1*B + z2*B²
+        // old_out split at n: z0 + z2*P
+        lemma_vec_val_split::<T>(old_region, n as nat);
+        assert(old_region.subrange(0, n as int) =~= old_out.subrange(out_off as int, (out_off + n) as int));
+        assert(old_region.subrange(n as int, (2 * n) as int) =~= old_out.subrange((out_off + n) as int, (out_off + 2 * n) as int));
+
+        // out_pre_step6 == old_out (sub_borrow loops only modified scratch, not out)
+        assert(out_pre_step6.subrange((out_off + half) as int, (out_off + 2 * n) as int)
+            =~= old_hi);
+
+        // Karatsuba identity
         lemma_karatsuba_identity(
             a_lo_v_g@ as int, a_hi_v_g@ as int,
             b_lo_v_g@ as int, b_hi_v_g@ as int,
             B as int,
         );
-        // → (a_hi*B+a_lo)(b_hi*B+b_lo) = z0 + z1*B + z2*B²
-        // where z0=a_lo*b_lo, z2=a_hi*b_hi,
-        //       z1=(a_lo+a_hi)(b_lo+b_hi)-z0-z2
+
+        // Product bound: a*b < P(2n) = P²
+        let a_val = a_hi_v_g@ * B + a_lo_v_g@;
+        let b_val = b_hi_v_g@ * B + b_lo_v_g@;
+        assert(a_hi_v_g@ * B <= (B - 1) * B) by(nonlinear_arith)
+            requires a_hi_v_g@ < B, a_hi_v_g@ >= 0, B > 0;
+        assert(a_val < P) by(nonlinear_arith)
+            requires a_val == a_hi_v_g@ * B + a_lo_v_g@,
+                     a_hi_v_g@ * B <= (B - 1) * B, a_lo_v_g@ < B, a_lo_v_g@ >= 0, P == B * B;
+        assert(b_hi_v_g@ * B <= (B - 1) * B) by(nonlinear_arith)
+            requires b_hi_v_g@ < B, b_hi_v_g@ >= 0, B > 0;
+        assert(b_val < P) by(nonlinear_arith)
+            requires b_val == b_hi_v_g@ * B + b_lo_v_g@,
+                     b_hi_v_g@ * B <= (B - 1) * B, b_lo_v_g@ < B, b_lo_v_g@ >= 0, P == B * B;
+        assert(a_val * b_val < P2n) by(nonlinear_arith)
+            requires a_val < P, b_val < P, a_val >= 0, b_val >= 0, P2n == P * P, P > 0;
+
+        // Output bounded
+        assert(valid_limbs(out_region)) by {
+            assert forall |j: int| 0 <= j < out_region.len()
+                implies 0 <= (#[trigger] out_region[j]).sem() < LIMB_BASE()
+            by {
+                assert(out_region[j] == out@[(out_off as int + j)]);
+                if j >= half as int {
+                    let jj = j - half as int;
+                    assert(out@[((out_off + half) as int + jj)].sem() < LIMB_BASE());
+                } else {
+                    // Frame: unchanged from old_out
+                    assert(out@[(out_off as int + j)] == old_out[(out_off as int + j)]);
+                }
+            }
+        }
+        lemma_vec_val_bounded::<T>(out_region);
+
+        // Chain: vec_val(out) + carry*Pnh*B = vec_val(old) + z1_true*B
+        // where z1_true is added via add_inplace_propagate
+        // vec_val(out_region) = vec_val(out_lo) + vec_val(out_hi)*B
+        //                     = vec_val(old_lo) + vec_val(out_hi)*B
+        // From add_inplace: vec_val(out_hi) + carry*Pnh = vec_val(old_hi) + z1_val + ov*P
+        // So: vec_val(out_region) = vec_val(old_lo) + (vec_val(old_hi) + z1_val + ov*P - carry*Pnh)*B
+        //   = vec_val(old_region) + (z1_val + ov*P)*B - carry*Pnh*B
+        // vec_val(old_region) = z0 + z2*P  (from precondition)
+        // z1_val + ov*P = z1_true (from sub_borrow chain + overflow)
+        // And z0 + z1_true*B + z2*P = z0 + z1*B + z2*B² = a*b  (Karatsuba identity)
+        // So: vec_val(out_region) + carry*Pnh*B = a*b
+        // Since a*b < P2n and vec_val >= 0, carry must be 0.
+        // And Pnh*B = P*P = P2n, so vec_val(out_region) = a*b.
+
+        assert(vec_val(out_region) + step6_carry.sem() * Pnh * B
+            == vec_val(old_region) + (vec_val(scratch_slice@.subrange(0, n as int)) + z1_final_overflow.sem() * P) * B)
+        by(nonlinear_arith)
+            requires
+                vec_val(out_region) == vec_val(out_lo) + vec_val(out_hi) * B,
+                vec_val(old_region) == vec_val(old_lo) + vec_val(old_hi) * B,
+                vec_val(out_lo) == vec_val(old_lo),
+                vec_val(out_hi) + step6_carry.sem() * Pnh
+                    == vec_val(old_hi) + vec_val(scratch_slice@.subrange(0, n as int))
+                     + z1_final_overflow.sem() * P;
+
+        // vec_val(old_region) = z0 + z2*P
+        assert(vec_val(old_region) == z0_val + z2_val * P);
+
+        // The product a_val * b_val = z0 + z1*B + z2*B² from Karatsuba identity
+        // carry must be 0 because a*b < P2n and vec_val(out) < P2n
+        assert(Pnh * B == P2n) by(nonlinear_arith)
+            requires Pnh == P * B, P == B * B, P2n == P * P;
+
+        assert(step6_carry.sem() == 0) by(nonlinear_arith)
+            requires
+                vec_val(out_region) + step6_carry.sem() * P2n
+                    == vec_val(old_region) + (vec_val(scratch_slice@.subrange(0, n as int)) + z1_final_overflow.sem() * P) * B,
+                0 <= vec_val(out_region), vec_val(out_region) < P2n,
+                step6_carry.sem() >= 0,
+                a_val * b_val < P2n, a_val * b_val >= 0,
+                // The output value must equal a*b, so it's bounded
+                // Actually we need the output IS a*b to prove carry=0, circular!
+                // Instead: z0 + z1*B + z2*B² = a*b < P2n
+                // And output + carry*P2n = z0 + z1*B + z2*B²
+                // So output + carry*P2n < P2n, output >= 0 → carry = 0
+                P2n > 0;
     }
 
     // Postcondition: valid limbs on full 2n region
