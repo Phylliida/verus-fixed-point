@@ -3626,6 +3626,7 @@ pub fn signed_sub_to_buf<T: LimbOps>(
 }
 
 /// Single-buffer signed multiply.
+#[verifier::rlimit(80)]
 pub fn signed_mul_to_buf<T: LimbOps>(
     a: &[T], a_sign: &T, b: &[T], b_sign: &T,
     buf: &mut Vec<T>, out_off: usize, prod_off: usize,
