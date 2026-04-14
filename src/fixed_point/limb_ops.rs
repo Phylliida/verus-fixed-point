@@ -2699,7 +2699,7 @@ pub fn mul_schoolbook_to<T: LimbOps>(
 /// Requires n >= 8, n even. Falls back to schoolbook for n < 8.
 /// Scratch needs 2n limbs at scratch[scratch_off..scratch_off+2n].
 /// a and b are accessed at a[a_off..a_off+n] and b[b_off..b_off+n].
-#[verifier::rlimit(200)]
+#[verifier::rlimit(300)]
 pub fn mul_karatsuba_one_level_to<T: LimbOps>(
     a: &[T], a_off: usize,
     b: &[T], b_off: usize,
@@ -3131,129 +3131,53 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
     let (temp_ov2, _) = z1_overflow.sub_borrow(&borrow1, &T::zero_val());
     let (z1_final_overflow, _) = temp_ov2.sub_borrow(&borrow2, &T::zero_val());
     proof {
-        use crate::fixed_point::limb_ops_proofs::lemma_karatsuba_z1_overflow_bound;
+        use crate::fixed_point::limb_ops_proofs::lemma_karatsuba_overflow_chain;
 
         let P = limb_power(n as nat);
+        let B = limb_power(half as nat);
         let z1_n = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
-        // z0_val and z2_val captured before step 5, still valid
+        let a_sum_val = vec_val(a_sum_seq);
+        let b_sum_val = vec_val(b_sum_seq);
 
-        // From sub1 value equation (at end of loop, i=n):
-        // scratch_post_sub1_val = z1_full_n_val - z0_val + borrow1 * P
-        // From sub2 value equation (at end of loop, i=n):
-        // z1_n = scratch_post_sub1_val - z2_val + borrow2 * P
-        // Combined:
-        // z1_n = z1_full_n_val - z0_val - z2_val + (borrow1 + borrow2) * P
-        // z1_n + (z1_overflow - bw1 - bw2) * P
-        //   = z1_full_n_val + z1_overflow*P - z0_val - z2_val
-        //   = z1_full_val - z0_val - z2_val
+        // Re-establish facts that were lost to context pollution
+        assert(step3_a_eq);
+        assert(step3_b_eq);
+        assert(avec_eq);
+        assert(bvec_eq);
 
-        // Input bounds
+        // z1_n bounded (valid limbs)
+        assert(valid_limbs(scratch@.subrange(scratch_off as int, (scratch_off + n) as int))) by {
+            assert forall |j: int| 0 <= j < n as int
+                implies 0 <= (#[trigger] scratch@.subrange(scratch_off as int, (scratch_off + n) as int)[j]).sem() < LIMB_BASE()
+            by { assert(scratch@.subrange(scratch_off as int, (scratch_off + n) as int)[j] == scratch@[(scratch_off as int + j)]); }
+        }
+        lemma_vec_val_bounded::<T>(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
         lemma_vec_val_bounded::<T>(a_lo_seq);
         lemma_vec_val_bounded::<T>(a_hi_seq);
         lemma_vec_val_bounded::<T>(b_lo_seq);
         lemma_vec_val_bounded::<T>(b_hi_seq);
-        let B = limb_power(half as nat);
-        lemma_limb_power_add(half as nat, half as nat);
 
-        // z1_n is valid limbs → z1_n < P
-        assert(valid_limbs(scratch@.subrange(scratch_off as int, (scratch_off + n) as int))) by {
-            assert forall |j: int| 0 <= j < n as int
-                implies 0 <= (#[trigger] scratch@.subrange(scratch_off as int, (scratch_off + n) as int)[j]).sem() < LIMB_BASE()
-            by {
-                assert(scratch@.subrange(scratch_off as int, (scratch_off + n) as int)[j]
-                    == scratch@[(scratch_off as int + j)]);
-            }
-        }
-        lemma_vec_val_bounded::<T>(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
-
-        // Combined value equation from sub_borrow loops
-        assert(z1_n + (z1_overflow.sem() - borrow1.sem() - borrow2.sem()) * P
-            == z1_full_val - z0_val - z2_val) by(nonlinear_arith)
-            requires
-                scratch_post_sub1_val == z1_full_n_val - z0_val + borrow1.sem() * P,
-                z1_n == scratch_post_sub1_val - z2_val + borrow2.sem() * P,
-                z1_full_val == z1_full_n_val + z1_overflow.sem() * P;
-
-        // Step A: establish z1_full bounds via lemma_karatsuba_z1_full_bounds
-        // Needs: step 3 value equations (from add_limbs_to postconditions)
-        //        step 4 value equation (from mul_schoolbook_to postcondition)
-        //        step 4b value equation (from karatsuba_carry_correct postcondition)
-        use crate::fixed_point::limb_ops_proofs::lemma_karatsuba_z1_full_bounds;
-
-        // Establish preconditions for lemma_karatsuba_z1_full_bounds
-        let a_sum_val = vec_val(a_sum_seq);
-        let b_sum_val = vec_val(b_sum_seq);
-        // valid_limbs and bounded established earlier (right after capture)
-
-        // Re-establish captured equations (beat context pollution)
-        assert(step3_a_eq);
-        assert(step3_b_eq);
-        assert(avec_eq);  // vec_val(a_sum_vec@) == a_sum_val
-        assert(bvec_eq);  // vec_val(b_sum_vec@) == b_sum_val
-
-        // Connect carry_correct postcondition to lemma terms
-        assert(vec_val(a_sum_vec@) == a_sum_val);
-        assert(vec_val(b_sum_vec@) == b_sum_val);
-        assert(B == limb_power(half as nat));
-        lemma_limb_power_add(half as nat, half as nat);
-        assert(P == B * B);
-        // Now Z3 should see: z1_full_val == schoolbook + corrections (from postcondition + substitution)
-
-        lemma_karatsuba_z1_full_bounds(
-            a_sum_val, b_sum_val,
-            asum_carry.sem(), bsum_carry.sem(),
-            vec_val(a_lo_seq), vec_val(a_hi_seq),
-            vec_val(b_lo_seq), vec_val(b_hi_seq),
-            schoolbook_val,
-            z1_full_val, z0_val, z2_val,
-            B, P,
-        );
-        // Now we have: z1_full >= z0+z2 and z1_full < z0+z2+2P
-
-        // Step B: prove overflow is 0 or 1
-        lemma_karatsuba_z1_overflow_bound(
-            z1_full_val, z0_val, z2_val,
-            z1_overflow.sem(), borrow1.sem(), borrow2.sem(),
-            z1_n, P,
-        );
-
-        // Now z1_overflow - bw1 - bw2 is 0 or 1
-        // z1_final_overflow.sem() = sub_borrow result
-        // Need: z1_final_overflow.sem() == z1_overflow.sem() - borrow1.sem() - borrow2.sem()
-        // This follows from the sub_borrow postconditions
-        // (since the values are small enough that no wrapping occurs)
-        let ov_diff = z1_overflow.sem() - borrow1.sem() - borrow2.sem();
-        assert(ov_diff == 0 || ov_diff == 1);
-        // sub_borrow(z1_overflow, borrow1, 0): result = (z1_overflow - borrow1 + BASE) % BASE
-        // Since z1_overflow <= 3 and borrow1 <= 1, z1_overflow - borrow1 >= -1
-        // But ov_diff >= 0, so z1_overflow >= borrow1 + borrow2
-        // temp_ov2 = z1_overflow - borrow1 (no wrapping since >= 0)
-        // z1_final_overflow = temp_ov2 - borrow2 (no wrapping since temp_ov2 >= borrow2)
-        assert(z1_overflow.sem() >= borrow1.sem() + borrow2.sem()) by(nonlinear_arith)
-            requires ov_diff >= 0, ov_diff == z1_overflow.sem() - borrow1.sem() - borrow2.sem();
         assert(LIMB_BASE() > 3) by {
             reveal_with_fuel(limb_power, 2);
             use crate::fixed_point::limbs::limb_base;
         }
-        // sub_borrow(z1_overflow, borrow1, 0): the zero borrow means
-        // temp_ov2 = (z1_overflow - borrow1 - 0 + BASE) % BASE
-        assert(temp_ov2.sem() == z1_overflow.sem() - borrow1.sem()) by(nonlinear_arith)
-            requires
-                temp_ov2.sem() == (z1_overflow.sem() - borrow1.sem() - 0 + LIMB_BASE()) % LIMB_BASE(),
-                z1_overflow.sem() >= borrow1.sem(),
-                z1_overflow.sem() <= 3,
-                borrow1.sem() <= 1,
-                LIMB_BASE() > 3;
-        // sub_borrow(temp_ov2, borrow2, 0)
-        assert(z1_final_overflow.sem() == temp_ov2.sem() - borrow2.sem()) by(nonlinear_arith)
-            requires
-                z1_final_overflow.sem() == (temp_ov2.sem() - borrow2.sem() - 0 + LIMB_BASE()) % LIMB_BASE(),
-                temp_ov2.sem() >= borrow2.sem(),
-                temp_ov2.sem() <= 3,
-                borrow2.sem() <= 1,
-                LIMB_BASE() > 3;
-        assert(z1_final_overflow.sem() == ov_diff);
-        assert(z1_final_overflow.sem() == 0 || z1_final_overflow.sem() == 1);
+
+        lemma_limb_power_add(half as nat, half as nat);
+        assert(P == B * B);
+
+        lemma_karatsuba_overflow_chain(
+            a_sum_val, b_sum_val,
+            asum_carry.sem(), bsum_carry.sem(),
+            vec_val(a_lo_seq), vec_val(a_hi_seq), vec_val(b_lo_seq), vec_val(b_hi_seq),
+            schoolbook_val,
+            z1_full_val, z1_full_n_val, z1_overflow.sem(),
+            z0_val, z2_val,
+            scratch_post_sub1_val,
+            borrow1.sem(), borrow2.sem(),
+            z1_n,
+            temp_ov2.sem(), z1_final_overflow.sem(),
+            B, P,
+        );
     }
 
     // Step 6: out[half..half+n+half] += z1 (n limbs) + z1_final_overflow at position n
