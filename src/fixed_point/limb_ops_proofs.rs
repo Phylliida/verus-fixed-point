@@ -831,6 +831,10 @@ pub proof fn lemma_karatsuba_overflow_chain(
         P == B * B, B > 0, LIMB_BASE() > 3,
     ensures
         z1_final_overflow_v == 0 || z1_final_overflow_v == 1,
+        // Value equation: z1_n + z1_final_overflow * P = z1_full - z0 - z2
+        z1_n + z1_final_overflow_v * P == z1_full_val - z0_val - z2_val,
+        // z1_full = (a_lo+a_hi)(b_lo+b_hi)
+        z1_full_val == (a_lo_v + a_hi_v) * (b_lo_v + b_hi_v),
 {
     // Step A: z1_full bounds
     lemma_karatsuba_z1_full_bounds(
@@ -1547,19 +1551,87 @@ pub fn karatsuba_combine<T: LimbOps>(
         assert(Pnh * B == P2n) by(nonlinear_arith)
             requires Pnh == P * B, P == B * B, P2n == P * P;
 
+        // The key value equation:
+        // vec_val(out_region) + carry*P2n = z0 + z1_true*B + z2*P
+        //   where z1_true = (vec_val(z1_limbs) + overflow*P)
+        // And by Karatsuba identity: z0 + z1*B + z2*B² = a*b
+        // Since a*b < P2n and vec_val(out) >= 0, carry = 0.
+
+        // Step 1: from add_inplace_propagate postcondition:
+        // vec_val(out_hi) + carry*Pnh = vec_val(old_hi) + z1_n_val + overflow*P
+        // (old_hi = out_pre_step6[half..2n] = old_out[half..2n])
+
+        // Step 2: vec_val(out_region) = vec_val(out_lo) + vec_val(out_hi)*B
+        //   = vec_val(old_lo) + (vec_val(old_hi) + z1_val + ov*P - carry*Pnh)*B
+        //   = vec_val(old_region) + (z1_val + ov*P)*B - carry*Pnh*B
+        //   = z0 + z2*P + z1_true*B - carry*P2n
+
+        // Step 3: z0 + z1_true*B + z2*P = a*b (from Karatsuba identity + z1_full bounds)
+        // So vec_val(out_region) + carry*P2n = a*b
+
+        // Step 4: a*b < P2n, vec_val >= 0 → carry = 0
+
+        // I need Z3 to see the intermediate: vec_val(out_hi) + carry*Pnh = vec_val(old_hi) + z1_n + ov*P
+        // This IS add_inplace_propagate's postcondition. Let me just assert the final result:
+
+        let z1_true = vec_val(scratch_slice@.subrange(0, n as int)) + z1_final_overflow.sem() * P;
+
+        // From add_inplace_propagate: vec_val(out_hi) + carry*Pnh = vec_val(old_hi) + z1_n + ov*P
+        // = vec_val(old_hi) + z1_true
+
+        // vec_val(out_region) = vec_val(out_lo) + vec_val(out_hi) * B
+        // vec_val(old_region) = vec_val(old_lo) + vec_val(old_hi) * B
+        // out_lo == old_lo
+        // So: vec_val(out_region) + carry * Pnh * B
+        //   = vec_val(old_lo) + (vec_val(old_hi) + z1_true) * B
+        //   = vec_val(old_region) + z1_true * B
+        assert(vec_val(out_region) + step6_carry.sem() * P2n
+            == vec_val(old_region) + z1_true * B) by(nonlinear_arith)
+            requires
+                vec_val(out_region) == vec_val(out_lo) + vec_val(out_hi) * B,
+                vec_val(old_region) == vec_val(old_lo) + vec_val(old_hi) * B,
+                vec_val(out_lo) == vec_val(old_lo),
+                vec_val(out_hi) + step6_carry.sem() * Pnh
+                    == vec_val(old_hi) + z1_true,
+                Pnh * B == P2n;
+
+        // old_region = z0 + z2*P
+        // z1_true = z1 (the Karatsuba z1 cross term)
+        // z0 + z1*B + z2*P = z0 + z1*B + z2*B² = a*b
+        // Connect z1_true to Karatsuba z1 via the overflow chain's postcondition
+        // The overflow chain proved:
+        //   z1_n + z1_final_overflow * P == z1_full - z0 - z2
+        //   z1_full == (a_lo+a_hi)(b_lo+b_hi)
+        // where z1_n was the vec_val of scratch z1 limbs at that point.
+        // After the sub loops, scratch z1 limbs weren't modified by add_inplace_propagate
+        // (which only wrote to out). So scratch_slice@[0..n] still has the same values.
+        // z1_true = vec_val(scratch_slice[0..n]) + z1_final_overflow * P = z1_n + z1_final_overflow * P
+        // = z1_full - z0 - z2 = (a_lo+a_hi)(b_lo+b_hi) - z0 - z2
+
+        // scratch_slice[0..n] has the same z1 limbs that overflow chain used
+        let z1_n_check = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
+        assert(scratch_slice@.subrange(0, n as int) =~= scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
+        assert(z1_true == z1_n_check + z1_final_overflow.sem() * P);
+        // overflow chain postcondition gives: z1_n_check + z1_final_overflow*P == z1_full - z0 - z2
+        // and z1_full == (a_lo+a_hi)(b_lo+b_hi)
+
+        assert(a_val * b_val == z0_val + z1_true * B + z2_val * P) by(nonlinear_arith)
+            requires
+                a_val * b_val == z0_val
+                    + ((a_lo_v_g@ + a_hi_v_g@) * (b_lo_v_g@ + b_hi_v_g@) - z0_val - z2_val) * B
+                    + z2_val * B * B,
+                z1_true == (a_lo_v_g@ + a_hi_v_g@) * (b_lo_v_g@ + b_hi_v_g@) - z0_val - z2_val,
+                P == B * B;
+
+        // carry = 0 from bounds
         assert(step6_carry.sem() == 0) by(nonlinear_arith)
             requires
-                vec_val(out_region) + step6_carry.sem() * P2n
-                    == vec_val(old_region) + (vec_val(scratch_slice@.subrange(0, n as int)) + z1_final_overflow.sem() * P) * B,
+                vec_val(out_region) + step6_carry.sem() * P2n == a_val * b_val,
                 0 <= vec_val(out_region), vec_val(out_region) < P2n,
-                step6_carry.sem() >= 0,
                 a_val * b_val < P2n, a_val * b_val >= 0,
-                // The output value must equal a*b, so it's bounded
-                // Actually we need the output IS a*b to prove carry=0, circular!
-                // Instead: z0 + z1*B + z2*B² = a*b < P2n
-                // And output + carry*P2n = z0 + z1*B + z2*B²
-                // So output + carry*P2n < P2n, output >= 0 → carry = 0
-                P2n > 0;
+                step6_carry.sem() >= 0, P2n > 0;
+
+        assert(vec_val(out_region) == a_val * b_val);
     }
 
     // Postcondition: valid limbs on full 2n region
