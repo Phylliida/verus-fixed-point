@@ -2881,6 +2881,8 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
             assert(a_sum_seq[j] == scratch@[(asum_off as int + j) as int]);
         }
         lemma_vec_val_eq_from_sem_eq::<T>(a_sum_vec@, a_sum_seq);
+        // These equalities will be needed for the step 4b connection
+        assert(vec_val(a_sum_vec@) == vec_val(a_sum_seq));
         assert forall |j: int| 0 <= j < b_sum_vec@.len()
             implies (#[trigger] b_sum_vec@[j]).sem() == b_sum_seq[j].sem()
         by {
@@ -2888,7 +2890,13 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
             assert(b_sum_seq[j] == scratch@[(bsum_off as int + j) as int]);
         }
         lemma_vec_val_eq_from_sem_eq::<T>(b_sum_vec@, b_sum_seq);
+        assert(vec_val(b_sum_vec@) == vec_val(b_sum_seq));
     }
+    // Ghost bools for vec_val equalities (persist through mutations)
+    let ghost avec_eq: bool = vec_val(a_sum_vec@) == vec_val(a_sum_seq);
+    let ghost bvec_eq: bool = vec_val(b_sum_vec@) == vec_val(b_sum_seq);
+    proof { assert(avec_eq); assert(bvec_eq); }
+
     mul_schoolbook_to(&a_sum_vec, &b_sum_vec, scratch, scratch_off, half);
     // Postcondition: vec_val(scratch[scratch_off..scratch_off+n])
     //   == vec_val(a_sum_vec[0..half]) * vec_val(b_sum_vec[0..half])
@@ -3177,9 +3185,19 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         let b_sum_val = vec_val(b_sum_seq);
         // valid_limbs and bounded established earlier (right after capture)
 
-        // Re-establish captured equations from earlier (beat context pollution)
+        // Re-establish captured equations (beat context pollution)
         assert(step3_a_eq);
         assert(step3_b_eq);
+        assert(avec_eq);  // vec_val(a_sum_vec@) == a_sum_val
+        assert(bvec_eq);  // vec_val(b_sum_vec@) == b_sum_val
+
+        // Connect carry_correct postcondition to lemma terms
+        assert(vec_val(a_sum_vec@) == a_sum_val);
+        assert(vec_val(b_sum_vec@) == b_sum_val);
+        assert(B == limb_power(half as nat));
+        lemma_limb_power_add(half as nat, half as nat);
+        assert(P == B * B);
+        // Now Z3 should see: z1_full_val == schoolbook + corrections (from postcondition + substitution)
 
         lemma_karatsuba_z1_full_bounds(
             a_sum_val, b_sum_val,
