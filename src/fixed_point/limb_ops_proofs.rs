@@ -7,6 +7,7 @@ use vstd::prelude::*;
 use super::limb_ops::{
     LIMB_BASE, LimbOps, limb_power, limbs_val, vec_val, sem_seq, valid_limbs,
     lemma_vec_val_split, lemma_vec_val_eq_from_sem_eq, lemma_vec_val_bounded,
+    lemma_limb_power_add,
 };
 
 verus! {
@@ -354,6 +355,252 @@ pub proof fn lemma_signed_add_correct_seq<T: LimbOps>(
             }
         }
     }
+}
+
+/// Add b[b_off..b_off+n] to out[out_start..out_start+n] in-place,
+/// then add `overflow` at position n, then propagate carry through
+/// out[out_start+n..out_start+n+tail].
+///
+/// Postcondition value equation:
+///   vec_val(new_region) + carry * P(n+tail)
+///     == vec_val(old_region) + vec_val(b_sub) + overflow * P(n)
+#[verifier::rlimit(120)]
+pub fn add_inplace_propagate<T: LimbOps>(
+    out: &mut Vec<T>,
+    out_start: usize,
+    b: &[T], b_off: usize,
+    n: usize,
+    overflow: &T,
+    tail: usize,
+) -> (carry: T)
+    requires
+        n > 0,
+        old(out)@.len() >= out_start + n + tail,
+        out_start + n + tail < usize::MAX,
+        b@.len() >= b_off + n,
+        b_off + n < usize::MAX,
+        overflow.sem() == 0 || overflow.sem() == 1,
+        forall |j: int| 0 <= j < (n + tail) as int
+            ==> 0 <= (#[trigger] old(out)@[(out_start as int + j)]).sem() < LIMB_BASE(),
+        forall |j: int| 0 <= j < n as int
+            ==> 0 <= (#[trigger] b@[(b_off as int + j)]).sem() < LIMB_BASE(),
+    ensures
+        out@.len() == old(out)@.len(),
+        0 <= carry.sem() < LIMB_BASE(),
+        forall |j: int| 0 <= j < (n + tail) as int
+            ==> 0 <= (#[trigger] out@[(out_start as int + j)]).sem() < LIMB_BASE(),
+        forall |j: int| 0 <= j < out@.len() && !(out_start as int <= j < (out_start + n + tail) as int)
+            ==> out@[j] == old(out)@[j],
+        vec_val(out@.subrange(out_start as int, (out_start + n + tail) as int))
+            + carry.sem() * limb_power((n + tail) as nat)
+            == vec_val(old(out)@.subrange(out_start as int, (out_start + n + tail) as int))
+             + vec_val(b@.subrange(b_off as int, (b_off + n) as int))
+             + overflow.sem() * limb_power(n as nat),
+{
+    let ghost old_out = out@;
+    let ghost S = out_start as int;
+    let ghost N = (n + tail) as int;
+    let ghost B = b_off as int;
+    let total_len = n + tail;
+
+    // Phase 1: add b[0..n] to out[out_start..out_start+n] using lemma_vec_val_set_one
+    let mut add_carry: T = T::zero_val();
+    for i in 0..n
+        invariant
+            n > 0, n + tail == total_len,
+            b@.len() >= b_off + n, b_off + n < usize::MAX,
+            out@.len() == old_out.len(), old_out.len() >= (out_start + total_len),
+            out_start + total_len < usize::MAX,
+            S == out_start as int, N == total_len as int, B == b_off as int,
+            add_carry.sem() == 0 || add_carry.sem() == 1,
+            forall |j: int| 0 <= j < N ==> 0 <= (#[trigger] old_out[(S + j)]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < n as int ==> 0 <= (#[trigger] b@[(B + j)]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[(S + j)]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < old_out.len() && !(S <= j < S + i) ==> out@[j] == old_out[j],
+            vec_val(out@.subrange(S, S + N)) + add_carry.sem() * limb_power(i as nat)
+                == vec_val(old_out.subrange(S, S + N)) + vec_val(b@.subrange(B, B + i)),
+    {
+        let ghost oi_sem = old_out[(S + i as int)].sem();
+        let ghost bi_sem = b@[(B + i as int)].sem();
+        proof {
+            // Position S+i is unmodified: frame says j >= S+i is outside [S, S+i)
+            assert(out@[(S + i as int)] == old_out[(S + i as int)]);
+        }
+        let (digit, next_carry) = out[out_start + i].add3(&b[b_off + i], &add_carry);
+        proof {
+            let x = oi_sem + bi_sem + add_carry.sem();
+            assert(digit.sem() + next_carry.sem() * LIMB_BASE() == x) by(nonlinear_arith)
+                requires digit.sem() == x % LIMB_BASE(),
+                         next_carry.sem() == x / LIMB_BASE(), LIMB_BASE() > 0;
+            assert(x < 2 * LIMB_BASE());
+            assert(next_carry.sem() <= 1) by(nonlinear_arith)
+                requires next_carry.sem() == x / LIMB_BASE(), x >= 0,
+                         x < 2 * LIMB_BASE(), LIMB_BASE() > 0;
+        }
+        let ghost region_pre = out@.subrange(S, S + N);
+        out.set(out_start + i, digit);
+        proof {
+            let region_post = out@.subrange(S, S + N);
+            // Only position i changed in the subrange
+            assert forall |k: int| 0 <= k < region_pre.len() && k != i as int
+                implies region_pre[k] == region_post[k]
+            by {
+                assert(region_pre[k] == out@[(S + k)]);   // pre-set, k != i
+                assert(region_post[k] == out@[(S + k)]);  // post-set
+            }
+            lemma_vec_val_set_one::<T>(region_pre, region_post, i as int);
+            // vec_val(post) == vec_val(pre) + (digit.sem() - oi_sem) * P(i)
+
+            // Extend b: vec_val(b[B..B+i+1]) = vec_val(b[B..B+i]) + bi_sem * P(i)
+            lemma_vec_val_split::<T>(b@.subrange(B, B + i as int + 1), i as nat);
+            let b_tail = b@.subrange(B + i as int, B + i as int + 1);
+            assert(b_tail[0] == b@[(B + i as int)]);
+            reveal_with_fuel(limbs_val, 2);
+            assert(sem_seq(b_tail).len() == 1);
+            assert(sem_seq(b_tail)[0] == bi_sem);
+            assert(sem_seq(b_tail).subrange(1, 1) =~= Seq::<int>::empty());
+            assert(vec_val(b_tail) == bi_sem);
+            assert(b@.subrange(B, B + i as int + 1).subrange(0, i as int) =~= b@.subrange(B, B + i as int));
+            assert(b@.subrange(B, B + i as int + 1).subrange(i as int, i as int + 1) =~= b_tail);
+
+            let p_i = limb_power(i as nat);
+            reveal_with_fuel(limb_power, 2);
+            let p_i1 = limb_power((i + 1) as nat);
+            assert(p_i1 == LIMB_BASE() * p_i);
+
+            // Combine: IH + set_one + b_extension + carry chain → new IH
+            assert(
+                vec_val(region_post) + next_carry.sem() * p_i1
+                == vec_val(old_out.subrange(S, S + N))
+                    + vec_val(b@.subrange(B, B + i as int + 1))
+            ) by(nonlinear_arith)
+                requires
+                    vec_val(region_pre) + add_carry.sem() * p_i
+                        == vec_val(old_out.subrange(S, S + N))
+                            + vec_val(b@.subrange(B, B + i as int)),
+                    vec_val(region_post) == vec_val(region_pre)
+                        + (digit.sem() - oi_sem) * p_i,
+                    digit.sem() + next_carry.sem() * LIMB_BASE() == oi_sem + bi_sem + add_carry.sem(),
+                    vec_val(b@.subrange(B, B + i as int + 1))
+                        == vec_val(b@.subrange(B, B + i as int)) + bi_sem * p_i,
+                    p_i1 == LIMB_BASE() * p_i;
+        }
+        add_carry = next_carry;
+    }
+
+    // Phase 2: total = carry + overflow
+    let (total, _tc_hi) = add_carry.add3(overflow, &T::zero_val());
+    proof {
+        let s = add_carry.sem() + overflow.sem() + 0;
+        assert(s <= 2);
+        // LIMB_BASE = 2^32 > 2, so s < LIMB_BASE: s % LIMB_BASE = s, s / LIMB_BASE = 0
+        assert(s < LIMB_BASE()) by {
+            reveal_with_fuel(limb_power, 2);
+            use crate::fixed_point::limbs::limb_base;
+        }
+        assert(total.sem() == s) by(nonlinear_arith)
+            requires s >= 0, s < LIMB_BASE(), total.sem() == s % LIMB_BASE(), LIMB_BASE() > 0;
+        assert(_tc_hi.sem() == 0) by(nonlinear_arith)
+            requires s >= 0, s < LIMB_BASE(), _tc_hi.sem() == s / LIMB_BASE(), LIMB_BASE() > 0;
+    }
+
+    // Phase 3: propagate total through tail positions
+    let mut prop = total;
+    for i in 0..tail
+        invariant
+            n > 0, n + tail == total_len,
+            out@.len() == old_out.len(), old_out.len() >= (out_start + total_len),
+            out_start + total_len < usize::MAX,
+            S == out_start as int, N == total_len as int,
+            0 <= prop.sem(), prop.sem() < LIMB_BASE(),
+            total.sem() <= 2,
+            forall |j: int| 0 <= j < N ==> 0 <= (#[trigger] old_out[(S + j)]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < n as int + i ==> 0 <= (#[trigger] out@[(S + j)]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < old_out.len() && !(S <= j < S + n as int + i) ==> out@[j] == old_out[j],
+            // Value equation: carry from phase 1 at position n, prop at position n+i
+            vec_val(out@.subrange(S, S + N))
+                + add_carry.sem() * limb_power(n as nat)
+                + prop.sem() * limb_power((n as int + i) as nat)
+                == vec_val(old_out.subrange(S, S + N))
+                    + vec_val(b@.subrange(B, B + n as int))
+                    + total.sem() * limb_power(n as nat),
+    {
+        let ghost ni = n as int + i as int;
+        let ghost oi_sem3 = old_out[(S + ni)].sem();
+        proof {
+            assert(out@[(S + ni)] == old_out[(S + ni)]);
+        }
+        let (s, nc) = out[out_start + n + i].add3(&prop, &T::zero_val());
+        proof {
+            let x3 = oi_sem3 + prop.sem() + 0;
+            assert(s.sem() + nc.sem() * LIMB_BASE() == x3) by(nonlinear_arith)
+                requires s.sem() == x3 % LIMB_BASE(),
+                         nc.sem() == x3 / LIMB_BASE(), LIMB_BASE() > 0;
+            assert(x3 < 2 * LIMB_BASE());
+            assert(nc.sem() < LIMB_BASE()) by(nonlinear_arith)
+                requires nc.sem() == x3 / LIMB_BASE(), x3 >= 0,
+                         x3 < 2 * LIMB_BASE(), LIMB_BASE() > 0;
+        }
+        let ghost region_pre3 = out@.subrange(S, S + N);
+        out.set(out_start + n + i, s);
+        proof {
+            let region_post3 = out@.subrange(S, S + N);
+            assert forall |k: int| 0 <= k < region_pre3.len() && k != ni
+                implies region_pre3[k] == region_post3[k]
+            by {
+                assert(region_post3[k] == out@[(S + k)]);
+            }
+            lemma_vec_val_set_one::<T>(region_pre3, region_post3, ni);
+
+            let p_ni = limb_power(ni as nat);
+            reveal_with_fuel(limb_power, 2);
+            let p_ni1 = limb_power((ni + 1) as nat);
+            assert(p_ni1 == LIMB_BASE() * p_ni);
+
+            assert(
+                vec_val(region_post3)
+                    + add_carry.sem() * limb_power(n as nat)
+                    + nc.sem() * p_ni1
+                == vec_val(old_out.subrange(S, S + N))
+                    + vec_val(b@.subrange(B, B + n as int))
+                    + total.sem() * limb_power(n as nat)
+            ) by(nonlinear_arith)
+                requires
+                    vec_val(region_pre3) + add_carry.sem() * limb_power(n as nat)
+                        + prop.sem() * p_ni
+                        == vec_val(old_out.subrange(S, S + N))
+                            + vec_val(b@.subrange(B, B + n as int))
+                            + total.sem() * limb_power(n as nat),
+                    vec_val(region_post3) == vec_val(region_pre3)
+                        + (s.sem() - oi_sem3) * p_ni,
+                    s.sem() + nc.sem() * LIMB_BASE() == oi_sem3 + prop.sem(),
+                    p_ni1 == LIMB_BASE() * p_ni;
+        }
+        prop = nc;
+    }
+
+    // Final: simplify value equation and bound carry
+    proof {
+        // From the loop: add_carry*P(n) + prop*P(n+tail) cancels with total*P(n)
+        // since total = add_carry + overflow
+        assert(
+            vec_val(out@.subrange(S, S + N)) + prop.sem() * limb_power((n + tail) as nat)
+            == vec_val(old_out.subrange(S, S + N))
+                + vec_val(b@.subrange(B, B + n as int))
+                + overflow.sem() * limb_power(n as nat)
+        ) by(nonlinear_arith)
+            requires
+                vec_val(out@.subrange(S, S + N))
+                    + add_carry.sem() * limb_power(n as nat)
+                    + prop.sem() * limb_power((n + tail) as nat)
+                == vec_val(old_out.subrange(S, S + N))
+                    + vec_val(b@.subrange(B, B + n as int))
+                    + total.sem() * limb_power(n as nat),
+                total.sem() == add_carry.sem() + overflow.sem();
+
+        // Carry bound: prop < LIMB_BASE from loop invariant (already established)
+    }
+    prop
 }
 
 } //  verus!

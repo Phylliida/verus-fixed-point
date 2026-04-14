@@ -2899,8 +2899,96 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         }
     }
 
+    // Step 4b: Carry correction for z1_full.
+    // The schoolbook only computed a_sum_limbs * b_sum_limbs. The true z1_full is:
+    //   (a_sum_limbs + asum_carry*B) * (b_sum_limbs + bsum_carry*B)
+    // Missing terms: asum_carry*b_sum at offset half, bsum_carry*a_sum at offset half,
+    //                asum_carry*bsum_carry at offset n (tracked as z1_overflow).
+
+    // Add asum_carry * b_sum at offset half (branchless via select_limb)
+    let mut cc1 = T::zero_val();
+    for k in 0..half
+        invariant half == n / 2, n >= 4, n <= 0x1FFF_FFFF,
+            scratch@.len() == old(scratch)@.len(), scratch@.len() >= scratch_off + 2 * n,
+            scratch_off + 2 * n < usize::MAX,
+            asum_off == scratch_off + n, bsum_off == scratch_off + n + half,
+            asum_carry.sem() == 0 || asum_carry.sem() == 1,
+            cc1.sem() == 0 || cc1.sem() == 1,
+            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] scratch@[(scratch_off as int + j) as int]).sem() < LIMB_BASE(),
+            // a_sum and b_sum regions preserved from step 3
+            forall |j: int| scratch_off + n <= j < scratch_off + 2 * n ==> scratch@[j as int] == scratch_post_step3[j as int],
+            // valid limbs on a_sum/b_sum (carried from step 3)
+            forall |j: int| 0 <= j < half ==> 0 <= (#[trigger] scratch_post_step3[(asum_off as int + j)]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < half ==> 0 <= (#[trigger] scratch_post_step3[(bsum_off as int + j)]).sem() < LIMB_BASE(),
+    {
+        proof {
+            // b_sum[k] has valid limbs (from scratch_post_step3 via frame)
+            assert(scratch@[(bsum_off + k) as int] == scratch_post_step3[(bsum_off + k) as int]);
+            assert(0 <= scratch@[(bsum_off + k) as int].sem() < LIMB_BASE());
+        }
+        let addend = T::select_limb(&asum_carry, T::zero_val(), scratch[bsum_off + k].clone_limb());
+        let ghost hk = (half + k) as int;
+        let ghost sv = scratch@[(scratch_off as int + hk) as int].sem();
+        proof {
+            assert(0 <= hk && hk < n as int);
+            // Now sv < LIMB_BASE from valid limbs invariant (trigger matches)
+        }
+        let (s, nc) = scratch[scratch_off + half + k].add3(&addend, &cc1);
+        proof {
+            let x = sv + addend.sem() + cc1.sem();
+            assert(x < 2 * LIMB_BASE());
+            assert(nc.sem() <= 1) by(nonlinear_arith)
+                requires nc.sem() == x / LIMB_BASE(), x >= 0,
+                         x < 2 * LIMB_BASE(), LIMB_BASE() > 0;
+        }
+        scratch.set(scratch_off + half + k, s);
+        cc1 = nc;
+    }
+
+    // Add bsum_carry * a_sum at offset half (branchless via select_limb)
+    let mut cc2 = T::zero_val();
+    for k in 0..half
+        invariant half == n / 2, n >= 4, n <= 0x1FFF_FFFF,
+            scratch@.len() == old(scratch)@.len(), scratch@.len() >= scratch_off + 2 * n,
+            scratch_off + 2 * n < usize::MAX,
+            asum_off == scratch_off + n, bsum_off == scratch_off + n + half,
+            bsum_carry.sem() == 0 || bsum_carry.sem() == 1,
+            cc2.sem() == 0 || cc2.sem() == 1,
+            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] scratch@[(scratch_off as int + j) as int]).sem() < LIMB_BASE(),
+            forall |j: int| scratch_off + n <= j < scratch_off + 2 * n ==> scratch@[j as int] == scratch_post_step3[j as int],
+            forall |j: int| 0 <= j < half ==> 0 <= (#[trigger] scratch_post_step3[(asum_off as int + j)]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < half ==> 0 <= (#[trigger] scratch_post_step3[(bsum_off as int + j)]).sem() < LIMB_BASE(),
+    {
+        proof {
+            assert(scratch@[(asum_off + k) as int] == scratch_post_step3[(asum_off + k) as int]);
+            assert(0 <= scratch@[(asum_off + k) as int].sem() < LIMB_BASE());
+        }
+        let addend = T::select_limb(&bsum_carry, T::zero_val(), scratch[asum_off + k].clone_limb());
+        let ghost hk2 = (half + k) as int;
+        let ghost sv = scratch@[(scratch_off as int + hk2) as int].sem();
+        proof {
+            assert(0 <= hk2 && hk2 < n as int);
+        }
+        let (s, nc) = scratch[scratch_off + half + k].add3(&addend, &cc2);
+        proof {
+            let x = sv + addend.sem() + cc2.sem();
+            assert(x < 2 * LIMB_BASE());
+            assert(nc.sem() <= 1) by(nonlinear_arith)
+                requires nc.sem() == x / LIMB_BASE(), x >= 0,
+                         x < 2 * LIMB_BASE(), LIMB_BASE() > 0;
+        }
+        scratch.set(scratch_off + half + k, s);
+        cc2 = nc;
+    }
+
+    // z1_overflow at position n: cc1 + cc2 + asum_carry*bsum_carry
+    let (ca_cb, _) = asum_carry.mul2(&bsum_carry);
+    let (temp_ov, _) = cc1.add3(&cc2, &T::zero_val());
+    let (z1_overflow, _) = temp_ov.add3(&ca_cb, &T::zero_val());
+
     // Step 5: z1 = z1_full - z0 - z2
-    // After step 4, scratch[scratch_off..scratch_off+n] has z1_full from schoolbook (valid limbs).
+    // After step 4+4b, scratch[scratch_off..scratch_off+n] has corrected z1_full (valid limbs).
+    // z1_overflow holds the extra limb at position n.
     // out[out_off..out_off+2n] has z0 and z2 from schoolbook (valid limbs).
     let mut borrow1 = T::zero_val();
     for i in 0..n
@@ -2944,48 +3032,40 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         borrow2 = bw;
     }
 
-    // Step 6: out[half..half+n] += z1
-    // Need valid_limbs on out (from schoolbook steps 1-2) and scratch (from step 4-5)
-    // for add3 preconditions.
-    let ghost out_pre_step6 = out@;
-    let mut carry = T::zero_val();
-    for i in 0..n
-        invariant n >= 4, n <= 0x1FFF_FFFF, half == n / 2,
-            out@.len() >= out_off + 2 * n, out@.len() == old(out)@.len(),
-            out_off + 2 * n < usize::MAX,
-            scratch@.len() >= scratch_off + 2 * n, scratch@.len() == old(scratch)@.len(),
-            scratch_off + 2 * n < usize::MAX,
-            carry.sem() == 0 || carry.sem() == 1,
-            // Valid limbs on scratch z1 region (from sub_borrow, which ensures [0, LIMB_BASE))
-            forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] scratch@[(scratch_off as int + j) as int]).sem() < LIMB_BASE(),
-            // Valid limbs on out region: already-processed elements written by add3,
-            // not-yet-processed elements from schoolbook
-            forall |j: int| 0 <= j < 2 * n
-                ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
+    // Step 5b: z1_final_overflow = z1_overflow - borrow1 - borrow2
+    // This is the carry at position n of z1 (0 or 1 in practice).
+    let (temp_ov2, _) = z1_overflow.sub_borrow(&borrow1, &T::zero_val());
+    let (z1_final_overflow, _) = temp_ov2.sub_borrow(&borrow2, &T::zero_val());
+
+    // Step 6: out[half..half+n+half] += z1 (n limbs) + z1_final_overflow at position n
+    // Use add_inplace_propagate which adds z1 at offset half and propagates carry through
+    // the remaining half positions.
     {
-        let out_idx = out_off + half + i;
-        let ghost pre_a = out@[out_idx as int].sem();
-        let ghost pre_b = scratch@[(scratch_off + i) as int].sem();
-        let ghost pre_carry = carry.sem();
+        use crate::fixed_point::limb_ops_proofs::add_inplace_propagate;
+        let scratch_slice = slice_subrange(&*scratch, scratch_off, scratch.len());
         proof {
-            let jj = (half + i) as int;
-            assert(0 <= jj && jj < 2 * n);
-            assert(out@[(out_off as int + jj) as int].sem() < LIMB_BASE());
-        }
-        let (s, c) = out[out_idx].add3(&scratch[scratch_off + i], &carry);
-        out.set(out_idx, s);
-        carry = c;
-        proof {
-            let total = pre_a + pre_b + pre_carry;
-            assert(total < 2 * LIMB_BASE()) by {
-                assert(pre_a < LIMB_BASE());
-                assert(pre_b < LIMB_BASE());
-                assert(pre_carry <= 1);
+            // z1 in scratch[scratch_off..scratch_off+n] has valid limbs
+            assert forall |j: int| 0 <= j < n as int
+                implies 0 <= (#[trigger] scratch_slice@[(j as int)]).sem() < LIMB_BASE()
+            by {
+                assert(scratch_slice@[j] == scratch@[(scratch_off as int + j) as int]);
             }
-            assert(carry.sem() == total / LIMB_BASE());
-            assert(carry.sem() <= 1) by(nonlinear_arith)
-                requires total < 2 * LIMB_BASE(), carry.sem() == total / LIMB_BASE(), LIMB_BASE() > 0;
+            // out[out_off+half..out_off+2n] has valid limbs (n+half = 3n/2 positions)
+            assert forall |j: int| 0 <= j < (n + half) as int
+                implies 0 <= (#[trigger] out@[((out_off + half) as int + j)]).sem() < LIMB_BASE()
+            by {
+                let jj = (half as int + j);
+                assert(0 <= jj && jj < 2 * n as int);
+                assert(out@[(out_off as int + jj) as int].sem() < LIMB_BASE());
+            }
         }
+        let _carry = add_inplace_propagate(
+            out, out_off + half,
+            scratch_slice, 0,
+            n,
+            &z1_final_overflow,
+            half,
+        );
     }
 
     // Proof: connect output to a × b via Karatsuba identity
