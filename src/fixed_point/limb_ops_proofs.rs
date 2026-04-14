@@ -403,6 +403,98 @@ pub proof fn lemma_karatsuba_z1_overflow_bound(
                  P > 0;
 }
 
+/// Establish that z1_full = (a_lo+a_hi)(b_lo+b_hi) from the step 3/4/4b value equations,
+/// and derive the bounds needed for lemma_karatsuba_z1_overflow_bound.
+pub proof fn lemma_karatsuba_z1_full_bounds(
+    a_sum_val: int, b_sum_val: int,
+    asum_carry: int, bsum_carry: int,
+    a_lo_val: int, a_hi_val: int,
+    b_lo_val: int, b_hi_val: int,
+    schoolbook_val: int,
+    z1_full_val: int,
+    z0_val: int, z2_val: int,
+    B: int, P: int,
+)
+    requires
+        // Step 3: a_sum + carry*B = a_lo + a_hi
+        a_sum_val + asum_carry * B == a_lo_val + a_hi_val,
+        b_sum_val + bsum_carry * B == b_lo_val + b_hi_val,
+        asum_carry == 0 || asum_carry == 1,
+        bsum_carry == 0 || bsum_carry == 1,
+        // Step 4: schoolbook = a_sum * b_sum
+        schoolbook_val == a_sum_val * b_sum_val,
+        // Step 4b: z1_full = (a_sum + ca*B)(b_sum + cb*B)
+        // This is what the carry correction computes
+        z1_full_val == schoolbook_val
+            + asum_carry * B * b_sum_val
+            + bsum_carry * B * a_sum_val
+            + asum_carry * bsum_carry * B * B,
+        // Input bounds
+        0 <= a_lo_val, a_lo_val < B,
+        0 <= a_hi_val, a_hi_val < B,
+        0 <= b_lo_val, b_lo_val < B,
+        0 <= b_hi_val, b_hi_val < B,
+        0 <= a_sum_val, a_sum_val < B,
+        0 <= b_sum_val, b_sum_val < B,
+        // z0 = a_lo*b_lo, z2 = a_hi*b_hi
+        z0_val == a_lo_val * b_lo_val,
+        z2_val == a_hi_val * b_hi_val,
+        // P = B^2
+        P == B * B, B > 0,
+    ensures
+        z1_full_val == (a_lo_val + a_hi_val) * (b_lo_val + b_hi_val),
+        z1_full_val >= z0_val + z2_val,
+        z1_full_val < z0_val + z2_val + 2 * P,
+{
+    // z1_full = (a_sum + ca*B)(b_sum + cb*B) = (a_lo + a_hi)(b_lo + b_hi)
+    let A = a_sum_val + asum_carry * B;
+    let C = b_sum_val + bsum_carry * B;
+    assert(A == a_lo_val + a_hi_val);
+    assert(C == b_lo_val + b_hi_val);
+    // Two-step distributive expansion: A*C = (a_sum + ca*B) * C
+    //   = a_sum*C + ca*B*C
+    assert(A * C == a_sum_val * C + asum_carry * B * C) by(nonlinear_arith)
+        requires A == a_sum_val + asum_carry * B;
+    // Now expand each: a_sum*C = a_sum*b_sum + a_sum*cb*B
+    //                  ca*B*C = ca*B*b_sum + ca*cb*B*B
+    assert(a_sum_val * C == a_sum_val * b_sum_val + a_sum_val * bsum_carry * B) by(nonlinear_arith)
+        requires C == b_sum_val + bsum_carry * B;
+    assert(asum_carry * B * C == asum_carry * B * b_sum_val + asum_carry * bsum_carry * B * B) by(nonlinear_arith)
+        requires C == b_sum_val + bsum_carry * B;
+    // z1_full_val = schoolbook + corrections = a_sum*b_sum + ca*B*b_sum + cb*B*a_sum + ca*cb*B²
+    // = a_sum*C + ca*B*C = A*C (from above)
+    assert(z1_full_val == a_sum_val * C + asum_carry * B * C) by(nonlinear_arith)
+        requires
+            z1_full_val == schoolbook_val
+                + asum_carry * B * b_sum_val
+                + bsum_carry * B * a_sum_val
+                + asum_carry * bsum_carry * B * B,
+            schoolbook_val == a_sum_val * b_sum_val,
+            a_sum_val * C == a_sum_val * b_sum_val + a_sum_val * bsum_carry * B,
+            asum_carry * B * C == asum_carry * B * b_sum_val + asum_carry * bsum_carry * B * B;
+    assert(z1_full_val == A * C);
+    assert(z1_full_val == (a_lo_val + a_hi_val) * (b_lo_val + b_hi_val));
+
+    // z1_full - z0 - z2 = cross terms >= 0
+    // (a_lo+a_hi)(b_lo+b_hi) - a_lo*b_lo - a_hi*b_hi = a_lo*b_hi + a_hi*b_lo >= 0
+    assert(z1_full_val >= z0_val + z2_val) by(nonlinear_arith)
+        requires
+            z1_full_val == (a_lo_val + a_hi_val) * (b_lo_val + b_hi_val),
+            z0_val == a_lo_val * b_lo_val,
+            z2_val == a_hi_val * b_hi_val,
+            a_lo_val >= 0, a_hi_val >= 0, b_lo_val >= 0, b_hi_val >= 0;
+
+    // cross = a_lo*b_hi + a_hi*b_lo < 2*B^2 = 2*P
+    assert(z1_full_val < z0_val + z2_val + 2 * P) by(nonlinear_arith)
+        requires
+            z1_full_val == (a_lo_val + a_hi_val) * (b_lo_val + b_hi_val),
+            z0_val == a_lo_val * b_lo_val,
+            z2_val == a_hi_val * b_hi_val,
+            a_lo_val < B, a_hi_val < B, b_lo_val < B, b_hi_val < B,
+            a_lo_val >= 0, a_hi_val >= 0, b_lo_val >= 0, b_hi_val >= 0,
+            P == B * B, B > 0;
+}
+
 /// Add b[b_off..b_off+n] to out[out_start..out_start+n] in-place,
 /// then add `overflow` at position n, then propagate carry through
 /// out[out_start+n..out_start+n+tail].

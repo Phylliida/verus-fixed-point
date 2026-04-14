@@ -2791,120 +2791,86 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
     }
 
     // Step 3: a_sum = a_lo + a_hi, b_sum = b_lo + b_hi → scratch
+    // Use add_limbs_to which has a proven value equation postcondition.
     let asum_off = scratch_off + n;
     let bsum_off = scratch_off + n + half;
-    let mut asum_carry = T::zero_val();
-    let mut bsum_carry = T::zero_val();
-    for i in 0..half
-        invariant
-            half == n / 2, n >= 4, n % 2 == 0, n <= 0x1FFF_FFFF,
-            a@.len() >= a_off + n, b@.len() >= b_off + n,
-            a_off + n < usize::MAX, b_off + n < usize::MAX,
-            scratch@.len() == old(scratch)@.len(),
-            scratch@.len() >= scratch_off + 2 * n,
-            scratch_off + 2 * n < usize::MAX,
-            asum_off == scratch_off + n, bsum_off == scratch_off + n + half,
-            asum_carry.sem() == 0 || asum_carry.sem() == 1,
-            bsum_carry.sem() == 0 || bsum_carry.sem() == 1,
-            valid_limbs(a@), valid_limbs(b@),
-            forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] scratch@[(asum_off as int + j) as int]).sem() < LIMB_BASE(),
-            forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] scratch@[(bsum_off as int + j) as int]).sem() < LIMB_BASE(),
-    {
-        let (s, c) = a[a_off + i].add3(&a[a_off + half + i], &asum_carry);
-        scratch.set(asum_off + i, s);
-        asum_carry = c;
-        let (s2, c2) = b[b_off + i].add3(&b[b_off + half + i], &bsum_carry);
-        scratch.set(bsum_off + i, s2);
-        bsum_carry = c2;
+    let a_lo_slice = slice_subrange(a, a_off, a.len());
+    let a_hi_slice = slice_subrange(a, a_off + half, a.len());
+    let asum_carry = add_limbs_to(a_lo_slice, a_hi_slice, scratch, asum_off, half);
+    // Postcondition: limbs_val(sem_seq(scratch[asum_off..asum_off+half])) + asum_carry * P(half)
+    //   == limbs_val(sem_seq(a_lo[0..half])) + limbs_val(sem_seq(a_hi[0..half]))
+
+    let b_lo_slice = slice_subrange(b, b_off, b.len());
+    let b_hi_slice = slice_subrange(b, b_off + half, b.len());
+    let bsum_carry = add_limbs_to(b_lo_slice, b_hi_slice, scratch, bsum_off, half);
+
+    // Ghost: capture a_sum value equation in terms of vec_val
+    let ghost a_sum_seq = scratch@.subrange(asum_off as int, (asum_off + half) as int);
+    let ghost b_sum_seq = scratch@.subrange(bsum_off as int, (bsum_off + half) as int);
+    proof {
+        // Connect add_limbs_to postcondition to vec_val of ghost sequences
+        assert(a_lo_slice@.subrange(0, half as int) =~= a_lo_seq);
+        assert(a_hi_slice@.subrange(0, half as int) =~= a_hi_seq);
+        assert(b_lo_slice@.subrange(0, half as int) =~= b_lo_seq);
+        assert(b_hi_slice@.subrange(0, half as int) =~= b_hi_seq);
     }
 
     // Step 4: z1_full = a_sum × b_sum → scratch[scratch_off..scratch_off+n]
+    // Copy a_sum and b_sum to temporary Vecs to avoid aliasing, then call mul_schoolbook_to.
     let ghost scratch_post_step3 = scratch@;
-    proof {
-        assert(valid_limbs(scratch@.subrange(asum_off as int, (asum_off + half) as int))) by {
-            assert forall |j: int| 0 <= j < half as int
-                implies 0 <= (#[trigger] scratch@.subrange(asum_off as int, (asum_off + half) as int)[j]).sem()
-                    && scratch@.subrange(asum_off as int, (asum_off + half) as int)[j].sem() < LIMB_BASE()
-            by {
-                assert(scratch@.subrange(asum_off as int, (asum_off + half) as int)[j] == scratch@[(asum_off as int + j) as int]);
-            }
-        }
-        assert(valid_limbs(scratch@.subrange(bsum_off as int, (bsum_off + half) as int))) by {
-            assert forall |j: int| 0 <= j < half as int
-                implies 0 <= (#[trigger] scratch@.subrange(bsum_off as int, (bsum_off + half) as int)[j]).sem()
-                    && scratch@.subrange(bsum_off as int, (bsum_off + half) as int)[j].sem() < LIMB_BASE()
-            by {
-                assert(scratch@.subrange(bsum_off as int, (bsum_off + half) as int)[j] == scratch@[(bsum_off as int + j) as int]);
-            }
-        }
-    }
-    // Can't slice scratch while also passing it as &mut — need to copy sums to out temporarily.
-    // Actually, mul_schoolbook_to takes a: &[T], b: &[T], out: &mut Vec<T>.
-    // a and b are immutable borrows, out is mutable. Since a_sum and b_sum are IN scratch,
-    // and the output also goes to scratch, we have aliasing.
-    // Fix: copy a_sum/b_sum to the out buffer temporarily (unused region).
-    // out[out_off..out_off+half] is z0_lo which we still need — can't use it.
-    // Actually, z0 is in out[out_off..out_off+n] and z2 is in out[out_off+n..out_off+2n].
-    // We can't easily borrow scratch immutably while also writing to it.
-    //
-    // Alternative approach: swap the roles — put a_sum/b_sum in the OUT buffer's
-    // z0 region (we'll restore z0 after), or use a different strategy.
-    //
-    // Simplest fix: compute z1_full using a manual schoolbook loop with offset indexing.
-    // This avoids the aliasing issue entirely.
+    let mut a_sum_vec: Vec<T> = Vec::new();
+    let mut b_sum_vec: Vec<T> = Vec::new();
+    for k in 0..half
+        invariant half == n / 2, n >= 4, n <= 0x1FFF_FFFF,
+            scratch@.len() >= scratch_off + 2 * n, scratch_off + 2 * n < usize::MAX,
+            asum_off == scratch_off + n, bsum_off == scratch_off + n + half,
+            a_sum_vec@.len() == k, b_sum_vec@.len() == k,
+            forall |j: int| 0 <= j < k ==> (#[trigger] a_sum_vec@[j]).sem() == scratch@[(asum_off as int + j) as int].sem(),
+            forall |j: int| 0 <= j < k ==> (#[trigger] b_sum_vec@[j]).sem() == scratch@[(bsum_off as int + j) as int].sem(),
+            forall |j: int| 0 <= j < k ==> 0 <= (#[trigger] a_sum_vec@[j]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < k ==> 0 <= (#[trigger] b_sum_vec@[j]).sem() < LIMB_BASE(),
+            // Carry forward valid limbs from add_limbs_to
+            forall |j: int| 0 <= j < half ==> 0 <= (#[trigger] scratch@[(asum_off as int + j) as int]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < half ==> 0 <= (#[trigger] scratch@[(bsum_off as int + j) as int]).sem() < LIMB_BASE(),
     {
-        let nn = 2 * half;
-        // Zero scratch[scratch_off..scratch_off+nn] for z1_full output
-        for i in 0..nn
-            invariant scratch@.len() == old(scratch)@.len(), scratch@.len() >= scratch_off + 2 * n,
-                nn == 2 * half, half == n / 2, n >= 4, scratch_off + 2 * n < usize::MAX,
-                asum_off == scratch_off + n, bsum_off == scratch_off + n + half,
-                // zeroed elements are valid limbs
-                forall |j: int| 0 <= j < i ==> (#[trigger] scratch@[(scratch_off as int + j) as int]).sem() == 0,
-                // frame: a_sum and b_sum regions preserved (zeroing only touches [scratch_off, scratch_off+n))
-                forall |j: int| scratch_off + nn <= j < scratch@.len() as int ==> scratch@[j] == scratch_post_step3[j],
-        { scratch.set(scratch_off + i, T::zero_val()); }
-        // Schoolbook: z1_full[i+j] += a_sum[i] * b_sum[j]
-        for i in 0..half
-            invariant half == n / 2, n >= 4, n <= 0x1FFF_FFFF,
-                scratch@.len() == old(scratch)@.len(), scratch@.len() >= scratch_off + 2 * n,
-                asum_off == scratch_off + n, bsum_off == scratch_off + n + half,
-                scratch_off + 2 * n < usize::MAX,
-                // valid limbs on z1_full output so far
-                forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] scratch@[(scratch_off as int + j) as int]).sem() < LIMB_BASE(),
-                // a_sum and b_sum regions are outside [scratch_off, scratch_off+n) so preserved
-                // by both zeroing and schoolbook writes to z1_full
-                forall |j: int| scratch_off + n <= j < scratch_off + 2 * n ==> scratch@[j as int] == scratch_post_step3[j as int],
-        {
-            let mut carry = T::zero_val();
-            for j in 0..half
-                invariant half == n / 2, n >= 4, n <= 0x1FFF_FFFF,
-                    scratch@.len() == old(scratch)@.len(), scratch@.len() >= scratch_off + 2 * n,
-                    asum_off == scratch_off + n, bsum_off == scratch_off + n + half,
-                    scratch_off + 2 * n < usize::MAX,
-                    i < half,
-                    carry.sem() >= 0, carry.sem() < LIMB_BASE(),
-                    // a_sum/b_sum preserved (outside z1_full write region)
-                    forall |k: int| scratch_off + n <= k < scratch_off + 2 * n ==> scratch@[k as int] == scratch_post_step3[k as int],
-                    // valid limbs on z1_full output
-                    forall |k: int| 0 <= k < n ==> 0 <= (#[trigger] scratch@[(scratch_off as int + k) as int]).sem() < LIMB_BASE(),
-            {
-                let (prod_lo, prod_hi) = scratch[asum_off + i].mul2(&scratch[bsum_off + j]);
-                let (sum1, c1) = prod_lo.add3(&scratch[scratch_off + i + j], &carry);
-                let (new_carry, _c2) = prod_hi.add3(&c1, &T::zero_val());
-                scratch.set(scratch_off + i + j, sum1);
-                carry = new_carry;
-            }
-            scratch.set(scratch_off + i + half, carry);
+        a_sum_vec.push(scratch[asum_off + k].clone_limb());
+        b_sum_vec.push(scratch[bsum_off + k].clone_limb());
+    }
+    proof {
+        assert(valid_limbs(a_sum_vec@)) by {
+            assert forall |j: int| 0 <= j < a_sum_vec@.len()
+                implies 0 <= (#[trigger] a_sum_vec@[j]).sem() < LIMB_BASE() by {}
         }
+        assert(valid_limbs(b_sum_vec@)) by {
+            assert forall |j: int| 0 <= j < b_sum_vec@.len()
+                implies 0 <= (#[trigger] b_sum_vec@[j]).sem() < LIMB_BASE() by {}
+        }
+        // vec_val of copies == vec_val of originals
+        assert forall |j: int| 0 <= j < a_sum_vec@.len()
+            implies (#[trigger] a_sum_vec@[j]).sem() == a_sum_seq[j].sem()
+        by {
+            assert(a_sum_vec@[j].sem() == scratch@[(asum_off as int + j) as int].sem());
+            assert(a_sum_seq[j] == scratch@[(asum_off as int + j) as int]);
+        }
+        lemma_vec_val_eq_from_sem_eq::<T>(a_sum_vec@, a_sum_seq);
+        assert forall |j: int| 0 <= j < b_sum_vec@.len()
+            implies (#[trigger] b_sum_vec@[j]).sem() == b_sum_seq[j].sem()
+        by {
+            assert(b_sum_vec@[j].sem() == scratch@[(bsum_off as int + j) as int].sem());
+            assert(b_sum_seq[j] == scratch@[(bsum_off as int + j) as int]);
+        }
+        lemma_vec_val_eq_from_sem_eq::<T>(b_sum_vec@, b_sum_seq);
+    }
+    mul_schoolbook_to(&a_sum_vec, &b_sum_vec, scratch, scratch_off, half);
+    // Postcondition: vec_val(scratch[scratch_off..scratch_off+n])
+    //   == vec_val(a_sum_vec[0..half]) * vec_val(b_sum_vec[0..half])
+    //   == vec_val(a_sum_seq) * vec_val(b_sum_seq)
+    proof {
+        assert(a_sum_vec@.subrange(0, half as int) =~= a_sum_vec@);
+        assert(b_sum_vec@.subrange(0, half as int) =~= b_sum_vec@);
     }
 
-    // Step 4b: Carry correction for z1_full.
-    // The schoolbook only computed a_sum_limbs * b_sum_limbs. The true z1_full is:
-    //   (a_sum_limbs + asum_carry*B) * (b_sum_limbs + bsum_carry*B)
-    // Missing terms: asum_carry*b_sum at offset half, bsum_carry*a_sum at offset half,
-    //                asum_carry*bsum_carry at offset n (tracked as z1_overflow).
-
+    // Step 4b: Carry correction using the copied Vecs (no aliasing issues).
     // Add asum_carry * b_sum at offset half (branchless via select_limb)
     let mut cc1 = T::zero_val();
     for k in 0..half
@@ -2914,25 +2880,14 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
             asum_off == scratch_off + n, bsum_off == scratch_off + n + half,
             asum_carry.sem() == 0 || asum_carry.sem() == 1,
             cc1.sem() == 0 || cc1.sem() == 1,
+            a_sum_vec@.len() == half, b_sum_vec@.len() == half,
+            valid_limbs(a_sum_vec@), valid_limbs(b_sum_vec@),
             forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] scratch@[(scratch_off as int + j) as int]).sem() < LIMB_BASE(),
-            // a_sum and b_sum regions preserved from step 3
-            forall |j: int| scratch_off + n <= j < scratch_off + 2 * n ==> scratch@[j as int] == scratch_post_step3[j as int],
-            // valid limbs on a_sum/b_sum (carried from step 3)
-            forall |j: int| 0 <= j < half ==> 0 <= (#[trigger] scratch_post_step3[(asum_off as int + j)]).sem() < LIMB_BASE(),
-            forall |j: int| 0 <= j < half ==> 0 <= (#[trigger] scratch_post_step3[(bsum_off as int + j)]).sem() < LIMB_BASE(),
     {
-        proof {
-            // b_sum[k] has valid limbs (from scratch_post_step3 via frame)
-            assert(scratch@[(bsum_off + k) as int] == scratch_post_step3[(bsum_off + k) as int]);
-            assert(0 <= scratch@[(bsum_off + k) as int].sem() < LIMB_BASE());
-        }
-        let addend = T::select_limb(&asum_carry, T::zero_val(), scratch[bsum_off + k].clone_limb());
+        let addend = T::select_limb(&asum_carry, T::zero_val(), b_sum_vec[k].clone_limb());
         let ghost hk = (half + k) as int;
         let ghost sv = scratch@[(scratch_off as int + hk) as int].sem();
-        proof {
-            assert(0 <= hk && hk < n as int);
-            // Now sv < LIMB_BASE from valid limbs invariant (trigger matches)
-        }
+        proof { assert(0 <= hk && hk < n as int); }
         let (s, nc) = scratch[scratch_off + half + k].add3(&addend, &cc1);
         proof {
             let x = sv + addend.sem() + cc1.sem();
@@ -2945,7 +2900,7 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         cc1 = nc;
     }
 
-    // Add bsum_carry * a_sum at offset half (branchless via select_limb)
+    // Add bsum_carry * a_sum at offset half
     let mut cc2 = T::zero_val();
     for k in 0..half
         invariant half == n / 2, n >= 4, n <= 0x1FFF_FFFF,
@@ -2954,21 +2909,14 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
             asum_off == scratch_off + n, bsum_off == scratch_off + n + half,
             bsum_carry.sem() == 0 || bsum_carry.sem() == 1,
             cc2.sem() == 0 || cc2.sem() == 1,
+            a_sum_vec@.len() == half, b_sum_vec@.len() == half,
+            valid_limbs(a_sum_vec@), valid_limbs(b_sum_vec@),
             forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] scratch@[(scratch_off as int + j) as int]).sem() < LIMB_BASE(),
-            forall |j: int| scratch_off + n <= j < scratch_off + 2 * n ==> scratch@[j as int] == scratch_post_step3[j as int],
-            forall |j: int| 0 <= j < half ==> 0 <= (#[trigger] scratch_post_step3[(asum_off as int + j)]).sem() < LIMB_BASE(),
-            forall |j: int| 0 <= j < half ==> 0 <= (#[trigger] scratch_post_step3[(bsum_off as int + j)]).sem() < LIMB_BASE(),
     {
-        proof {
-            assert(scratch@[(asum_off + k) as int] == scratch_post_step3[(asum_off + k) as int]);
-            assert(0 <= scratch@[(asum_off + k) as int].sem() < LIMB_BASE());
-        }
-        let addend = T::select_limb(&bsum_carry, T::zero_val(), scratch[asum_off + k].clone_limb());
+        let addend = T::select_limb(&bsum_carry, T::zero_val(), a_sum_vec[k].clone_limb());
         let ghost hk2 = (half + k) as int;
         let ghost sv = scratch@[(scratch_off as int + hk2) as int].sem();
-        proof {
-            assert(0 <= hk2 && hk2 < n as int);
-        }
+        proof { assert(0 <= hk2 && hk2 < n as int); }
         let (s, nc) = scratch[scratch_off + half + k].add3(&addend, &cc2);
         proof {
             let x = sv + addend.sem() + cc2.sem();
