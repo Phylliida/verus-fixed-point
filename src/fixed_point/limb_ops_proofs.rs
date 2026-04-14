@@ -776,6 +776,113 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
     z1_overflow
 }
 
+/// Combined helper: establish z1_final_overflow == 0 || 1 from all intermediate values.
+/// Chains lemma_karatsuba_z1_full_bounds + lemma_karatsuba_z1_overflow_bound + sub_borrow unwrapping.
+pub proof fn lemma_karatsuba_overflow_chain(
+    // Step 3 value equations
+    a_sum_val: int, b_sum_val: int,
+    asum_carry_v: int, bsum_carry_v: int,
+    a_lo_v: int, a_hi_v: int, b_lo_v: int, b_hi_v: int,
+    // Step 4
+    schoolbook_val: int,
+    // Step 4b
+    z1_full_val: int, z1_full_n_val: int, z1_overflow_v: int,
+    // Step 5
+    z0_val: int, z2_val: int,
+    scratch_post_sub1_val: int,
+    borrow1_v: int, borrow2_v: int,
+    z1_n: int,
+    // Sub_borrow results
+    temp_ov2_v: int, z1_final_overflow_v: int,
+    // Constants
+    B: int, P: int,
+)
+    requires
+        // Step 3
+        a_sum_val + asum_carry_v * B == a_lo_v + a_hi_v,
+        b_sum_val + bsum_carry_v * B == b_lo_v + b_hi_v,
+        asum_carry_v == 0 || asum_carry_v == 1,
+        bsum_carry_v == 0 || bsum_carry_v == 1,
+        // Step 4
+        schoolbook_val == a_sum_val * b_sum_val,
+        // Step 4b
+        z1_full_val == z1_full_n_val + z1_overflow_v * P,
+        z1_full_n_val + z1_overflow_v * P == schoolbook_val
+            + asum_carry_v * B * b_sum_val
+            + bsum_carry_v * B * a_sum_val
+            + asum_carry_v * bsum_carry_v * B * B,
+        0 <= z1_overflow_v, z1_overflow_v <= 3,
+        // Input bounds
+        0 <= a_lo_v, a_lo_v < B, 0 <= a_hi_v, a_hi_v < B,
+        0 <= b_lo_v, b_lo_v < B, 0 <= b_hi_v, b_hi_v < B,
+        0 <= a_sum_val, a_sum_val < B, 0 <= b_sum_val, b_sum_val < B,
+        // z0/z2
+        z0_val == a_lo_v * b_lo_v, z2_val == a_hi_v * b_hi_v,
+        // Sub_borrow value equations
+        scratch_post_sub1_val == z1_full_n_val - z0_val + borrow1_v * P,
+        z1_n == scratch_post_sub1_val - z2_val + borrow2_v * P,
+        borrow1_v == 0 || borrow1_v == 1,
+        borrow2_v == 0 || borrow2_v == 1,
+        0 <= z1_n, z1_n < P,
+        // Sub_borrow on overflow
+        temp_ov2_v == (z1_overflow_v - borrow1_v - 0 + LIMB_BASE()) % LIMB_BASE(),
+        z1_final_overflow_v == (temp_ov2_v - borrow2_v - 0 + LIMB_BASE()) % LIMB_BASE(),
+        // Constants
+        P == B * B, B > 0, LIMB_BASE() > 3,
+    ensures
+        z1_final_overflow_v == 0 || z1_final_overflow_v == 1,
+{
+    // Step A: z1_full bounds
+    lemma_karatsuba_z1_full_bounds(
+        a_sum_val, b_sum_val,
+        asum_carry_v, bsum_carry_v,
+        a_lo_v, a_hi_v, b_lo_v, b_hi_v,
+        schoolbook_val, z1_full_val, z0_val, z2_val,
+        B, P,
+    );
+    // → z1_full >= z0+z2, z1_full < z0+z2+2P
+
+    // Step B: combined sub_borrow value equation
+    assert(z1_n + (z1_overflow_v - borrow1_v - borrow2_v) * P
+        == z1_full_val - z0_val - z2_val) by(nonlinear_arith)
+        requires
+            scratch_post_sub1_val == z1_full_n_val - z0_val + borrow1_v * P,
+            z1_n == scratch_post_sub1_val - z2_val + borrow2_v * P,
+            z1_full_val == z1_full_n_val + z1_overflow_v * P;
+
+    // Step C: overflow bound
+    lemma_karatsuba_z1_overflow_bound(
+        z1_full_val, z0_val, z2_val,
+        z1_overflow_v, borrow1_v, borrow2_v,
+        z1_n, P,
+    );
+    // → ov_diff = z1_overflow_v - borrow1_v - borrow2_v is 0 or 1
+    let ov_diff = z1_overflow_v - borrow1_v - borrow2_v;
+    assert(ov_diff == 0 || ov_diff == 1);
+    assert(ov_diff >= 0);
+
+    // Step D: sub_borrow unwrapping
+    assert(z1_overflow_v >= borrow1_v + borrow2_v);
+    assert(z1_overflow_v - borrow1_v >= 0);
+    assert(z1_overflow_v - borrow1_v <= 3);
+    assert(temp_ov2_v == z1_overflow_v - borrow1_v) by(nonlinear_arith)
+        requires
+            temp_ov2_v == (z1_overflow_v - borrow1_v + LIMB_BASE()) % LIMB_BASE(),
+            z1_overflow_v - borrow1_v >= 0,
+            z1_overflow_v - borrow1_v <= 3, LIMB_BASE() > 3;
+    assert(temp_ov2_v >= borrow2_v);
+    assert(temp_ov2_v <= 3);
+    assert(temp_ov2_v - borrow2_v >= 0);
+    assert(temp_ov2_v - borrow2_v < LIMB_BASE()) by(nonlinear_arith)
+        requires temp_ov2_v <= 3, borrow2_v >= 0, LIMB_BASE() > 3;
+    assert(z1_final_overflow_v == temp_ov2_v - borrow2_v) by(nonlinear_arith)
+        requires
+            z1_final_overflow_v == (temp_ov2_v - borrow2_v + LIMB_BASE()) % LIMB_BASE(),
+            temp_ov2_v - borrow2_v >= 0,
+            temp_ov2_v - borrow2_v < LIMB_BASE(), LIMB_BASE() > 0;
+    assert(z1_final_overflow_v == ov_diff);
+}
+
 /// Add b[b_off..b_off+n] to out[out_start..out_start+n] in-place,
 /// then add `overflow` at position n, then propagate carry through
 /// out[out_start+n..out_start+n+tail].
