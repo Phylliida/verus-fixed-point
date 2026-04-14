@@ -3109,21 +3109,29 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         proof {
             // From sub_borrow spec: d = (si - oi - bw2 + BASE) % BASE
             // Algebraically: d + oi + bw2_in = si + bw_out * BASE
+            // sub_borrow algebraic equation: d + oi + bw_in == si + bw_out * BASE
+            let ghost diff2 = si_sem - oi_sem - borrow2.sem();
             assert(d.sem() + oi_sem + borrow2.sem() == si_sem + bw.sem() * LIMB_BASE()) by {
-                if si_sem - oi_sem - borrow2.sem() >= 0 {
+                if diff2 >= 0 {
                     assert(bw.sem() == 0);
-                    assert(d.sem() == si_sem - oi_sem - borrow2.sem()) by(nonlinear_arith)
-                        requires d.sem() == (si_sem - oi_sem - borrow2.sem() + LIMB_BASE()) % LIMB_BASE(),
-                                 si_sem - oi_sem - borrow2.sem() >= 0,
-                                 si_sem < LIMB_BASE(), LIMB_BASE() > 0;
+                    // 0 <= diff2 < LIMB_BASE (since diff2 <= si < BASE)
+                    assert(diff2 < LIMB_BASE()) by(nonlinear_arith)
+                        requires diff2 >= 0, diff2 == si_sem - oi_sem - borrow2.sem(),
+                                 si_sem < LIMB_BASE(), oi_sem >= 0, borrow2.sem() >= 0;
+                    assert(d.sem() == diff2) by(nonlinear_arith)
+                        requires d.sem() == (diff2 + LIMB_BASE()) % LIMB_BASE(),
+                                 diff2 >= 0, diff2 < LIMB_BASE(), LIMB_BASE() > 0;
                 } else {
                     assert(bw.sem() == 1);
-                    assert(d.sem() == si_sem - oi_sem - borrow2.sem() + LIMB_BASE()) by(nonlinear_arith)
-                        requires d.sem() == (si_sem - oi_sem - borrow2.sem() + LIMB_BASE()) % LIMB_BASE(),
-                                 si_sem - oi_sem - borrow2.sem() < 0,
-                                 0 <= si_sem, si_sem < LIMB_BASE(),
-                                 0 <= oi_sem, oi_sem < LIMB_BASE(),
-                                 borrow2.sem() <= 1,
+                    // diff2 + BASE: in range [0, BASE)
+                    assert(diff2 + LIMB_BASE() >= 0) by(nonlinear_arith)
+                        requires diff2 == si_sem - oi_sem - borrow2.sem(),
+                                 si_sem >= 0, oi_sem < LIMB_BASE(), borrow2.sem() <= 1;
+                    assert(diff2 + LIMB_BASE() < LIMB_BASE()) by(nonlinear_arith)
+                        requires diff2 < 0;
+                    assert(d.sem() == diff2 + LIMB_BASE()) by(nonlinear_arith)
+                        requires d.sem() == (diff2 + LIMB_BASE()) % LIMB_BASE(),
+                                 diff2 + LIMB_BASE() >= 0, diff2 + LIMB_BASE() < LIMB_BASE(),
                                  LIMB_BASE() > 0;
                 }
             }
