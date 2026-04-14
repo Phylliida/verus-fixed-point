@@ -1171,7 +1171,7 @@ pub fn karatsuba_combine<T: LimbOps>(
         z1_full_n_val_g@ + z1_overflow.sem() * limb_power(n as nat) == schoolbook_val_g@
             + asum_carry_g@ * limb_power(half as nat) * b_sum_val_g@
             + bsum_carry_g@ * limb_power(half as nat) * a_sum_val_g@
-            + asum_carry_g@ * bsum_carry_g@ * limb_power(half as nat) * limb_power(half as nat),
+            + asum_carry_g@ * bsum_carry_g@ * limb_power(n as nat),
         z0_val_g@ == a_lo_v_g@ * b_lo_v_g@,
         z2_val_g@ == a_hi_v_g@ * b_hi_v_g@,
         // Input bounds
@@ -1187,6 +1187,10 @@ pub fn karatsuba_combine<T: LimbOps>(
         forall |j: int| 0 <= j < 2 * n ==> 0 <= (#[trigger] out@[(out_off as int + j)]).sem() < LIMB_BASE(),
         forall |j: int| 0 <= j < out@.len() && !(out_off as int <= j < (out_off + 2 * n) as int)
             ==> out@[j] == old(out)@[j],
+        // Value equation: output == (a_hi*B + a_lo) * (b_hi*B + b_lo) via Karatsuba identity
+        vec_val(out@.subrange(out_off as int, (out_off + 2 * n) as int))
+            == (a_hi_v_g@ * limb_power(half as nat) + a_lo_v_g@)
+             * (b_hi_v_g@ * limb_power(half as nat) + b_lo_v_g@),
 {
     use vstd::slice::slice_subrange;
 
@@ -1375,6 +1379,20 @@ pub fn karatsuba_combine<T: LimbOps>(
             use crate::fixed_point::limbs::limb_base;
         }
         lemma_limb_power_add(half as nat, half as nat);
+        assert(n == 2 * half);
+        assert(P == B * B);
+        // Convert karatsuba_combine's precondition (using limb_power(n)) to
+        // overflow_chain's format (using B*B)
+        assert(z1_full_n_val + z1_overflow.sem() * P == schoolbook_val_g@
+            + asum_carry_g@ * B * b_sum_val_g@
+            + bsum_carry_g@ * B * a_sum_val_g@
+            + asum_carry_g@ * bsum_carry_g@ * B * B) by(nonlinear_arith)
+            requires
+                z1_full_n_val + z1_overflow.sem() * P == schoolbook_val_g@
+                    + asum_carry_g@ * B * b_sum_val_g@
+                    + bsum_carry_g@ * B * a_sum_val_g@
+                    + asum_carry_g@ * bsum_carry_g@ * P,
+                P == B * B;
 
         lemma_karatsuba_overflow_chain(
             a_sum_val_g@, b_sum_val_g@,
@@ -1414,6 +1432,42 @@ pub fn karatsuba_combine<T: LimbOps>(
             half,
         );
     }
+    // Postcondition: value equation via Karatsuba identity
+    proof {
+        use crate::fixed_point::limbs::lemma_karatsuba_identity;
+
+        let B = limb_power(half as nat);
+        let P = limb_power(n as nat);
+        lemma_limb_power_add(half as nat, half as nat);
+        assert(P == B * B);
+
+        // add_inplace_propagate wrote to out[half..2n]. Its value equation says:
+        // vec_val(out[half..2n]) + carry*P(n+half) = vec_val(old_out[half..2n]) + z1_val + overflow*P(n)
+        // where z1_val = vec_val(z1_limbs), overflow = z1_final_overflow
+
+        // But we DON'T have z1_val separately. We have the add_inplace_propagate postcondition
+        // on vec_val(out[half..2n]). Combined with the unchanged [0..half), we get
+        // vec_val(out[0..2n]) via vec_val_split at half.
+
+        // The old_out region [0..2n] had: z0 at [0..n], z2 at [n..2n]
+        // via vec_val_split at n: vec_val(old_out_region) = z0_val + z2_val * P
+        lemma_vec_val_split::<T>(old_out.subrange(out_off as int, (out_off + 2 * n) as int), n as nat);
+        assert(old_out.subrange(out_off as int, (out_off + 2 * n) as int).subrange(0, n as int)
+            =~= old_out.subrange(out_off as int, (out_off + n) as int));
+        assert(old_out.subrange(out_off as int, (out_off + 2 * n) as int).subrange(n as int, (2 * n) as int)
+            =~= old_out.subrange((out_off + n) as int, (out_off + 2 * n) as int));
+
+        // Karatsuba identity: (a_hi*B + a_lo)(b_hi*B + b_lo) = z0 + z1*B + z2*B²
+        lemma_karatsuba_identity(
+            a_lo_v_g@ as int, a_hi_v_g@ as int,
+            b_lo_v_g@ as int, b_hi_v_g@ as int,
+            B as int,
+        );
+        // → (a_hi*B+a_lo)(b_hi*B+b_lo) = z0 + z1*B + z2*B²
+        // where z0=a_lo*b_lo, z2=a_hi*b_hi,
+        //       z1=(a_lo+a_hi)(b_lo+b_hi)-z0-z2
+    }
+
     // Postcondition: valid limbs on full 2n region
     // add_inplace_propagate guarantees valid limbs on [half, 2n)
     // Positions [0, half) were unchanged (frame from add_inplace_propagate)

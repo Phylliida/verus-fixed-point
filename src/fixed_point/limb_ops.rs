@@ -2936,10 +2936,16 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
             assert(step3_b_eq);
             assert(avec_eq);
             assert(bvec_eq);
-            // Connect carry_correct postcondition terms
             assert(vec_val(a_sum_vec@) == vec_val(a_sum_seq));
             assert(vec_val(b_sum_vec@) == vec_val(b_sum_seq));
             lemma_limb_power_add(half as nat, half as nat);
+            // Input bounds
+            lemma_vec_val_bounded::<T>(a_lo_seq);
+            lemma_vec_val_bounded::<T>(a_hi_seq);
+            lemma_vec_val_bounded::<T>(b_lo_seq);
+            lemma_vec_val_bounded::<T>(b_hi_seq);
+            lemma_vec_val_bounded::<T>(a_sum_seq);
+            lemma_vec_val_bounded::<T>(b_sum_seq);
         }
 
         let ghost a_sum_val = vec_val(a_sum_seq);
