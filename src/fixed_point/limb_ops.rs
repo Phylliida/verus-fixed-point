@@ -2965,6 +2965,24 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
             Ghost(vec_val(a_lo_seq)), Ghost(vec_val(a_hi_seq)),
             Ghost(vec_val(b_lo_seq)), Ghost(vec_val(b_hi_seq)),
         );
+        // karatsuba_combine ensures:
+        //   vec_val(output) == (a_hi*B+a_lo)(b_hi*B+b_lo)
+        // Need: vec_val(output) == vec_val(a_sub) * vec_val(b_sub)
+        // where a_sub = a[a_off..a_off+n], b_sub = b[b_off..b_off+n]
+        // and vec_val(a_sub) = vec_val(a_hi)*B + vec_val(a_lo) (from vec_val_split)
+        proof {
+            let a_sub = a@.subrange(a_off as int, (a_off + n) as int);
+            let b_sub = b@.subrange(b_off as int, (b_off + n) as int);
+            lemma_vec_val_split::<T>(a_sub, half as nat);
+            assert(a_sub.subrange(0, half as int) =~= a_lo_seq);
+            assert(a_sub.subrange(half as int, n as int) =~= a_hi_seq);
+            lemma_vec_val_split::<T>(b_sub, half as nat);
+            assert(b_sub.subrange(0, half as int) =~= b_lo_seq);
+            assert(b_sub.subrange(half as int, n as int) =~= b_hi_seq);
+            // vec_val(a_sub) = vec_val(a_lo) + vec_val(a_hi)*B
+            //                = a_lo_v + a_hi_v * B = a_hi*B + a_lo
+            // vec_val(b_sub) = b_lo_v + b_hi_v * B = b_hi*B + b_lo
+        }
     }
 }
 
