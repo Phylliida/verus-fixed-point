@@ -3100,28 +3100,33 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
                     + borrow2.sem() * limb_power(i as nat),
     {
         let ghost si_sem = scratch@[(scratch_off as int + i as int)].sem();
-        let ghost oi_sem = out@[((out_off + n) as int + i as int)].sem();
+        // Use trigger-matching index for oi_sem
+        let ghost j2 = (n as int + i as int);
+        proof { assert(0 <= j2 && j2 < 2 * n as int); }
+        let ghost oi_sem = out@[(out_off as int + j2) as int].sem();
         let ghost region_pre = scratch@.subrange(scratch_off as int, (scratch_off + n) as int);
         let (d, bw) = scratch[scratch_off + i].sub_borrow(&out[out_off + n + i], &borrow2);
-        // Establish sub_borrow equation before set changes scratch
-        let ghost sub_eq2 = d.sem() + oi_sem + borrow2.sem() == si_sem + bw.sem() * LIMB_BASE();
         proof {
-            // From sub_borrow: d = (si - oi - bw2 + BASE) % BASE, bw = if si-oi-bw2<0 then 1 else 0
-            if si_sem - oi_sem - borrow2.sem() >= 0 {
-                assert(bw.sem() == 0);
-                assert(d.sem() == si_sem - oi_sem - borrow2.sem());
-            } else {
-                assert(bw.sem() == 1);
-                assert(d.sem() == (si_sem - oi_sem - borrow2.sem() + LIMB_BASE()) % LIMB_BASE());
-                assert(si_sem - oi_sem - borrow2.sem() + LIMB_BASE() >= 0);
-                assert(si_sem - oi_sem - borrow2.sem() + LIMB_BASE() < LIMB_BASE());
-                assert(d.sem() == si_sem - oi_sem - borrow2.sem() + LIMB_BASE()) by(nonlinear_arith)
-                    requires d.sem() == (si_sem - oi_sem - borrow2.sem() + LIMB_BASE()) % LIMB_BASE(),
-                             0 <= si_sem - oi_sem - borrow2.sem() + LIMB_BASE(),
-                             si_sem - oi_sem - borrow2.sem() + LIMB_BASE() < LIMB_BASE(),
-                             LIMB_BASE() > 0;
+            // From sub_borrow spec: d = (si - oi - bw2 + BASE) % BASE
+            // Algebraically: d + oi + bw2_in = si + bw_out * BASE
+            assert(d.sem() + oi_sem + borrow2.sem() == si_sem + bw.sem() * LIMB_BASE()) by {
+                if si_sem - oi_sem - borrow2.sem() >= 0 {
+                    assert(bw.sem() == 0);
+                    assert(d.sem() == si_sem - oi_sem - borrow2.sem()) by(nonlinear_arith)
+                        requires d.sem() == (si_sem - oi_sem - borrow2.sem() + LIMB_BASE()) % LIMB_BASE(),
+                                 si_sem - oi_sem - borrow2.sem() >= 0,
+                                 si_sem < LIMB_BASE(), LIMB_BASE() > 0;
+                } else {
+                    assert(bw.sem() == 1);
+                    assert(d.sem() == si_sem - oi_sem - borrow2.sem() + LIMB_BASE()) by(nonlinear_arith)
+                        requires d.sem() == (si_sem - oi_sem - borrow2.sem() + LIMB_BASE()) % LIMB_BASE(),
+                                 si_sem - oi_sem - borrow2.sem() < 0,
+                                 0 <= si_sem, si_sem < LIMB_BASE(),
+                                 0 <= oi_sem, oi_sem < LIMB_BASE(),
+                                 borrow2.sem() <= 1,
+                                 LIMB_BASE() > 0;
+                }
             }
-            assert(sub_eq2);
         }
         scratch.set(scratch_off + i, d);
         proof {
@@ -3160,7 +3165,6 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
                         - vec_val(out@.subrange((out_off + n) as int, (out_off + n) as int + i))
                         + borrow2.sem() * p_i,
                     vec_val(region_post) == vec_val(region_pre) + (d.sem() - si_sem) * p_i,
-                    sub_eq2,
                     d.sem() + oi_sem + borrow2.sem() == si_sem + bw.sem() * LIMB_BASE(),
                     vec_val(out@.subrange((out_off + n) as int, (out_off + n) as int + i as int + 1))
                         == vec_val(out@.subrange((out_off + n) as int, (out_off + n) as int + i)) + oi_sem * p_i,
@@ -3247,16 +3251,23 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         // z1_final_overflow = temp_ov2 - borrow2 (no wrapping since temp_ov2 >= borrow2)
         assert(z1_overflow.sem() >= borrow1.sem() + borrow2.sem()) by(nonlinear_arith)
             requires ov_diff >= 0, ov_diff == z1_overflow.sem() - borrow1.sem() - borrow2.sem();
+        assert(LIMB_BASE() > 3) by {
+            reveal_with_fuel(limb_power, 2);
+            use crate::fixed_point::limbs::limb_base;
+        }
+        // sub_borrow(z1_overflow, borrow1, 0): the zero borrow means
+        // temp_ov2 = (z1_overflow - borrow1 - 0 + BASE) % BASE
         assert(temp_ov2.sem() == z1_overflow.sem() - borrow1.sem()) by(nonlinear_arith)
             requires
-                temp_ov2.sem() == (z1_overflow.sem() - borrow1.sem() + LIMB_BASE()) % LIMB_BASE(),
+                temp_ov2.sem() == (z1_overflow.sem() - borrow1.sem() - 0 + LIMB_BASE()) % LIMB_BASE(),
                 z1_overflow.sem() >= borrow1.sem(),
                 z1_overflow.sem() <= 3,
                 borrow1.sem() <= 1,
                 LIMB_BASE() > 3;
+        // sub_borrow(temp_ov2, borrow2, 0)
         assert(z1_final_overflow.sem() == temp_ov2.sem() - borrow2.sem()) by(nonlinear_arith)
             requires
-                z1_final_overflow.sem() == (temp_ov2.sem() - borrow2.sem() + LIMB_BASE()) % LIMB_BASE(),
+                z1_final_overflow.sem() == (temp_ov2.sem() - borrow2.sem() - 0 + LIMB_BASE()) % LIMB_BASE(),
                 temp_ov2.sem() >= borrow2.sem(),
                 temp_ov2.sem() <= 3,
                 borrow2.sem() <= 1,
