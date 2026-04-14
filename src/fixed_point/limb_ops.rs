@@ -2990,6 +2990,12 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
     // After step 4+4b, scratch[scratch_off..scratch_off+n] has corrected z1_full (valid limbs).
     // z1_overflow holds the extra limb at position n.
     // out[out_off..out_off+2n] has z0 and z2 from schoolbook (valid limbs).
+    //
+    // Ghost: z1_full_val = vec_val(scratch[scratch_off..scratch_off+n]) + z1_overflow * limb_power(n)
+    let ghost z1_full_n_val = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
+    let ghost z1_full_val = z1_full_n_val + z1_overflow.sem() * limb_power(n as nat);
+
+    let ghost scratch_pre_sub = scratch@;
     let mut borrow1 = T::zero_val();
     for i in 0..n
         invariant n >= 4, n <= 0x1FFF_FFFF, half == n / 2,
@@ -3012,6 +3018,7 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         scratch.set(scratch_off + i, d);
         borrow1 = bw;
     }
+    let ghost scratch_post_sub1 = scratch@;
     let mut borrow2 = T::zero_val();
     for i in 0..n
         invariant n >= 4, n <= 0x1FFF_FFFF, half == n / 2,
@@ -3033,9 +3040,58 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
     }
 
     // Step 5b: z1_final_overflow = z1_overflow - borrow1 - borrow2
-    // This is the carry at position n of z1 (0 or 1 in practice).
+    // Prove it's 0 or 1 using the Karatsuba z1 overflow bound lemma.
     let (temp_ov2, _) = z1_overflow.sub_borrow(&borrow1, &T::zero_val());
     let (z1_final_overflow, _) = temp_ov2.sub_borrow(&borrow2, &T::zero_val());
+    proof {
+        use crate::fixed_point::limb_ops_proofs::lemma_karatsuba_z1_overflow_bound;
+
+        // z1_n = vec_val of current scratch[scratch_off..scratch_off+n]
+        let z1_n = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
+
+        // Establish: z1_n + (z1_overflow - bw1 - bw2) * P == z1_full_val - z0_val - z2_val
+        // This requires value equation tracking through the sub_borrow loops.
+        // For now, we need z1_full >= z0 + z2 and z1_full < z0 + z2 + 2*P.
+
+        // z1_full_val = (a_lo+a_hi)*(b_lo+b_hi) = z0 + cross + z2 >= z0 + z2
+        // cross = a_lo*b_hi + a_hi*b_lo < 2*P (each product < P)
+
+        let P = limb_power(n as nat);
+        let B = limb_power(half as nat);
+
+        // Bounds on input halves
+        lemma_vec_val_bounded::<T>(a_lo_seq);
+        lemma_vec_val_bounded::<T>(a_hi_seq);
+        lemma_vec_val_bounded::<T>(b_lo_seq);
+        lemma_vec_val_bounded::<T>(b_hi_seq);
+
+        let a_lo_v = vec_val(a_lo_seq);
+        let a_hi_v = vec_val(a_hi_seq);
+        let b_lo_v = vec_val(b_lo_seq);
+        let b_hi_v = vec_val(b_hi_seq);
+
+        // z1_full = (a_lo + a_hi) * (b_lo + b_hi)
+        // z0 = a_lo * b_lo, z2 = a_hi * b_hi
+        // z1_full - z0 - z2 = a_lo*b_hi + a_hi*b_lo (cross terms)
+        // 0 <= cross < 2*B^2 = 2*P (since a_lo, a_hi, b_lo, b_hi < B and B^2 = P)
+
+        // These facts would follow from value equation tracking in the loops
+        // and the Karatsuba identity. For now, use the algebraic bound.
+
+        // TODO: Complete value equation tracking through sub_borrow loops.
+        // The lemma call would be:
+        // lemma_karatsuba_z1_overflow_bound(
+        //     z1_full_val, z0_val, z2_val,
+        //     z1_overflow.sem(), borrow1.sem(), borrow2.sem(),
+        //     z1_n, P,
+        // );
+
+        // Temporary: establish the bound via simpler reasoning
+        // z1_final_overflow.sem() = (z1_overflow - bw1 - bw2 + 2*LIMB_BASE) % LIMB_BASE
+        // Since z1_overflow <= 3 and borrows <= 1 each, z1_overflow - bw1 - bw2 is -2 to 3
+        // With sub_borrow wrapping, the actual sem value depends on the computation
+        // We need the VALUE EQUATION to prove it's actually 0 or 1
+    }
 
     // Step 6: out[half..half+n+half] += z1 (n limbs) + z1_final_overflow at position n
     // Use add_inplace_propagate which adds z1 at offset half and propagates carry through
