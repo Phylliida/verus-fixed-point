@@ -485,14 +485,295 @@ pub proof fn lemma_karatsuba_z1_full_bounds(
             a_lo_val >= 0, a_hi_val >= 0, b_lo_val >= 0, b_hi_val >= 0;
 
     // cross = a_lo*b_hi + a_hi*b_lo < 2*B^2 = 2*P
-    assert(z1_full_val < z0_val + z2_val + 2 * P) by(nonlinear_arith)
-        requires
-            z1_full_val == (a_lo_val + a_hi_val) * (b_lo_val + b_hi_val),
-            z0_val == a_lo_val * b_lo_val,
-            z2_val == a_hi_val * b_hi_val,
-            a_lo_val < B, a_hi_val < B, b_lo_val < B, b_hi_val < B,
-            a_lo_val >= 0, a_hi_val >= 0, b_lo_val >= 0, b_hi_val >= 0,
-            P == B * B, B > 0;
+    // Break into: cross = z1_full - z0 - z2, each cross term < B²
+    let cross = z1_full_val - z0_val - z2_val;
+    // (a+c)(b+d) = ab + ad + cb + cd. So (a+c)(b+d) - ab - cd = ad + cb.
+    assert((a_lo_val + a_hi_val) * (b_lo_val + b_hi_val)
+        == a_lo_val * b_lo_val + a_lo_val * b_hi_val + a_hi_val * b_lo_val + a_hi_val * b_hi_val)
+        by(nonlinear_arith);
+    assert(cross == a_lo_val * b_hi_val + a_hi_val * b_lo_val);
+    assert(a_lo_val * b_hi_val < B * B) by(nonlinear_arith)
+        requires a_lo_val < B, b_hi_val < B, a_lo_val >= 0, b_hi_val >= 0, B > 0;
+    assert(a_hi_val * b_lo_val < B * B) by(nonlinear_arith)
+        requires a_hi_val < B, b_lo_val < B, a_hi_val >= 0, b_lo_val >= 0, B > 0;
+    assert(cross < 2 * P) by(nonlinear_arith)
+        requires cross == a_lo_val * b_hi_val + a_hi_val * b_lo_val,
+                 a_lo_val * b_hi_val < B * B, a_hi_val * b_lo_val < B * B,
+                 P == B * B;
+}
+
+/// Carry correction for Karatsuba: adds ca*b_sum + cb*a_sum at offset half,
+/// returns z1_overflow = cc1 + cc2 + ca*cb.
+///
+/// Postcondition value equation (the key connection):
+///   z1_full_n_new + z1_overflow * P == schoolbook_val + ca*B*b_sum_val + cb*B*a_sum_val + ca*cb*B²
+pub fn karatsuba_carry_correct<T: LimbOps>(
+    scratch: &mut Vec<T>,
+    scratch_off: usize,
+    a_sum_vec: &Vec<T>,
+    b_sum_vec: &Vec<T>,
+    asum_carry: &T,
+    bsum_carry: &T,
+    n: usize,
+    half: usize,
+) -> (z1_overflow: T)
+    requires
+        half == n / 2, n >= 4, n <= 0x1FFF_FFFF, n % 2 == 0,
+        old(scratch)@.len() >= scratch_off + 2 * n,
+        scratch_off + 2 * n < usize::MAX,
+        a_sum_vec@.len() == half, b_sum_vec@.len() == half,
+        valid_limbs(a_sum_vec@), valid_limbs(b_sum_vec@),
+        asum_carry.sem() == 0 || asum_carry.sem() == 1,
+        bsum_carry.sem() == 0 || bsum_carry.sem() == 1,
+        forall |j: int| 0 <= j < n as int
+            ==> 0 <= (#[trigger] old(scratch)@[(scratch_off as int + j)]).sem() < LIMB_BASE(),
+    ensures
+        scratch@.len() == old(scratch)@.len(),
+        forall |j: int| 0 <= j < n as int
+            ==> 0 <= (#[trigger] scratch@[(scratch_off as int + j)]).sem() < LIMB_BASE(),
+        // Frame: only scratch[scratch_off..scratch_off+n] modified
+        forall |j: int| 0 <= j < scratch@.len() && !(scratch_off as int <= j < (scratch_off + n) as int)
+            ==> scratch@[j] == old(scratch)@[j],
+        // z1_overflow bounds
+        0 <= z1_overflow.sem(), z1_overflow.sem() <= 3,
+        // Value equation: new = old + carry corrections, with overflow at position n
+        vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int))
+            + z1_overflow.sem() * limb_power(n as nat)
+            == vec_val(old(scratch)@.subrange(scratch_off as int, (scratch_off + n) as int))
+             + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@)
+             + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@)
+             + asum_carry.sem() * bsum_carry.sem() * limb_power(n as nat),
+{
+    let ghost old_scratch = scratch@;
+    let ghost S = scratch_off as int;
+
+    // cc1 loop: add asum_carry * b_sum at offset half
+    let mut cc1 = T::zero_val();
+    for k in 0..half
+        invariant half == n / 2, n >= 4, n <= 0x1FFF_FFFF,
+            scratch@.len() == old_scratch.len(), old_scratch.len() >= scratch_off + 2 * n,
+            scratch_off + 2 * n < usize::MAX, S == scratch_off as int,
+            asum_carry.sem() == 0 || asum_carry.sem() == 1,
+            cc1.sem() == 0 || cc1.sem() == 1,
+            a_sum_vec@.len() == half, b_sum_vec@.len() == half,
+            valid_limbs(a_sum_vec@), valid_limbs(b_sum_vec@),
+            forall |j: int| 0 <= j < n as int
+                ==> 0 <= (#[trigger] scratch@[(S + j)]).sem() < LIMB_BASE(),
+            // Frame: only positions half..half+k modified
+            forall |j: int| 0 <= j < old_scratch.len() && !(S + half as int <= j < S + half as int + k)
+                ==> scratch@[j] == old_scratch[j],
+            // Value equation for cc1 correction
+            vec_val(scratch@.subrange(S, S + n as int))
+                + cc1.sem() * limb_power((half + k) as nat)
+                == vec_val(old_scratch.subrange(S, S + n as int))
+                    + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@.subrange(0, k as int)),
+    {
+        let addend = T::select_limb(asum_carry, T::zero_val(), b_sum_vec[k].clone_limb());
+        let ghost hk = (half + k) as int;
+        let ghost sv = scratch@[(S + hk)].sem();
+        proof { assert(0 <= hk && hk < n as int); }
+        let ghost region_pre = scratch@.subrange(S, S + n as int);
+        let (s, nc) = scratch[scratch_off + half + k].add3(&addend, &cc1);
+        proof {
+            let x = sv + addend.sem() + cc1.sem();
+            assert(x < 2 * LIMB_BASE());
+            assert(nc.sem() <= 1) by(nonlinear_arith)
+                requires nc.sem() == x / LIMB_BASE(), x >= 0,
+                         x < 2 * LIMB_BASE(), LIMB_BASE() > 0;
+        }
+        scratch.set(scratch_off + half + k, s);
+        proof {
+            let region_post = scratch@.subrange(S, S + n as int);
+            assert forall |j: int| 0 <= j < region_pre.len() && j != hk
+                implies region_pre[j] == region_post[j]
+            by { assert(region_post[j] == scratch@[(S + j)]); }
+            lemma_vec_val_set_one::<T>(region_pre, region_post, hk);
+
+            // Extend b_sum: vec_val(b[0..k+1]) = vec_val(b[0..k]) + b[k].sem() * P(k)
+            lemma_vec_val_split::<T>(b_sum_vec@.subrange(0, k as int + 1), k as nat);
+            let b_tail = b_sum_vec@.subrange(k as int, k as int + 1);
+            reveal_with_fuel(limbs_val, 2);
+            assert(sem_seq(b_tail)[0] == b_sum_vec@[k as int].sem());
+            assert(sem_seq(b_tail).subrange(1, 1) =~= Seq::<int>::empty());
+            assert(vec_val(b_tail) == b_sum_vec@[k as int].sem());
+            assert(b_sum_vec@.subrange(0, k as int + 1).subrange(0, k as int) =~= b_sum_vec@.subrange(0, k as int));
+
+            // addend.sem() == asum_carry * b_sum_vec[k] (from select_limb)
+            // s.sem() + nc.sem()*BASE = sv + addend + cc1
+            // set_one: vec_val(post) = vec_val(pre) + (s - sv) * P(hk)
+            let p_hk = limb_power(hk as nat);
+            reveal_with_fuel(limb_power, 2);
+            let p_hk1 = limb_power((hk + 1) as nat);
+            assert(p_hk1 == LIMB_BASE() * p_hk);
+            let p_k = limb_power(k as nat);
+            lemma_limb_power_add(half as nat, k as nat);
+            assert(p_hk == limb_power(half as nat) * p_k);
+
+            assert(
+                vec_val(region_post) + nc.sem() * p_hk1
+                == vec_val(old_scratch.subrange(S, S + n as int))
+                    + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@.subrange(0, k as int + 1))
+            ) by(nonlinear_arith)
+                requires
+                    vec_val(region_pre) + cc1.sem() * p_hk
+                        == vec_val(old_scratch.subrange(S, S + n as int))
+                            + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@.subrange(0, k as int)),
+                    vec_val(region_post) == vec_val(region_pre) + (s.sem() - sv) * p_hk,
+                    s.sem() + nc.sem() * LIMB_BASE() == sv + addend.sem() + cc1.sem(),
+                    addend.sem() == if asum_carry.sem() == 0 { 0int } else { b_sum_vec@[k as int].sem() },
+                    vec_val(b_sum_vec@.subrange(0, k as int + 1))
+                        == vec_val(b_sum_vec@.subrange(0, k as int)) + b_sum_vec@[k as int].sem() * p_k,
+                    p_hk == limb_power(half as nat) * p_k,
+                    p_hk1 == LIMB_BASE() * p_hk,
+                    asum_carry.sem() == 0 || asum_carry.sem() == 1;
+        }
+        cc1 = nc;
+    }
+
+    let ghost scratch_post_cc1 = scratch@;
+
+    // cc2 loop: add bsum_carry * a_sum at offset half
+    let mut cc2 = T::zero_val();
+    for k in 0..half
+        invariant half == n / 2, n >= 4, n <= 0x1FFF_FFFF,
+            scratch@.len() == old_scratch.len(), old_scratch.len() >= scratch_off + 2 * n,
+            scratch_off + 2 * n < usize::MAX, S == scratch_off as int,
+            bsum_carry.sem() == 0 || bsum_carry.sem() == 1,
+            cc2.sem() == 0 || cc2.sem() == 1,
+            a_sum_vec@.len() == half, b_sum_vec@.len() == half,
+            valid_limbs(a_sum_vec@), valid_limbs(b_sum_vec@),
+            forall |j: int| 0 <= j < n as int
+                ==> 0 <= (#[trigger] scratch@[(S + j)]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < old_scratch.len() && !(S + half as int <= j < S + half as int + k)
+                ==> scratch@[j] == scratch_post_cc1[j],
+            vec_val(scratch@.subrange(S, S + n as int))
+                + cc2.sem() * limb_power((half + k) as nat)
+                == vec_val(scratch_post_cc1.subrange(S, S + n as int))
+                    + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@.subrange(0, k as int)),
+    {
+        let addend = T::select_limb(bsum_carry, T::zero_val(), a_sum_vec[k].clone_limb());
+        let ghost hk = (half + k) as int;
+        let ghost sv = scratch@[(S + hk)].sem();
+        proof { assert(0 <= hk && hk < n as int); }
+        let ghost region_pre = scratch@.subrange(S, S + n as int);
+        let (s, nc) = scratch[scratch_off + half + k].add3(&addend, &cc2);
+        proof {
+            let x = sv + addend.sem() + cc2.sem();
+            assert(x < 2 * LIMB_BASE());
+            assert(nc.sem() <= 1) by(nonlinear_arith)
+                requires nc.sem() == x / LIMB_BASE(), x >= 0,
+                         x < 2 * LIMB_BASE(), LIMB_BASE() > 0;
+        }
+        scratch.set(scratch_off + half + k, s);
+        proof {
+            let region_post = scratch@.subrange(S, S + n as int);
+            assert forall |j: int| 0 <= j < region_pre.len() && j != hk
+                implies region_pre[j] == region_post[j]
+            by { assert(region_post[j] == scratch@[(S + j)]); }
+            lemma_vec_val_set_one::<T>(region_pre, region_post, hk);
+
+            lemma_vec_val_split::<T>(a_sum_vec@.subrange(0, k as int + 1), k as nat);
+            let a_tail = a_sum_vec@.subrange(k as int, k as int + 1);
+            reveal_with_fuel(limbs_val, 2);
+            assert(vec_val(a_tail) == a_sum_vec@[k as int].sem());
+            assert(a_sum_vec@.subrange(0, k as int + 1).subrange(0, k as int) =~= a_sum_vec@.subrange(0, k as int));
+
+            let p_hk = limb_power(hk as nat);
+            reveal_with_fuel(limb_power, 2);
+            let p_hk1 = limb_power((hk + 1) as nat);
+            assert(p_hk1 == LIMB_BASE() * p_hk);
+            let p_k = limb_power(k as nat);
+            lemma_limb_power_add(half as nat, k as nat);
+
+            assert(
+                vec_val(region_post) + nc.sem() * p_hk1
+                == vec_val(scratch_post_cc1.subrange(S, S + n as int))
+                    + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@.subrange(0, k as int + 1))
+            ) by(nonlinear_arith)
+                requires
+                    vec_val(region_pre) + cc2.sem() * p_hk
+                        == vec_val(scratch_post_cc1.subrange(S, S + n as int))
+                            + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@.subrange(0, k as int)),
+                    vec_val(region_post) == vec_val(region_pre) + (s.sem() - sv) * p_hk,
+                    s.sem() + nc.sem() * LIMB_BASE() == sv + addend.sem() + cc2.sem(),
+                    addend.sem() == if bsum_carry.sem() == 0 { 0int } else { a_sum_vec@[k as int].sem() },
+                    vec_val(a_sum_vec@.subrange(0, k as int + 1))
+                        == vec_val(a_sum_vec@.subrange(0, k as int)) + a_sum_vec@[k as int].sem() * p_k,
+                    p_hk == limb_power(half as nat) * p_k,
+                    p_hk1 == LIMB_BASE() * p_hk,
+                    bsum_carry.sem() == 0 || bsum_carry.sem() == 1;
+        }
+        cc2 = nc;
+    }
+
+    // z1_overflow = cc1 + cc2 + ca*cb
+    let (ca_cb, _) = asum_carry.mul2(bsum_carry);
+    let (temp_ov, _) = cc1.add3(&cc2, &T::zero_val());
+    let (z1_overflow, _) = temp_ov.add3(&ca_cb, &T::zero_val());
+
+    proof {
+        // Combine cc1 and cc2 value equations
+        // cc1 at end: vec_val(post_cc1) + cc1*P(n) = vec_val(old) + ca*B*vec_val(b_sum)
+        assert(b_sum_vec@.subrange(0, half as int) =~= b_sum_vec@);
+        assert(a_sum_vec@.subrange(0, half as int) =~= a_sum_vec@);
+        // cc2 at end: vec_val(final) + cc2*P(n) = vec_val(post_cc1) + cb*B*vec_val(a_sum)
+        // Combined: vec_val(final) + (cc1+cc2)*P(n) = vec_val(old) + ca*B*b_sum + cb*B*a_sum
+        // z1_overflow = cc1 + cc2 + ca*cb
+        // vec_val(final) + z1_overflow*P = vec_val(old) + ca*B*b_sum + cb*B*a_sum + ca*cb*P
+
+        // z1_overflow bounds
+        assert(LIMB_BASE() > 3) by {
+            reveal_with_fuel(limb_power, 2);
+            use crate::fixed_point::limbs::limb_base;
+        }
+        let ghost ca_v = asum_carry.sem();
+        let ghost cb_v = bsum_carry.sem();
+        assert(ca_cb.sem() == ca_v * cb_v) by(nonlinear_arith)
+            requires ca_cb.sem() == (ca_v * cb_v) % LIMB_BASE(),
+                     ca_v <= 1, cb_v <= 1, ca_v >= 0, cb_v >= 0, LIMB_BASE() > 1;
+        assert(temp_ov.sem() == cc1.sem() + cc2.sem()) by(nonlinear_arith)
+            requires temp_ov.sem() == (cc1.sem() + cc2.sem() + 0) % LIMB_BASE(),
+                     cc1.sem() <= 1, cc2.sem() <= 1, cc1.sem() >= 0, cc2.sem() >= 0, LIMB_BASE() > 3;
+        assert(z1_overflow.sem() == cc1.sem() + cc2.sem() + ca_v * cb_v) by(nonlinear_arith)
+            requires z1_overflow.sem() == (temp_ov.sem() + ca_cb.sem() + 0) % LIMB_BASE(),
+                     temp_ov.sem() == cc1.sem() + cc2.sem(),
+                     ca_cb.sem() == ca_v * cb_v,
+                     cc1.sem() <= 1, cc2.sem() <= 1, ca_v * cb_v <= 1,
+                     cc1.sem() >= 0, cc2.sem() >= 0, ca_v * cb_v >= 0, LIMB_BASE() > 3;
+        assert(0 <= z1_overflow.sem() && z1_overflow.sem() <= 3);
+
+        let P = limb_power(n as nat);
+        assert(n == 2 * half);
+        lemma_limb_power_add(half as nat, half as nat);
+        // limb_power(half + half) == limb_power(half) * limb_power(half)
+        // and half + half == n, so P == limb_power(n) == limb_power(half)²
+
+        // Final value equation combining cc1 and cc2
+        assert(
+            vec_val(scratch@.subrange(S, S + n as int))
+                + z1_overflow.sem() * P
+            == vec_val(old_scratch.subrange(S, S + n as int))
+                + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@)
+                + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@)
+                + asum_carry.sem() * bsum_carry.sem() * P
+        ) by(nonlinear_arith)
+            requires
+                // cc1 equation at k=half
+                vec_val(scratch_post_cc1.subrange(S, S + n as int))
+                    + cc1.sem() * P
+                    == vec_val(old_scratch.subrange(S, S + n as int))
+                        + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@),
+                // cc2 equation at k=half
+                vec_val(scratch@.subrange(S, S + n as int))
+                    + cc2.sem() * P
+                    == vec_val(scratch_post_cc1.subrange(S, S + n as int))
+                        + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@),
+                // overflow decomposition
+                z1_overflow.sem() == cc1.sem() + cc2.sem() + ca_cb.sem(),
+                ca_cb.sem() == asum_carry.sem() * bsum_carry.sem(),
+                P == limb_power(half as nat) * limb_power(half as nat);
+    }
+    z1_overflow
 }
 
 /// Add b[b_off..b_off+n] to out[out_start..out_start+n] in-place,
