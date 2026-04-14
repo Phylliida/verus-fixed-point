@@ -357,6 +357,52 @@ pub proof fn lemma_signed_add_correct_seq<T: LimbOps>(
     }
 }
 
+/// Prove that the Karatsuba z1 overflow is 0 or 1.
+/// z1_full - z0 - z2 = cross terms (non-negative, < 2*P).
+/// The n-limb sub_borrow gives z1_n + (z1_overflow - bw1 - bw2) * P = cross.
+/// Since 0 <= cross < 2*P and 0 <= z1_n < P, the overflow is 0 or 1.
+pub proof fn lemma_karatsuba_z1_overflow_bound(
+    z1_full: int,
+    z0: int, z2: int,
+    z1_overflow: int, bw1: int, bw2: int,
+    z1_n: int,
+    P: int,
+)
+    requires
+        P > 0,
+        z1_full >= z0 + z2,  // from Karatsuba identity: cross terms >= 0
+        z1_full < z0 + z2 + 2 * P,  // cross < 2*P (each half < P)
+        0 <= z0, 0 <= z2,
+        // sub_borrow step 1: z1_full_n - z0 = z1_tmp + (bw1) * P (mod P representation)
+        // sub_borrow step 2: z1_tmp - z2 = z1_n + (bw2) * P
+        // Combined: z1_full_n - z0 - z2 = z1_n + (bw1 + bw2) * P (mod)
+        // True z1: z1_full - z0 - z2 = z1_n + (z1_overflow - bw1 - bw2) * P
+        z1_n + (z1_overflow - bw1 - bw2) * P == z1_full - z0 - z2,
+        0 <= z1_n, z1_n < P,
+        bw1 == 0 || bw1 == 1,
+        bw2 == 0 || bw2 == 1,
+        z1_overflow >= 0, z1_overflow <= 3,
+    ensures
+        z1_overflow - bw1 - bw2 == 0 || z1_overflow - bw1 - bw2 == 1,
+{
+    let ov = z1_overflow - bw1 - bw2;
+    let cross = z1_full - z0 - z2;
+    // cross = z1_n + ov * P (from the combined sub_borrow equation)
+    // 0 <= cross (from z1_full >= z0 + z2)
+    // cross < 2*P (from z1_full < z0 + z2 + 2*P)
+    // 0 <= z1_n < P
+    // ov * P = cross - z1_n, with 0 <= cross < 2*P and 0 <= z1_n < P
+    // => -(P-1) < ov*P < 2*P => 0 <= ov <= 1
+    assert(ov >= 0 && ov < 2) by(nonlinear_arith)
+        requires z1_n + ov * P == cross,
+                 0 <= z1_n, z1_n < P,
+                 cross >= 0, cross < 2 * P,
+                 z1_full >= z0 + z2,
+                 z1_full < z0 + z2 + 2 * P,
+                 cross == z1_full - z0 - z2,
+                 P > 0;
+}
+
 /// Add b[b_off..b_off+n] to out[out_start..out_start+n] in-place,
 /// then add `overflow` at position n, then propagate carry through
 /// out[out_start+n..out_start+n+tail].
