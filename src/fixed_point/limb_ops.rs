@@ -1509,7 +1509,26 @@ pub fn signed_mul_to<T: LimbOps>(
             == ((vec_val(a@.subrange(0, n as int)) * vec_val(b@.subrange(0, n as int)))
                 / limb_power(frac_limbs as nat)) % limb_power(n as nat),
 {
-    mul_schoolbook_to(a, b, prod, prod_off, n);
+    // Use Karatsuba for n >= 8 (even), schoolbook otherwise
+    if n >= 8 && n % 2 == 0 {
+        let mut scratch: Vec<T> = Vec::new();
+        let mut idx: usize = 0;
+        while idx < 2 * n
+            invariant idx <= 2 * n, scratch@.len() == idx, n <= 0x1FFF_FFFF,
+                forall |j: int| 0 <= j < idx ==> (#[trigger] scratch@[j]).sem() == 0,
+            decreases 2 * n - idx,
+        {
+            scratch.push(T::zero_val());
+            idx = idx + 1;
+        }
+        mul_karatsuba_one_level_to(a, 0, b, 0, prod, prod_off, &mut scratch, 0, n);
+    } else {
+        mul_schoolbook_to(a, b, prod, prod_off, n);
+    }
+    // Both branches ensure:
+    //   vec_val(prod[prod_off..prod_off+2n]) == vec_val(a[0..n]) * vec_val(b[0..n])
+    //   valid limbs on prod[prod_off..prod_off+2n]
+    //   frame: prod outside [prod_off, prod_off+2n) unchanged
     let ghost prod_full = prod@.subrange(prod_off as int, (prod_off + 2 * n) as int);
     slice_vec_to(prod.as_slice(), prod_off + frac_limbs, prod_off + frac_limbs + n, out, out_off);
     // Prove valid_limbs: slice_vec_to copies values from mul_schoolbook_to output
@@ -3959,7 +3978,22 @@ pub fn signed_mul_to_buf<T: LimbOps>(
             == ((vec_val(a@.subrange(0, n as int)) * vec_val(b@.subrange(0, n as int)))
                 / limb_power(frac_limbs as nat)) % limb_power(n as nat),
 {
-    mul_schoolbook_to(a, b, buf, prod_off, n);
+    // Use Karatsuba for n >= 8 (even), schoolbook otherwise
+    if n >= 8 && n % 2 == 0 {
+        let mut scratch: Vec<T> = Vec::new();
+        let mut idx: usize = 0;
+        while idx < 2 * n
+            invariant idx <= 2 * n, scratch@.len() == idx, n <= 0x1FFF_FFFF,
+                forall |j: int| 0 <= j < idx ==> (#[trigger] scratch@[j]).sem() == 0,
+            decreases 2 * n - idx,
+        {
+            scratch.push(T::zero_val());
+            idx = idx + 1;
+        }
+        mul_karatsuba_one_level_to(a, 0, b, 0, buf, prod_off, &mut scratch, 0, n);
+    } else {
+        mul_schoolbook_to(a, b, buf, prod_off, n);
+    }
     // Copy product[frac_limbs..frac_limbs+n] to out (can't use slice_vec_to: aliasing)
     let ghost buf_len = buf@.len();
     let ghost post_mul = buf@;
