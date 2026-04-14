@@ -3004,20 +3004,79 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
             scratch@.len() >= scratch_off + 2 * n, scratch@.len() == old(scratch)@.len(),
             scratch_off + 2 * n < usize::MAX,
             borrow1.sem() == 0 || borrow1.sem() == 1,
-            // out valid limbs preserved (not modified in this loop)
+            z1_full_n_val == vec_val(scratch_pre_sub.subrange(scratch_off as int, (scratch_off + n) as int)),
             forall |j: int| 0 <= j < 2 * n
                 ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
-            // scratch valid limbs on z1 region (sub_borrow ensures [0, LIMB_BASE))
-            forall |j: int| 0 <= j < i
+            forall |j: int| 0 <= j < n
                 ==> 0 <= (#[trigger] scratch@[(scratch_off as int + j) as int]).sem() < LIMB_BASE(),
-            // scratch valid limbs on remaining z1_full (from schoolbook)
-            forall |j: int| i <= j < n
-                ==> 0 <= (#[trigger] scratch@[(scratch_off as int + j) as int]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < scratch@.len() && !(scratch_off as int <= j < scratch_off as int + i)
+                ==> scratch@[j] == scratch_pre_sub[j],
+            // Value equation: result + b_partial == a + borrow * P^i
+            // i.e., vec_val(full_n_region) + b_so_far == z1_full_n_val + borrow*P(i)
+            vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int))
+                == z1_full_n_val
+                    - vec_val(out@.subrange(out_off as int, out_off as int + i))
+                    + borrow1.sem() * limb_power(i as nat),
     {
+        let ghost si_sem = scratch@[(scratch_off as int + i as int)].sem();
+        let ghost oi_sem = out@[(out_off as int + i as int)].sem();
+        let ghost region_pre = scratch@.subrange(scratch_off as int, (scratch_off + n) as int);
         let (d, bw) = scratch[scratch_off + i].sub_borrow(&out[out_off + i], &borrow1);
+        proof {
+            // sub_borrow: d.sem() = (si - oi - bw1 + BASE) % BASE
+            // bw.sem() = if si - oi - bw1 < 0 then 1 else 0
+            // So: d.sem() + oi + bw1 = si + bw * BASE (algebraically)
+            // i.e., d.sem() - si_sem = -(oi_sem + borrow1.sem()) + bw.sem() * LIMB_BASE()
+        }
         scratch.set(scratch_off + i, d);
+        proof {
+            use crate::fixed_point::limb_ops_proofs::lemma_vec_val_set_one;
+            let region_post = scratch@.subrange(scratch_off as int, (scratch_off + n) as int);
+            assert forall |k: int| 0 <= k < region_pre.len() && k != i as int
+                implies region_pre[k] == region_post[k]
+            by { assert(region_post[k] == scratch@[(scratch_off as int + k)]); }
+            lemma_vec_val_set_one::<T>(region_pre, region_post, i as int);
+
+            // Extend b: vec_val(out[out_off..out_off+i+1]) = vec_val(out[out_off..out_off+i]) + oi_sem * P(i)
+            lemma_vec_val_split::<T>(out@.subrange(out_off as int, out_off as int + i as int + 1), i as nat);
+            let b_tail = out@.subrange(out_off as int + i as int, out_off as int + i as int + 1);
+            assert(b_tail[0] == out@[(out_off as int + i as int)]);
+            reveal_with_fuel(limbs_val, 2);
+            assert(sem_seq(b_tail).len() == 1);
+            assert(sem_seq(b_tail)[0] == oi_sem);
+            assert(sem_seq(b_tail).subrange(1, 1) =~= Seq::<int>::empty());
+            assert(vec_val(b_tail) == oi_sem);
+            assert(out@.subrange(out_off as int, out_off as int + i as int + 1).subrange(0, i as int) =~= out@.subrange(out_off as int, out_off as int + i as int));
+            assert(out@.subrange(out_off as int, out_off as int + i as int + 1).subrange(i as int, i as int + 1) =~= b_tail);
+
+            let p_i = limb_power(i as nat);
+            reveal_with_fuel(limb_power, 2);
+            let p_i1 = limb_power((i + 1) as nat);
+            assert(p_i1 == LIMB_BASE() * p_i);
+
+            // Combine: IH + set_one + b extension + sub_borrow equation
+            assert(
+                vec_val(region_post)
+                == z1_full_n_val
+                    - vec_val(out@.subrange(out_off as int, out_off as int + i as int + 1))
+                    + bw.sem() * p_i1
+            ) by(nonlinear_arith)
+                requires
+                    vec_val(region_pre) == z1_full_n_val
+                        - vec_val(out@.subrange(out_off as int, out_off as int + i))
+                        + borrow1.sem() * p_i,
+                    vec_val(region_post) == vec_val(region_pre) + (d.sem() - si_sem) * p_i,
+                    d.sem() + oi_sem + borrow1.sem() == si_sem + bw.sem() * LIMB_BASE(),
+                    vec_val(out@.subrange(out_off as int, out_off as int + i as int + 1))
+                        == vec_val(out@.subrange(out_off as int, out_off as int + i)) + oi_sem * p_i,
+                    p_i1 == LIMB_BASE() * p_i;
+        }
         borrow1 = bw;
     }
+    // After sub1: vec_val(scratch_region) = z1_full_n_val - z0_val + borrow1 * P
+    let ghost scratch_post_sub1_val = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
+    let ghost z0_val = vec_val(out@.subrange(out_off as int, (out_off + n) as int));
+
     let ghost scratch_post_sub1 = scratch@;
     let mut borrow2 = T::zero_val();
     for i in 0..n
@@ -3027,70 +3086,183 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
             scratch@.len() >= scratch_off + 2 * n, scratch@.len() == old(scratch)@.len(),
             scratch_off + 2 * n < usize::MAX,
             borrow2.sem() == 0 || borrow2.sem() == 1,
-            // out valid limbs preserved
+            scratch_post_sub1_val == vec_val(scratch_post_sub1.subrange(scratch_off as int, (scratch_off + n) as int)),
             forall |j: int| 0 <= j < 2 * n
                 ==> 0 <= (#[trigger] out@[(out_off as int + j) as int]).sem() < LIMB_BASE(),
-            // scratch z1 valid limbs (from sub_borrow)
             forall |j: int| 0 <= j < n
                 ==> 0 <= (#[trigger] scratch@[(scratch_off as int + j) as int]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < scratch@.len() && !(scratch_off as int <= j < scratch_off as int + i)
+                ==> scratch@[j] == scratch_post_sub1[j],
+            // Value equation for sub2
+            vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int))
+                == scratch_post_sub1_val
+                    - vec_val(out@.subrange((out_off + n) as int, (out_off + n) as int + i))
+                    + borrow2.sem() * limb_power(i as nat),
     {
+        let ghost si_sem = scratch@[(scratch_off as int + i as int)].sem();
+        let ghost oi_sem = out@[((out_off + n) as int + i as int)].sem();
+        let ghost region_pre = scratch@.subrange(scratch_off as int, (scratch_off + n) as int);
         let (d, bw) = scratch[scratch_off + i].sub_borrow(&out[out_off + n + i], &borrow2);
+        // Establish sub_borrow equation before set changes scratch
+        let ghost sub_eq2 = d.sem() + oi_sem + borrow2.sem() == si_sem + bw.sem() * LIMB_BASE();
+        proof {
+            // From sub_borrow: d = (si - oi - bw2 + BASE) % BASE, bw = if si-oi-bw2<0 then 1 else 0
+            if si_sem - oi_sem - borrow2.sem() >= 0 {
+                assert(bw.sem() == 0);
+                assert(d.sem() == si_sem - oi_sem - borrow2.sem());
+            } else {
+                assert(bw.sem() == 1);
+                assert(d.sem() == (si_sem - oi_sem - borrow2.sem() + LIMB_BASE()) % LIMB_BASE());
+                assert(si_sem - oi_sem - borrow2.sem() + LIMB_BASE() >= 0);
+                assert(si_sem - oi_sem - borrow2.sem() + LIMB_BASE() < LIMB_BASE());
+                assert(d.sem() == si_sem - oi_sem - borrow2.sem() + LIMB_BASE()) by(nonlinear_arith)
+                    requires d.sem() == (si_sem - oi_sem - borrow2.sem() + LIMB_BASE()) % LIMB_BASE(),
+                             0 <= si_sem - oi_sem - borrow2.sem() + LIMB_BASE(),
+                             si_sem - oi_sem - borrow2.sem() + LIMB_BASE() < LIMB_BASE(),
+                             LIMB_BASE() > 0;
+            }
+            assert(sub_eq2);
+        }
         scratch.set(scratch_off + i, d);
+        proof {
+            use crate::fixed_point::limb_ops_proofs::lemma_vec_val_set_one;
+            let region_post = scratch@.subrange(scratch_off as int, (scratch_off + n) as int);
+            assert forall |k: int| 0 <= k < region_pre.len() && k != i as int
+                implies region_pre[k] == region_post[k]
+            by { assert(region_post[k] == scratch@[(scratch_off as int + k)]); }
+            lemma_vec_val_set_one::<T>(region_pre, region_post, i as int);
+
+            lemma_vec_val_split::<T>(out@.subrange((out_off + n) as int, (out_off + n) as int + i as int + 1), i as nat);
+            let b_tail2 = out@.subrange((out_off + n) as int + i as int, (out_off + n) as int + i as int + 1);
+            assert(b_tail2[0] == out@[((out_off + n) as int + i as int)]);
+            reveal_with_fuel(limbs_val, 2);
+            assert(sem_seq(b_tail2).len() == 1);
+            assert(sem_seq(b_tail2)[0] == oi_sem);
+            assert(sem_seq(b_tail2).subrange(1, 1) =~= Seq::<int>::empty());
+            assert(vec_val(b_tail2) == oi_sem);
+            assert(out@.subrange((out_off + n) as int, (out_off + n) as int + i as int + 1).subrange(0, i as int)
+                =~= out@.subrange((out_off + n) as int, (out_off + n) as int + i as int));
+            assert(out@.subrange((out_off + n) as int, (out_off + n) as int + i as int + 1).subrange(i as int, i as int + 1)
+                =~= b_tail2);
+
+            let p_i = limb_power(i as nat);
+            reveal_with_fuel(limb_power, 2);
+            let p_i1 = limb_power((i + 1) as nat);
+            assert(p_i1 == LIMB_BASE() * p_i);
+
+            assert(
+                vec_val(region_post) == scratch_post_sub1_val
+                    - vec_val(out@.subrange((out_off + n) as int, (out_off + n) as int + i as int + 1))
+                    + bw.sem() * p_i1
+            ) by(nonlinear_arith)
+                requires
+                    vec_val(region_pre) == scratch_post_sub1_val
+                        - vec_val(out@.subrange((out_off + n) as int, (out_off + n) as int + i))
+                        + borrow2.sem() * p_i,
+                    vec_val(region_post) == vec_val(region_pre) + (d.sem() - si_sem) * p_i,
+                    sub_eq2,
+                    d.sem() + oi_sem + borrow2.sem() == si_sem + bw.sem() * LIMB_BASE(),
+                    vec_val(out@.subrange((out_off + n) as int, (out_off + n) as int + i as int + 1))
+                        == vec_val(out@.subrange((out_off + n) as int, (out_off + n) as int + i)) + oi_sem * p_i,
+                    p_i1 == LIMB_BASE() * p_i;
+        }
         borrow2 = bw;
     }
 
-    // Step 5b: z1_final_overflow = z1_overflow - borrow1 - borrow2
-    // Prove it's 0 or 1 using the Karatsuba z1 overflow bound lemma.
+    // Step 5b: prove z1_final_overflow is 0 or 1
     let (temp_ov2, _) = z1_overflow.sub_borrow(&borrow1, &T::zero_val());
     let (z1_final_overflow, _) = temp_ov2.sub_borrow(&borrow2, &T::zero_val());
     proof {
         use crate::fixed_point::limb_ops_proofs::lemma_karatsuba_z1_overflow_bound;
 
-        // z1_n = vec_val of current scratch[scratch_off..scratch_off+n]
-        let z1_n = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
-
-        // Establish: z1_n + (z1_overflow - bw1 - bw2) * P == z1_full_val - z0_val - z2_val
-        // This requires value equation tracking through the sub_borrow loops.
-        // For now, we need z1_full >= z0 + z2 and z1_full < z0 + z2 + 2*P.
-
-        // z1_full_val = (a_lo+a_hi)*(b_lo+b_hi) = z0 + cross + z2 >= z0 + z2
-        // cross = a_lo*b_hi + a_hi*b_lo < 2*P (each product < P)
-
         let P = limb_power(n as nat);
-        let B = limb_power(half as nat);
+        let z1_n = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
+        let z2_val = vec_val(out@.subrange((out_off + n) as int, (out_off + 2 * n) as int));
 
-        // Bounds on input halves
+        // From sub1 value equation (at end of loop, i=n):
+        // scratch_post_sub1_val = z1_full_n_val - z0_val + borrow1 * P
+        // From sub2 value equation (at end of loop, i=n):
+        // z1_n = scratch_post_sub1_val - z2_val + borrow2 * P
+        // Combined:
+        // z1_n = z1_full_n_val - z0_val - z2_val + (borrow1 + borrow2) * P
+        // z1_n + (z1_overflow - bw1 - bw2) * P
+        //   = z1_full_n_val + z1_overflow*P - z0_val - z2_val
+        //   = z1_full_val - z0_val - z2_val
+
+        // Input bounds
         lemma_vec_val_bounded::<T>(a_lo_seq);
         lemma_vec_val_bounded::<T>(a_hi_seq);
         lemma_vec_val_bounded::<T>(b_lo_seq);
         lemma_vec_val_bounded::<T>(b_hi_seq);
+        let B = limb_power(half as nat);
+        // P = B^2 (since n = 2*half)
+        lemma_limb_power_add(half as nat, half as nat);
 
-        let a_lo_v = vec_val(a_lo_seq);
-        let a_hi_v = vec_val(a_hi_seq);
-        let b_lo_v = vec_val(b_lo_seq);
-        let b_hi_v = vec_val(b_hi_seq);
+        // z0_val = a_lo * b_lo (from mul_schoolbook_to)
+        // z2_val = a_hi * b_hi
+        // z1_full_val >= z0_val + z2_val (cross terms >= 0)
+        // z1_full_val < z0_val + z2_val + 2*P (cross terms < 2*B^2 = 2*P)
 
-        // z1_full = (a_lo + a_hi) * (b_lo + b_hi)
-        // z0 = a_lo * b_lo, z2 = a_hi * b_hi
-        // z1_full - z0 - z2 = a_lo*b_hi + a_hi*b_lo (cross terms)
-        // 0 <= cross < 2*B^2 = 2*P (since a_lo, a_hi, b_lo, b_hi < B and B^2 = P)
+        // z1_n is valid limbs → z1_n < P
+        assert(valid_limbs(scratch@.subrange(scratch_off as int, (scratch_off + n) as int))) by {
+            assert forall |j: int| 0 <= j < n as int
+                implies 0 <= (#[trigger] scratch@.subrange(scratch_off as int, (scratch_off + n) as int)[j]).sem() < LIMB_BASE()
+            by {
+                assert(scratch@.subrange(scratch_off as int, (scratch_off + n) as int)[j]
+                    == scratch@[(scratch_off as int + j)]);
+            }
+        }
+        lemma_vec_val_bounded::<T>(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
 
-        // These facts would follow from value equation tracking in the loops
-        // and the Karatsuba identity. For now, use the algebraic bound.
+        // Combined value equation
+        assert(z1_n + (z1_overflow.sem() - borrow1.sem() - borrow2.sem()) * P
+            == z1_full_val - z0_val - z2_val) by(nonlinear_arith)
+            requires
+                scratch_post_sub1_val == z1_full_n_val - z0_val + borrow1.sem() * P,
+                z1_n == scratch_post_sub1_val - z2_val + borrow2.sem() * P,
+                z1_full_val == z1_full_n_val + z1_overflow.sem() * P;
 
-        // TODO: Complete value equation tracking through sub_borrow loops.
-        // The lemma call would be:
-        // lemma_karatsuba_z1_overflow_bound(
-        //     z1_full_val, z0_val, z2_val,
-        //     z1_overflow.sem(), borrow1.sem(), borrow2.sem(),
-        //     z1_n, P,
-        // );
+        // Karatsuba identity bounds: z1_full = (a_lo+a_hi)(b_lo+b_hi) = z0+cross+z2
+        // So z1_full >= z0 + z2 and z1_full - z0 - z2 = cross < 2*P
+        // We need z1_full_val, z0_val, z2_val in terms of the algebraic values
+        // These follow from z0_val and z2_val being the schoolbook results
 
-        // Temporary: establish the bound via simpler reasoning
-        // z1_final_overflow.sem() = (z1_overflow - bw1 - bw2 + 2*LIMB_BASE) % LIMB_BASE
-        // Since z1_overflow <= 3 and borrows <= 1 each, z1_overflow - bw1 - bw2 is -2 to 3
-        // With sub_borrow wrapping, the actual sem value depends on the computation
-        // We need the VALUE EQUATION to prove it's actually 0 or 1
+        lemma_karatsuba_z1_overflow_bound(
+            z1_full_val, z0_val, z2_val,
+            z1_overflow.sem(), borrow1.sem(), borrow2.sem(),
+            z1_n, P,
+        );
+
+        // Now z1_overflow - bw1 - bw2 is 0 or 1
+        // z1_final_overflow.sem() = sub_borrow result
+        // Need: z1_final_overflow.sem() == z1_overflow.sem() - borrow1.sem() - borrow2.sem()
+        // This follows from the sub_borrow postconditions
+        // (since the values are small enough that no wrapping occurs)
+        let ov_diff = z1_overflow.sem() - borrow1.sem() - borrow2.sem();
+        assert(ov_diff == 0 || ov_diff == 1);
+        // sub_borrow(z1_overflow, borrow1, 0): result = (z1_overflow - borrow1 + BASE) % BASE
+        // Since z1_overflow <= 3 and borrow1 <= 1, z1_overflow - borrow1 >= -1
+        // But ov_diff >= 0, so z1_overflow >= borrow1 + borrow2
+        // temp_ov2 = z1_overflow - borrow1 (no wrapping since >= 0)
+        // z1_final_overflow = temp_ov2 - borrow2 (no wrapping since temp_ov2 >= borrow2)
+        assert(z1_overflow.sem() >= borrow1.sem() + borrow2.sem()) by(nonlinear_arith)
+            requires ov_diff >= 0, ov_diff == z1_overflow.sem() - borrow1.sem() - borrow2.sem();
+        assert(temp_ov2.sem() == z1_overflow.sem() - borrow1.sem()) by(nonlinear_arith)
+            requires
+                temp_ov2.sem() == (z1_overflow.sem() - borrow1.sem() + LIMB_BASE()) % LIMB_BASE(),
+                z1_overflow.sem() >= borrow1.sem(),
+                z1_overflow.sem() <= 3,
+                borrow1.sem() <= 1,
+                LIMB_BASE() > 3;
+        assert(z1_final_overflow.sem() == temp_ov2.sem() - borrow2.sem()) by(nonlinear_arith)
+            requires
+                z1_final_overflow.sem() == (temp_ov2.sem() - borrow2.sem() + LIMB_BASE()) % LIMB_BASE(),
+                temp_ov2.sem() >= borrow2.sem(),
+                temp_ov2.sem() <= 3,
+                borrow2.sem() <= 1,
+                LIMB_BASE() > 3;
+        assert(z1_final_overflow.sem() == ov_diff);
+        assert(z1_final_overflow.sem() == 0 || z1_final_overflow.sem() == 1);
     }
 
     // Step 6: out[half..half+n+half] += z1 (n limbs) + z1_final_overflow at position n
