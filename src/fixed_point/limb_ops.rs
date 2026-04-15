@@ -1481,6 +1481,7 @@ pub fn signed_mul_to<T: LimbOps>(
     a: &[T], a_sign: &T, b: &[T], b_sign: &T,
     out: &mut Vec<T>, out_off: usize,
     prod: &mut Vec<T>, prod_off: usize,
+    scratch: &mut Vec<T>, scratch_off: usize,
     n: usize, frac_limbs: usize,
 ) -> (out_sign: T)
     requires
@@ -1489,8 +1490,10 @@ pub fn signed_mul_to<T: LimbOps>(
         valid_limbs(a@), valid_limbs(b@),
         old(out)@.len() >= out_off + n,
         old(prod)@.len() >= prod_off + 2 * n,
+        old(scratch)@.len() >= scratch_off + 2 * n,
         out_off + n < usize::MAX,
         prod_off + 2 * n < usize::MAX,
+        scratch_off + 2 * n < usize::MAX,
         frac_limbs + n <= 2 * n,
         frac_limbs <= n,
         frac_limbs + n < usize::MAX,
@@ -1498,6 +1501,7 @@ pub fn signed_mul_to<T: LimbOps>(
         b_sign.sem() == 0 || b_sign.sem() == 1,
     ensures out@.len() == old(out)@.len(),
         prod@.len() == old(prod)@.len(),
+        scratch@.len() == old(scratch)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
         // Sign is XOR of input signs (same sign → positive result)
         (a_sign.sem() == b_sign.sem()) ==> out_sign.sem() == 0,
@@ -1511,17 +1515,7 @@ pub fn signed_mul_to<T: LimbOps>(
 {
     // Use Karatsuba for n >= 8 (even), schoolbook otherwise
     if n >= 8 && n % 2 == 0 {
-        let mut scratch: Vec<T> = Vec::new();
-        let mut idx: usize = 0;
-        while idx < 2 * n
-            invariant idx <= 2 * n, scratch@.len() == idx, n <= 0x1FFF_FFFF,
-                forall |j: int| 0 <= j < idx ==> (#[trigger] scratch@[j]).sem() == 0,
-            decreases 2 * n - idx,
-        {
-            scratch.push(T::zero_val());
-            idx = idx + 1;
-        }
-        mul_karatsuba_one_level_to(a, 0, b, 0, prod, prod_off, &mut scratch, 0, n);
+        mul_karatsuba_one_level_to(a, 0, b, 0, prod, prod_off, scratch, scratch_off, n);
     } else {
         mul_schoolbook_to(a, b, prod, prod_off, n);
     }
@@ -2926,11 +2920,9 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
     }
 
     // Step 4b: Carry correction — use helper with proven value equation
+    use crate::fixed_point::limb_ops_proofs::karatsuba_carry_correct;
     let ghost schoolbook_val = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
-    let z1_overflow = {
-        use crate::fixed_point::limb_ops_proofs::karatsuba_carry_correct;
-        karatsuba_carry_correct(scratch, scratch_off, &a_sum_vec, &b_sum_vec, &asum_carry, &bsum_carry, n, half)
-    };
+    let z1_overflow = karatsuba_carry_correct(scratch, scratch_off, &a_sum_vec, &b_sum_vec, &asum_carry, &bsum_carry, n, half);
     // Postcondition gives: z1_full_n_new + z1_overflow*P == schoolbook_val + ca*B*b_sum + cb*B*a_sum + ca*cb*B²
 
     // Steps 5+6: subtract z0/z2 from z1_full, add z1 to output — extracted to helper
@@ -2945,8 +2937,8 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
             =~= out_post_step1.subrange(out_off as int, (out_off + n) as int));
         assert(z0_val == z0_val_step1);
     }
+    use crate::fixed_point::limb_ops_proofs::karatsuba_combine;
     {
-        use crate::fixed_point::limb_ops_proofs::karatsuba_combine;
         let ghost z1_full_n_val = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
 
         // Re-establish ghost facts for the helper
@@ -3978,22 +3970,8 @@ pub fn signed_mul_to_buf<T: LimbOps>(
             == ((vec_val(a@.subrange(0, n as int)) * vec_val(b@.subrange(0, n as int)))
                 / limb_power(frac_limbs as nat)) % limb_power(n as nat),
 {
-    // Use Karatsuba for n >= 8 (even), schoolbook otherwise
-    if n >= 8 && n % 2 == 0 {
-        let mut scratch: Vec<T> = Vec::new();
-        let mut idx: usize = 0;
-        while idx < 2 * n
-            invariant idx <= 2 * n, scratch@.len() == idx, n <= 0x1FFF_FFFF,
-                forall |j: int| 0 <= j < idx ==> (#[trigger] scratch@[j]).sem() == 0,
-            decreases 2 * n - idx,
-        {
-            scratch.push(T::zero_val());
-            idx = idx + 1;
-        }
-        mul_karatsuba_one_level_to(a, 0, b, 0, buf, prod_off, &mut scratch, 0, n);
-    } else {
-        mul_schoolbook_to(a, b, buf, prod_off, n);
-    }
+    // GPU-compatible: always use schoolbook (Vec allocation not available in WGSL)
+    mul_schoolbook_to(a, b, buf, prod_off, n);
     // Copy product[frac_limbs..frac_limbs+n] to out (can't use slice_vec_to: aliasing)
     let ghost buf_len = buf@.len();
     let ghost post_mul = buf@;
