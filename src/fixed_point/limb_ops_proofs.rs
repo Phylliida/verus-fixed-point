@@ -510,8 +510,10 @@ pub proof fn lemma_karatsuba_z1_full_bounds(
 pub fn karatsuba_carry_correct<T: LimbOps>(
     scratch: &mut Vec<T>,
     scratch_off: usize,
-    a_sum_vec: &Vec<T>,
-    b_sum_vec: &Vec<T>,
+    a_sum_vec: &[T],
+    a_sum_off: usize,
+    b_sum_vec: &[T],
+    b_sum_off: usize,
     asum_carry: &T,
     bsum_carry: &T,
     n: usize,
@@ -521,7 +523,8 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
         half == n / 2, n >= 4, n <= 0x1FFF_FFFF, n % 2 == 0,
         old(scratch)@.len() >= scratch_off + 2 * n,
         scratch_off + 2 * n < usize::MAX,
-        a_sum_vec@.len() == half, b_sum_vec@.len() == half,
+        a_sum_vec@.len() >= a_sum_off + half, b_sum_vec@.len() >= b_sum_off + half,
+        a_sum_off + half < usize::MAX, b_sum_off + half < usize::MAX,
         valid_limbs(a_sum_vec@), valid_limbs(b_sum_vec@),
         asum_carry.sem() == 0 || asum_carry.sem() == 1,
         bsum_carry.sem() == 0 || bsum_carry.sem() == 1,
@@ -540,8 +543,8 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
         vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int))
             + z1_overflow.sem() * limb_power(n as nat)
             == vec_val(old(scratch)@.subrange(scratch_off as int, (scratch_off + n) as int))
-             + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@)
-             + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@)
+             + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@.subrange(b_sum_off as int, (b_sum_off + half) as int))
+             + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@.subrange(a_sum_off as int, (a_sum_off + half) as int))
              + asum_carry.sem() * bsum_carry.sem() * limb_power(n as nat),
 {
     let ghost old_scratch = scratch@;
@@ -555,7 +558,8 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
             scratch_off + 2 * n < usize::MAX, S == scratch_off as int,
             asum_carry.sem() == 0 || asum_carry.sem() == 1,
             cc1.sem() == 0 || cc1.sem() == 1,
-            a_sum_vec@.len() == half, b_sum_vec@.len() == half,
+            a_sum_vec@.len() >= a_sum_off + half, b_sum_vec@.len() >= b_sum_off + half,
+            a_sum_off + half < usize::MAX, b_sum_off + half < usize::MAX,
             valid_limbs(a_sum_vec@), valid_limbs(b_sum_vec@),
             forall |j: int| 0 <= j < n as int
                 ==> 0 <= (#[trigger] scratch@[(S + j)]).sem() < LIMB_BASE(),
@@ -566,9 +570,9 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
             vec_val(scratch@.subrange(S, S + n as int))
                 + cc1.sem() * limb_power((half + k) as nat)
                 == vec_val(old_scratch.subrange(S, S + n as int))
-                    + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@.subrange(0, k as int)),
+                    + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@.subrange(b_sum_off as int, (b_sum_off + k) as int)),
     {
-        let addend = T::select_limb(asum_carry, T::zero_val(), b_sum_vec[k].clone_limb());
+        let addend = T::select_limb(asum_carry, T::zero_val(), b_sum_vec[b_sum_off + k].clone_limb());
         let ghost hk = (half + k) as int;
         let ghost sv = scratch@[(S + hk)].sem();
         proof { assert(0 <= hk && hk < n as int); }
@@ -590,13 +594,13 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
             lemma_vec_val_set_one::<T>(region_pre, region_post, hk);
 
             // Extend b_sum: vec_val(b[0..k+1]) = vec_val(b[0..k]) + b[k].sem() * P(k)
-            lemma_vec_val_split::<T>(b_sum_vec@.subrange(0, k as int + 1), k as nat);
-            let b_tail = b_sum_vec@.subrange(k as int, k as int + 1);
+            lemma_vec_val_split::<T>(b_sum_vec@.subrange(b_sum_off as int, (b_sum_off + k + 1) as int), k as nat);
+            let b_tail = b_sum_vec@.subrange((b_sum_off + k) as int, (b_sum_off + k) as int + 1);
             reveal_with_fuel(limbs_val, 2);
-            assert(sem_seq(b_tail)[0] == b_sum_vec@[k as int].sem());
+            assert(sem_seq(b_tail)[0] == b_sum_vec@[(b_sum_off + k) as int].sem());
             assert(sem_seq(b_tail).subrange(1, 1) =~= Seq::<int>::empty());
-            assert(vec_val(b_tail) == b_sum_vec@[k as int].sem());
-            assert(b_sum_vec@.subrange(0, k as int + 1).subrange(0, k as int) =~= b_sum_vec@.subrange(0, k as int));
+            assert(vec_val(b_tail) == b_sum_vec@[(b_sum_off + k) as int].sem());
+            assert(b_sum_vec@.subrange(b_sum_off as int, (b_sum_off + k + 1) as int).subrange(0, k as int) =~= b_sum_vec@.subrange(b_sum_off as int, (b_sum_off + k) as int));
 
             // addend.sem() == asum_carry * b_sum_vec[k] (from select_limb)
             // s.sem() + nc.sem()*BASE = sv + addend + cc1
@@ -609,23 +613,25 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
             lemma_limb_power_add(half as nat, k as nat);
             assert(p_hk == limb_power(half as nat) * p_k);
 
+            let bv_k = vec_val(b_sum_vec@.subrange(b_sum_off as int, (b_sum_off + k) as int));
+            let bv_k1 = vec_val(b_sum_vec@.subrange(b_sum_off as int, (b_sum_off + k + 1) as int));
+            let bk = b_sum_vec@[(b_sum_off + k) as int].sem();
+            let v_old = vec_val(old_scratch.subrange(S, S + n as int));
+            let h = limb_power(half as nat);
+            let ac = asum_carry.sem();
             assert(
                 vec_val(region_post) + nc.sem() * p_hk1
-                == vec_val(old_scratch.subrange(S, S + n as int))
-                    + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@.subrange(0, k as int + 1))
+                == v_old + ac * h * bv_k1
             ) by(nonlinear_arith)
                 requires
-                    vec_val(region_pre) + cc1.sem() * p_hk
-                        == vec_val(old_scratch.subrange(S, S + n as int))
-                            + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@.subrange(0, k as int)),
+                    vec_val(region_pre) + cc1.sem() * p_hk == v_old + ac * h * bv_k,
                     vec_val(region_post) == vec_val(region_pre) + (s.sem() - sv) * p_hk,
                     s.sem() + nc.sem() * LIMB_BASE() == sv + addend.sem() + cc1.sem(),
-                    addend.sem() == if asum_carry.sem() == 0 { 0int } else { b_sum_vec@[k as int].sem() },
-                    vec_val(b_sum_vec@.subrange(0, k as int + 1))
-                        == vec_val(b_sum_vec@.subrange(0, k as int)) + b_sum_vec@[k as int].sem() * p_k,
-                    p_hk == limb_power(half as nat) * p_k,
+                    addend.sem() == if ac == 0 { 0int } else { bk },
+                    bv_k1 == bv_k + bk * p_k,
+                    p_hk == h * p_k,
                     p_hk1 == LIMB_BASE() * p_hk,
-                    asum_carry.sem() == 0 || asum_carry.sem() == 1;
+                    ac == 0 || ac == 1;
         }
         cc1 = nc;
     }
@@ -640,7 +646,8 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
             scratch_off + 2 * n < usize::MAX, S == scratch_off as int,
             bsum_carry.sem() == 0 || bsum_carry.sem() == 1,
             cc2.sem() == 0 || cc2.sem() == 1,
-            a_sum_vec@.len() == half, b_sum_vec@.len() == half,
+            a_sum_vec@.len() >= a_sum_off + half, b_sum_vec@.len() >= b_sum_off + half,
+            a_sum_off + half < usize::MAX, b_sum_off + half < usize::MAX,
             valid_limbs(a_sum_vec@), valid_limbs(b_sum_vec@),
             forall |j: int| 0 <= j < n as int
                 ==> 0 <= (#[trigger] scratch@[(S + j)]).sem() < LIMB_BASE(),
@@ -649,9 +656,9 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
             vec_val(scratch@.subrange(S, S + n as int))
                 + cc2.sem() * limb_power((half + k) as nat)
                 == vec_val(scratch_post_cc1.subrange(S, S + n as int))
-                    + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@.subrange(0, k as int)),
+                    + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@.subrange(a_sum_off as int, (a_sum_off + k) as int)),
     {
-        let addend = T::select_limb(bsum_carry, T::zero_val(), a_sum_vec[k].clone_limb());
+        let addend = T::select_limb(bsum_carry, T::zero_val(), a_sum_vec[a_sum_off + k].clone_limb());
         let ghost hk = (half + k) as int;
         let ghost sv = scratch@[(S + hk)].sem();
         proof { assert(0 <= hk && hk < n as int); }
@@ -672,11 +679,11 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
             by { assert(region_post[j] == scratch@[(S + j)]); }
             lemma_vec_val_set_one::<T>(region_pre, region_post, hk);
 
-            lemma_vec_val_split::<T>(a_sum_vec@.subrange(0, k as int + 1), k as nat);
-            let a_tail = a_sum_vec@.subrange(k as int, k as int + 1);
+            lemma_vec_val_split::<T>(a_sum_vec@.subrange(a_sum_off as int, (a_sum_off + k + 1) as int), k as nat);
+            let a_tail = a_sum_vec@.subrange((a_sum_off + k) as int, (a_sum_off + k) as int + 1);
             reveal_with_fuel(limbs_val, 2);
-            assert(vec_val(a_tail) == a_sum_vec@[k as int].sem());
-            assert(a_sum_vec@.subrange(0, k as int + 1).subrange(0, k as int) =~= a_sum_vec@.subrange(0, k as int));
+            assert(vec_val(a_tail) == a_sum_vec@[(a_sum_off + k) as int].sem());
+            assert(a_sum_vec@.subrange(a_sum_off as int, (a_sum_off + k + 1) as int).subrange(0, k as int) =~= a_sum_vec@.subrange(a_sum_off as int, (a_sum_off + k) as int));
 
             let p_hk = limb_power(hk as nat);
             reveal_with_fuel(limb_power, 2);
@@ -685,23 +692,25 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
             let p_k = limb_power(k as nat);
             lemma_limb_power_add(half as nat, k as nat);
 
+            let av_k = vec_val(a_sum_vec@.subrange(a_sum_off as int, (a_sum_off + k) as int));
+            let av_k1 = vec_val(a_sum_vec@.subrange(a_sum_off as int, (a_sum_off + k + 1) as int));
+            let ak = a_sum_vec@[(a_sum_off + k) as int].sem();
+            let v_old2 = vec_val(scratch_post_cc1.subrange(S, S + n as int));
+            let h = limb_power(half as nat);
+            let bc = bsum_carry.sem();
             assert(
                 vec_val(region_post) + nc.sem() * p_hk1
-                == vec_val(scratch_post_cc1.subrange(S, S + n as int))
-                    + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@.subrange(0, k as int + 1))
+                == v_old2 + bc * h * av_k1
             ) by(nonlinear_arith)
                 requires
-                    vec_val(region_pre) + cc2.sem() * p_hk
-                        == vec_val(scratch_post_cc1.subrange(S, S + n as int))
-                            + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@.subrange(0, k as int)),
+                    vec_val(region_pre) + cc2.sem() * p_hk == v_old2 + bc * h * av_k,
                     vec_val(region_post) == vec_val(region_pre) + (s.sem() - sv) * p_hk,
                     s.sem() + nc.sem() * LIMB_BASE() == sv + addend.sem() + cc2.sem(),
-                    addend.sem() == if bsum_carry.sem() == 0 { 0int } else { a_sum_vec@[k as int].sem() },
-                    vec_val(a_sum_vec@.subrange(0, k as int + 1))
-                        == vec_val(a_sum_vec@.subrange(0, k as int)) + a_sum_vec@[k as int].sem() * p_k,
-                    p_hk == limb_power(half as nat) * p_k,
+                    addend.sem() == if bc == 0 { 0int } else { ak },
+                    av_k1 == av_k + ak * p_k,
+                    p_hk == h * p_k,
                     p_hk1 == LIMB_BASE() * p_hk,
-                    bsum_carry.sem() == 0 || bsum_carry.sem() == 1;
+                    bc == 0 || bc == 1;
         }
         cc2 = nc;
     }
@@ -714,8 +723,8 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
     proof {
         // Combine cc1 and cc2 value equations
         // cc1 at end: vec_val(post_cc1) + cc1*P(n) = vec_val(old) + ca*B*vec_val(b_sum)
-        assert(b_sum_vec@.subrange(0, half as int) =~= b_sum_vec@);
-        assert(a_sum_vec@.subrange(0, half as int) =~= a_sum_vec@);
+        assert(b_sum_vec@.subrange(b_sum_off as int, (b_sum_off + half) as int).len() == half as int);
+        assert(a_sum_vec@.subrange(a_sum_off as int, (a_sum_off + half) as int).len() == half as int);
         // cc2 at end: vec_val(final) + cc2*P(n) = vec_val(post_cc1) + cb*B*vec_val(a_sum)
         // Combined: vec_val(final) + (cc1+cc2)*P(n) = vec_val(old) + ca*B*b_sum + cb*B*a_sum
         // z1_overflow = cc1 + cc2 + ca*cb
@@ -753,8 +762,8 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
             vec_val(scratch@.subrange(S, S + n as int))
                 + z1_overflow.sem() * P
             == vec_val(old_scratch.subrange(S, S + n as int))
-                + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@)
-                + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@)
+                + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@.subrange(b_sum_off as int, (b_sum_off + half) as int))
+                + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@.subrange(a_sum_off as int, (a_sum_off + half) as int))
                 + asum_carry.sem() * bsum_carry.sem() * P
         ) by(nonlinear_arith)
             requires
@@ -762,12 +771,12 @@ pub fn karatsuba_carry_correct<T: LimbOps>(
                 vec_val(scratch_post_cc1.subrange(S, S + n as int))
                     + cc1.sem() * P
                     == vec_val(old_scratch.subrange(S, S + n as int))
-                        + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@),
+                        + asum_carry.sem() * limb_power(half as nat) * vec_val(b_sum_vec@.subrange(b_sum_off as int, (b_sum_off + half) as int)),
                 // cc2 equation at k=half
                 vec_val(scratch@.subrange(S, S + n as int))
                     + cc2.sem() * P
                     == vec_val(scratch_post_cc1.subrange(S, S + n as int))
-                        + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@),
+                        + bsum_carry.sem() * limb_power(half as nat) * vec_val(a_sum_vec@.subrange(a_sum_off as int, (a_sum_off + half) as int)),
                 // overflow decomposition
                 z1_overflow.sem() == cc1.sem() + cc2.sem() + ca_cb.sem(),
                 ca_cb.sem() == asum_carry.sem() * bsum_carry.sem(),

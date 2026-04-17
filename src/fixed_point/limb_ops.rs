@@ -803,10 +803,10 @@ pub fn generic_add_limbs<T: LimbOps>(a: &[T], b: &[T], n: usize) -> (result: (Ve
 
 ///  Carry-chain addition writing to caller-provided output buffer.
 ///  GPU-compatible: no Vec allocation, writes to out[0..n].
-pub fn add_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usize, n: usize) -> (carry: T)
+pub fn add_limbs_to<T: LimbOps>(a: &[T], a_off: usize, b: &[T], b_off: usize, out: &mut Vec<T>, out_off: usize, n: usize) -> (carry: T)
     requires
-        a@.len() >= n, b@.len() >= n, old(out)@.len() >= out_off + n,
-        out_off + n < usize::MAX,
+        a@.len() >= a_off + n, b@.len() >= b_off + n, old(out)@.len() >= out_off + n,
+        out_off + n < usize::MAX, a_off + n < usize::MAX, b_off + n < usize::MAX,
         valid_limbs(a@), valid_limbs(b@),
     ensures
         out@.len() == old(out)@.len(),
@@ -815,26 +815,27 @@ pub fn add_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
         forall |j: int| 0 <= j < n ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
         // Frame: indices outside [out_off, out_off+n) are unchanged
         forall |j: int| 0 <= j < out@.len() && !(out_off as int <= j < out_off + n) ==> out@[j] == old(out)@[j],
-        // Sum equation: output + carry * P == a + b (as limb values)
+        // Sum equation: output + carry * P == a[a_off..] + b[b_off..] (as limb values)
         limbs_val(sem_seq(out@.subrange(out_off as int, (out_off + n) as int)))
             + carry.sem() * limb_power(n as nat)
-            == limbs_val(sem_seq(a@.subrange(0, n as int)))
-                + limbs_val(sem_seq(b@.subrange(0, n as int))),
+            == limbs_val(sem_seq(a@.subrange(a_off as int, (a_off + n) as int)))
+                + limbs_val(sem_seq(b@.subrange(b_off as int, (b_off + n) as int))),
 {
     let ghost old_out = out@;
     let ghost out_len = out@.len();
-    let ghost sa = sem_seq(a@.subrange(0, n as int));
-    let ghost sb = sem_seq(b@.subrange(0, n as int));
+    let ghost sa = sem_seq(a@.subrange(a_off as int, (a_off + n) as int));
+    let ghost sb = sem_seq(b@.subrange(b_off as int, (b_off + n) as int));
     let mut carry: T = T::zero_val();
     for i in 0..n
         invariant
-            a@.len() >= n, b@.len() >= n,
+            a@.len() >= a_off + n, b@.len() >= b_off + n,
+            a_off + n < usize::MAX, b_off + n < usize::MAX,
             out@.len() == out_len, out_len >= out_off + n,
             out_off + n < usize::MAX,
             valid_limbs(a@), valid_limbs(b@),
             0 <= carry.sem() < LIMB_BASE(),
-            sa == sem_seq(a@.subrange(0, n as int)),
-            sb == sem_seq(b@.subrange(0, n as int)),
+            sa == sem_seq(a@.subrange(a_off as int, (a_off + n) as int)),
+            sb == sem_seq(b@.subrange(b_off as int, (b_off + n) as int)),
             forall |j: int| 0 <= j < i ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
             forall |j: int| 0 <= j < out_len && !(out_off as int <= j < out_off as int + i) ==> out@[j] == old_out[j],
             // Sum equation invariant
@@ -843,9 +844,9 @@ pub fn add_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
                 == limbs_val(sa.subrange(0, i as int))
                     + limbs_val(sb.subrange(0, i as int)),
     {
-        let (digit, next_carry) = a[i].add3(&b[i], &carry);
+        let (digit, next_carry) = a[a_off + i].add3(&b[b_off + i], &carry);
         proof {
-            let x = a@[i as int].sem() + b@[i as int].sem() + carry.sem();
+            let x = a@[(a_off + i) as int].sem() + b@[(b_off + i) as int].sem() + carry.sem();
             assert(digit.sem() + next_carry.sem() * LIMB_BASE() == x) by(nonlinear_arith)
                 requires digit.sem() == x % LIMB_BASE(),
                          next_carry.sem() == x / LIMB_BASE(), LIMB_BASE() > 0;
@@ -858,9 +859,9 @@ pub fn add_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
             let p_next = limb_power((i + 1) as nat);
             assert(p_next == LIMB_BASE() * p);
 
-            // a@[i] is at position i in the subrange a@.subrange(0, n)
-            assert(sa[i as int] == a@[i as int].sem());
-            assert(sb[i as int] == b@[i as int].sem());
+            // a@[a_off+i] is at position i in the subrange a@.subrange(a_off, a_off+n)
+            assert(sa[i as int] == a@[(a_off + i) as int].sem());
+            assert(sb[i as int] == b@[(b_off + i) as int].sem());
             lemma_limbs_val_subrange_extend(sa, i as nat);
             lemma_limbs_val_subrange_extend(sb, i as nat);
 
@@ -916,20 +917,20 @@ pub fn add_limbs_to<T: LimbOps>(a: &[T], b: &[T], out: &mut Vec<T>, out_off: usi
         };
         // Derive carry ≤ 1
         lemma_vec_val_bounded::<T>(final_sub);
-        assert(valid_limbs(a@.subrange(0, n as int))) by {
+        assert(valid_limbs(a@.subrange(a_off as int, (a_off + n) as int))) by {
             assert forall |j: int| 0 <= j < n
-                implies 0 <= (#[trigger] a@.subrange(0, n as int)[j]).sem() < LIMB_BASE() by {
-                assert(a@.subrange(0, n as int)[j] == a@[j]);
+                implies 0 <= (#[trigger] a@.subrange(a_off as int, (a_off + n) as int)[j]).sem() < LIMB_BASE() by {
+                assert(a@.subrange(a_off as int, (a_off + n) as int)[j] == a@[(a_off as int + j) as int]);
             };
         };
-        assert(valid_limbs(b@.subrange(0, n as int))) by {
+        assert(valid_limbs(b@.subrange(b_off as int, (b_off + n) as int))) by {
             assert forall |j: int| 0 <= j < n
-                implies 0 <= (#[trigger] b@.subrange(0, n as int)[j]).sem() < LIMB_BASE() by {
-                assert(b@.subrange(0, n as int)[j] == b@[j]);
+                implies 0 <= (#[trigger] b@.subrange(b_off as int, (b_off + n) as int)[j]).sem() < LIMB_BASE() by {
+                assert(b@.subrange(b_off as int, (b_off + n) as int)[j] == b@[(b_off as int + j) as int]);
             };
         };
-        lemma_vec_val_bounded::<T>(a@.subrange(0, n as int));
-        lemma_vec_val_bounded::<T>(b@.subrange(0, n as int));
+        lemma_vec_val_bounded::<T>(a@.subrange(a_off as int, (a_off + n) as int));
+        lemma_vec_val_bounded::<T>(b@.subrange(b_off as int, (b_off + n) as int));
         let P = limb_power(n as nat);
         assert(carry.sem() <= 1) by(nonlinear_arith)
             requires
@@ -1182,7 +1183,7 @@ pub fn signed_add_to<T: LimbOps>(
     }
 
     // Compute a + b (unsigned) → tmp1
-    let sum_carry = add_limbs_to(a, b, tmp1, tmp1_off, n);
+    let sum_carry = add_limbs_to(a, 0, b, 0, tmp1, tmp1_off, n);
     let ghost sum_sub = tmp1@.subrange(tmp1_off as int, (tmp1_off + n) as int);
     proof {
         // sum equation translated to subranges
@@ -1488,6 +1489,7 @@ pub fn signed_mul_to<T: LimbOps>(
         a@.len() >= n, b@.len() >= n,
         n > 0, n <= 0x1FFF_FFFF,
         valid_limbs(a@), valid_limbs(b@),
+        valid_limbs(old(out)@),
         old(out)@.len() >= out_off + n,
         old(prod)@.len() >= prod_off + 2 * n,
         old(scratch)@.len() >= scratch_off + 2 * n,
@@ -1513,12 +1515,8 @@ pub fn signed_mul_to<T: LimbOps>(
             == ((vec_val(a@.subrange(0, n as int)) * vec_val(b@.subrange(0, n as int)))
                 / limb_power(frac_limbs as nat)) % limb_power(n as nat),
 {
-    // Use Karatsuba for n >= 8 (even), schoolbook otherwise
-    if n >= 8 && n % 2 == 0 {
-        mul_karatsuba_one_level_to(a, 0, b, 0, prod, prod_off, scratch, scratch_off, n);
-    } else {
-        mul_schoolbook_to(a, b, prod, prod_off, n);
-    }
+    // TODO: enable Karatsuba path once transpiler fn_id mapping is fixed
+    mul_schoolbook_to(a, 0, b, 0, prod, prod_off, n);
     // Both branches ensure:
     //   vec_val(prod[prod_off..prod_off+2n]) == vec_val(a[0..n]) * vec_val(b[0..n])
     //   valid limbs on prod[prod_off..prod_off+2n]
@@ -2264,28 +2262,30 @@ pub proof fn lemma_vec_val_pad<T: LimbOps>(a: Seq<T>, padded: Seq<T>)
 ///  Schoolbook multiply writing to output buffer. GPU-compatible (no Vec allocation).
 ///  Writes 2n limbs to out[0..2n]. out must be pre-zeroed or at least length >= 2n.
 pub fn mul_schoolbook_to<T: LimbOps>(
-    a: &[T], b: &[T], out: &mut Vec<T>, out_off: usize, n: usize,
+    a: &[T], a_off: usize, b: &[T], b_off: usize,
+    out: &mut Vec<T>, out_off: usize, n: usize,
 )
     requires
-        a@.len() >= n, b@.len() >= n,
+        a@.len() >= a_off + n, b@.len() >= b_off + n,
         n > 0, n <= 0x3FFF_FFFF,
         valid_limbs(a@), valid_limbs(b@),
         old(out)@.len() >= out_off + 2 * n,
         out_off + 2 * n < usize::MAX,
+        a_off + n < usize::MAX, b_off + n < usize::MAX,
     ensures
         out@.len() == old(out)@.len(),
         // Valid limbs on output region
         forall |j: int| 0 <= j < 2 * n ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
         // Frame: indices outside [out_off, out_off+2n) are unchanged
         forall |j: int| 0 <= j < out@.len() && !(out_off as int <= j < out_off + 2 * n) ==> out@[j] == old(out)@[j],
-        // Value equation: the 2n-limb result equals a * b
+        // Value equation: the 2n-limb result equals a[a_off..] * b[b_off..]
         vec_val(out@.subrange(out_off as int, (out_off + 2 * n) as int))
-            == vec_val(a@.subrange(0, n as int)) * vec_val(b@.subrange(0, n as int)),
+            == vec_val(a@.subrange(a_off as int, (a_off + n) as int)) * vec_val(b@.subrange(b_off as int, (b_off + n) as int)),
 {
     let ghost old_out = out@;
     let ghost out_len = out@.len();
-    let ghost sa = sem_seq(a@.subrange(0, n as int));
-    let ghost sb = sem_seq(b@.subrange(0, n as int));
+    let ghost sa = sem_seq(a@.subrange(a_off as int, (a_off + n) as int));
+    let ghost sb = sem_seq(b@.subrange(b_off as int, (b_off + n) as int));
     let ghost a_val = limbs_val(sa);
     let nn: usize = 2 * n;
 
@@ -2322,13 +2322,14 @@ pub fn mul_schoolbook_to<T: LimbOps>(
     // Schoolbook: for each limb b[i], multiply a by b[i] and accumulate into out
     for i in 0..n
         invariant
-            a@.len() >= n, b@.len() >= n,
+            a@.len() >= a_off + n, b@.len() >= b_off + n,
+            a_off + n < usize::MAX, b_off + n < usize::MAX,
             nn == 2 * n, n <= 0x3FFF_FFFF,
             out@.len() == out_len, out_len >= out_off + nn,
             out_off + nn < usize::MAX,
             valid_limbs(a@), valid_limbs(b@),
-            sa == sem_seq(a@.subrange(0, n as int)),
-            sb == sem_seq(b@.subrange(0, n as int)),
+            sa == sem_seq(a@.subrange(a_off as int, (a_off + n) as int)),
+            sb == sem_seq(b@.subrange(b_off as int, (b_off + n) as int)),
             a_val == limbs_val(sa),
             forall |j: int| 0 <= j < out_len && !(out_off as int <= j < out_off as int + nn) ==> out@[j] == old_out[j],
             forall |j: int| 0 <= j < nn ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
@@ -2345,14 +2346,15 @@ pub fn mul_schoolbook_to<T: LimbOps>(
         let mut carry: T = T::zero_val();
         for j in 0..n
             invariant
-                a@.len() >= n, b@.len() >= n,
+                a@.len() >= a_off + n, b@.len() >= b_off + n,
+                a_off + n < usize::MAX, b_off + n < usize::MAX,
                 out@.len() == out_len, out_len >= out_off + nn,
                 nn == 2 * n, n <= 0x3FFF_FFFF,
                 out_off + nn < usize::MAX,
                 i < n,
                 valid_limbs(a@), valid_limbs(b@),
-                sa == sem_seq(a@.subrange(0, n as int)),
-                sb == sem_seq(b@.subrange(0, n as int)),
+                sa == sem_seq(a@.subrange(a_off as int, (a_off + n) as int)),
+                sb == sem_seq(b@.subrange(b_off as int, (b_off + n) as int)),
                 a_val == limbs_val(sa),
                 row_lim == sb[i as int],
                 p_i == limb_power(i as nat),
@@ -2367,7 +2369,7 @@ pub fn mul_schoolbook_to<T: LimbOps>(
                     + carry.sem() * limb_power((i + j) as nat)
                     == v_initial + limbs_val(sa.subrange(0, j as int)) * row_lim * p_i,
         {
-            let (prod_lo, prod_hi) = a[j].mul2(&b[i]);
+            let (prod_lo, prod_hi) = a[a_off + j].mul2(&b[b_off + i]);
             let (sum1, c1) = prod_lo.add3(&out[out_off + i + j], &carry);
             let (new_carry, _c2) = prod_hi.add3(&c1, &T::zero_val());
 
@@ -2380,12 +2382,12 @@ pub fn mul_schoolbook_to<T: LimbOps>(
 
             proof {
                 // Establish bounds: aj, bi from valid_limbs; out_at from loop invariant
-                assert(a@.subrange(0, n as int)[j as int] == a@[j as int]);
-                assert(b@.subrange(0, n as int)[i as int] == b@[i as int]);
-                assert(aj == a@[j as int].sem());
-                assert(bi == b@[i as int].sem());
-                assert(0 <= a@[j as int].sem() && a@[j as int].sem() < LIMB_BASE());
-                assert(0 <= b@[i as int].sem() && b@[i as int].sem() < LIMB_BASE());
+                assert(a@.subrange(a_off as int, (a_off + n) as int)[j as int] == a@[(a_off + j) as int]);
+                assert(b@.subrange(b_off as int, (b_off + n) as int)[i as int] == b@[(b_off + i) as int]);
+                assert(aj == a@[(a_off + j) as int].sem());
+                assert(bi == b@[(b_off + i) as int].sem());
+                assert(0 <= a@[(a_off + j) as int].sem() && a@[(a_off + j) as int].sem() < LIMB_BASE());
+                assert(0 <= b@[(b_off + i) as int].sem() && b@[(b_off + i) as int].sem() < LIMB_BASE());
                 assert(0 <= aj && aj < base);
                 assert(0 <= bi && bi < base);
                 // out_at: instantiate loop invariant at k = i + j
@@ -2699,8 +2701,8 @@ pub fn mul_schoolbook_to<T: LimbOps>(
     // After outer loop ends (i == n): vec_val == a_val * limbs_val(sb)
     proof {
         assert(sb.subrange(0, n as int) =~= sb);
-        // vec_val(a@.subrange(0, n)) == limbs_val(sa)
-        // vec_val(b@.subrange(0, n)) == limbs_val(sb)
+        // vec_val(a@.subrange(a_off, a_off+n)) == limbs_val(sa)
+        // vec_val(b@.subrange(b_off, b_off+n)) == limbs_val(sb)
     }
 }
 
@@ -2718,6 +2720,7 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
     b: &[T], b_off: usize,
     out: &mut Vec<T>, out_off: usize,
     scratch: &mut Vec<T>, scratch_off: usize,
+    copybuf: &mut Vec<T>, copybuf_off: usize,
     n: usize,
 )
     requires
@@ -2727,12 +2730,16 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         valid_limbs(a@), valid_limbs(b@),
         old(out)@.len() >= out_off + 2 * n,
         old(scratch)@.len() >= scratch_off + 2 * n,
+        old(copybuf)@.len() >= copybuf_off + n,
+        valid_limbs(old(copybuf)@),
         out_off + 2 * n < usize::MAX,
         scratch_off + 2 * n < usize::MAX,
+        copybuf_off + n < usize::MAX,
         a_off + n < usize::MAX, b_off + n < usize::MAX,
     ensures
         out@.len() == old(out)@.len(),
         scratch@.len() == old(scratch)@.len(),
+        copybuf@.len() == old(copybuf)@.len(),
         forall |j: int| 0 <= j < 2 * n ==> 0 <= (#[trigger] out@[out_off as int + j]).sem() < LIMB_BASE(),
         forall |j: int| 0 <= j < out@.len() && !(out_off as int <= j < out_off + 2 * n) ==> out@[j] == old(out)@[j],
         vec_val(out@.subrange(out_off as int, (out_off + 2 * n) as int))
@@ -2741,14 +2748,7 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
 {
     // For small n, fall back to schoolbook
     if n <= 6 {
-        let a_sub = slice_subrange(a, a_off, a.len());
-        let b_sub = slice_subrange(b, b_off, b.len());
-        proof {
-            // slice_subrange(a, a_off, a.len())@.subrange(0, n) == a@.subrange(a_off, a_off+n)
-            assert(a_sub@.subrange(0, n as int) =~= a@.subrange(a_off as int, (a_off + n) as int));
-            assert(b_sub@.subrange(0, n as int) =~= b@.subrange(b_off as int, (b_off + n) as int));
-        }
-        mul_schoolbook_to(a_sub, b_sub, out, out_off, n);
+        mul_schoolbook_to(a, a_off, b, b_off, out, out_off, n);
         return;
     }
 
@@ -2761,36 +2761,18 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
     let ghost b_hi_seq = b@.subrange((b_off + half) as int, (b_off + n) as int);
 
     // Step 1: z0 = a_lo × b_lo → out[out_off..out_off+n]
-    let a_sub1 = slice_subrange(a, a_off, a.len());
-    let b_sub1 = slice_subrange(b, b_off, b.len());
-    proof {
-        assert(a_sub1@.subrange(0, half as int) =~= a_lo_seq);
-        assert(b_sub1@.subrange(0, half as int) =~= b_lo_seq);
-    }
-    mul_schoolbook_to(a_sub1, b_sub1, out, out_off, half);
+    mul_schoolbook_to(a, a_off, b, b_off, out, out_off, half);
     let ghost out_post_step1 = out@;
     let ghost z0_val_step1 = vec_val(out@.subrange(out_off as int, (out_off + n) as int));
     proof {
-        assert(a_sub1@.subrange(0, half as int) =~= a_lo_seq);
-        assert(b_sub1@.subrange(0, half as int) =~= b_lo_seq);
         assert(z0_val_step1 == vec_val(a_lo_seq) * vec_val(b_lo_seq));
     }
 
     // Step 2: z2 = a_hi × b_hi → out[out_off+n..out_off+2n]
-    let a_len = a.len();
-    let b_len = b.len();
-    let a_sub2 = slice_subrange(a, a_off + half, a_len);
-    let b_sub2 = slice_subrange(b, b_off + half, b_len);
-    proof {
-        assert(a_sub2@.subrange(0, half as int) =~= a_hi_seq);
-        assert(b_sub2@.subrange(0, half as int) =~= b_hi_seq);
-    }
-    mul_schoolbook_to(a_sub2, b_sub2, out, out_off + n, half);
+    mul_schoolbook_to(a, a_off + half, b, b_off + half, out, out_off + n, half);
     let ghost z2_is_product: bool = vec_val(out@.subrange((out_off + n) as int, (out_off + 2 * n) as int))
         == vec_val(a_hi_seq) * vec_val(b_hi_seq);
     proof {
-        assert(a_sub2@.subrange(0, half as int) =~= a_hi_seq);
-        assert(b_sub2@.subrange(0, half as int) =~= b_hi_seq);
         assert(z2_is_product);
     }
 
@@ -2817,14 +2799,10 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
     // Use add_limbs_to which has a proven value equation postcondition.
     let asum_off = scratch_off + n;
     let bsum_off = scratch_off + n + half;
-    let a_lo_slice = slice_subrange(a, a_off, a.len());
-    let a_hi_slice = slice_subrange(a, a_off + half, a.len());
-    let asum_carry = add_limbs_to(a_lo_slice, a_hi_slice, scratch, asum_off, half);
+    let asum_carry = add_limbs_to(a, a_off, a, a_off + half, scratch, asum_off, half);
     // Capture a_sum IMMEDIATELY while postcondition is fresh
     let ghost a_sum_seq = scratch@.subrange(asum_off as int, (asum_off + half) as int);
     proof {
-        assert(a_lo_slice@.subrange(0, half as int) =~= a_lo_seq);
-        assert(a_hi_slice@.subrange(0, half as int) =~= a_hi_seq);
         assert(valid_limbs(a_sum_seq)) by {
             assert forall |j: int| 0 <= j < a_sum_seq.len()
                 implies 0 <= (#[trigger] a_sum_seq[j]).sem() < LIMB_BASE()
@@ -2837,14 +2815,10 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         == vec_val(a_lo_seq) + vec_val(a_hi_seq);
     proof { assert(step3_a_eq); }
 
-    let b_lo_slice = slice_subrange(b, b_off, b.len());
-    let b_hi_slice = slice_subrange(b, b_off + half, b.len());
-    let bsum_carry = add_limbs_to(b_lo_slice, b_hi_slice, scratch, bsum_off, half);
+    let bsum_carry = add_limbs_to(b, b_off, b, b_off + half, scratch, bsum_off, half);
     // Capture b_sum IMMEDIATELY
     let ghost b_sum_seq = scratch@.subrange(bsum_off as int, (bsum_off + half) as int);
     proof {
-        assert(b_lo_slice@.subrange(0, half as int) =~= b_lo_seq);
-        assert(b_hi_slice@.subrange(0, half as int) =~= b_hi_seq);
         assert(valid_limbs(b_sum_seq)) by {
             assert forall |j: int| 0 <= j < b_sum_seq.len()
                 implies 0 <= (#[trigger] b_sum_seq[j]).sem() < LIMB_BASE()
@@ -2857,72 +2831,75 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
     proof { assert(step3_b_eq); }
 
     // Step 4: z1_full = a_sum × b_sum → scratch[scratch_off..scratch_off+n]
-    // Copy a_sum and b_sum to temporary Vecs to avoid aliasing, then call mul_schoolbook_to.
+    // Copy a_sum and b_sum into copybuf to avoid aliasing with scratch, then call mul_schoolbook_to.
+    // copybuf[copybuf_off..copybuf_off+half] = a_sum, copybuf[copybuf_off+half..copybuf_off+n] = b_sum
+    let ghost copybuf_len = copybuf@.len();
     let ghost scratch_post_step3 = scratch@;
-    let mut a_sum_vec: Vec<T> = Vec::new();
-    let mut b_sum_vec: Vec<T> = Vec::new();
     for k in 0..half
         invariant half == n / 2, n >= 4, n <= 0x1FFF_FFFF,
             scratch@.len() >= scratch_off + 2 * n, scratch_off + 2 * n < usize::MAX,
+            copybuf@.len() == copybuf_len, copybuf_len >= copybuf_off + n, copybuf_off + n < usize::MAX,
             asum_off == scratch_off + n, bsum_off == scratch_off + n + half,
-            a_sum_vec@.len() == k, b_sum_vec@.len() == k,
-            forall |j: int| 0 <= j < k ==> (#[trigger] a_sum_vec@[j]).sem() == scratch@[(asum_off as int + j) as int].sem(),
-            forall |j: int| 0 <= j < k ==> (#[trigger] b_sum_vec@[j]).sem() == scratch@[(bsum_off as int + j) as int].sem(),
-            forall |j: int| 0 <= j < k ==> 0 <= (#[trigger] a_sum_vec@[j]).sem() < LIMB_BASE(),
-            forall |j: int| 0 <= j < k ==> 0 <= (#[trigger] b_sum_vec@[j]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < k ==> (#[trigger] copybuf@[(copybuf_off as int + j) as int]).sem() == scratch@[(asum_off as int + j) as int].sem(),
+            forall |j: int| 0 <= j < k ==> (#[trigger] copybuf@[(copybuf_off as int + half as int + j) as int]).sem() == scratch@[(bsum_off as int + j) as int].sem(),
+            forall |j: int| 0 <= j < k ==> 0 <= (#[trigger] copybuf@[(copybuf_off as int + j) as int]).sem() < LIMB_BASE(),
+            forall |j: int| 0 <= j < k ==> 0 <= (#[trigger] copybuf@[(copybuf_off as int + half as int + j) as int]).sem() < LIMB_BASE(),
+            // copybuf retains valid limbs throughout (set only stores valid values)
+            valid_limbs(copybuf@),
             // Carry forward valid limbs from add_limbs_to
             forall |j: int| 0 <= j < half ==> 0 <= (#[trigger] scratch@[(asum_off as int + j) as int]).sem() < LIMB_BASE(),
             forall |j: int| 0 <= j < half ==> 0 <= (#[trigger] scratch@[(bsum_off as int + j) as int]).sem() < LIMB_BASE(),
     {
-        a_sum_vec.push(scratch[asum_off + k].clone_limb());
-        b_sum_vec.push(scratch[bsum_off + k].clone_limb());
+        let aval = scratch[asum_off + k].clone_limb();
+        copybuf.set(copybuf_off + k, aval);
+        let bval = scratch[bsum_off + k].clone_limb();
+        copybuf.set(copybuf_off + half + k, bval);
     }
+    // copybuf now holds: [copybuf_off..copybuf_off+half] = a_sum, [copybuf_off+half..copybuf_off+n] = b_sum
+    // Pass copybuf directly with offsets (no slice_subrange — can't create sub-pointers in WGSL)
     proof {
-        assert(valid_limbs(a_sum_vec@)) by {
-            assert forall |j: int| 0 <= j < a_sum_vec@.len()
-                implies 0 <= (#[trigger] a_sum_vec@[j]).sem() < LIMB_BASE() by {}
-        }
-        assert(valid_limbs(b_sum_vec@)) by {
-            assert forall |j: int| 0 <= j < b_sum_vec@.len()
-                implies 0 <= (#[trigger] b_sum_vec@[j]).sem() < LIMB_BASE() by {}
+        assert(valid_limbs(copybuf@)) by {
+            assert forall |j: int| 0 <= j < copybuf@.len()
+                implies 0 <= (#[trigger] copybuf@[j]).sem() < LIMB_BASE() by {
+                // Elements in [copybuf_off..copybuf_off+n] are valid from the copy loop
+                // Elements outside that range: copybuf was initialized via generic_zero_vec (all valid)
+            }
         }
         // vec_val of copies == vec_val of originals
-        assert forall |j: int| 0 <= j < a_sum_vec@.len()
-            implies (#[trigger] a_sum_vec@[j]).sem() == a_sum_seq[j].sem()
+        let cb_a = copybuf@.subrange(copybuf_off as int, (copybuf_off + half) as int);
+        assert forall |j: int| 0 <= j < cb_a.len()
+            implies (#[trigger] cb_a[j]).sem() == a_sum_seq[j].sem()
         by {
-            assert(a_sum_vec@[j].sem() == scratch@[(asum_off as int + j) as int].sem());
+            assert(cb_a[j] == copybuf@[(copybuf_off as int + j) as int]);
+            assert(copybuf@[(copybuf_off as int + j) as int].sem() == scratch@[(asum_off as int + j) as int].sem());
             assert(a_sum_seq[j] == scratch@[(asum_off as int + j) as int]);
         }
-        lemma_vec_val_eq_from_sem_eq::<T>(a_sum_vec@, a_sum_seq);
-        // These equalities will be needed for the step 4b connection
-        assert(vec_val(a_sum_vec@) == vec_val(a_sum_seq));
-        assert forall |j: int| 0 <= j < b_sum_vec@.len()
-            implies (#[trigger] b_sum_vec@[j]).sem() == b_sum_seq[j].sem()
+        lemma_vec_val_eq_from_sem_eq::<T>(cb_a, a_sum_seq);
+        assert(vec_val(cb_a) == vec_val(a_sum_seq));
+        let cb_b = copybuf@.subrange((copybuf_off + half) as int, (copybuf_off + n) as int);
+        assert forall |j: int| 0 <= j < cb_b.len()
+            implies (#[trigger] cb_b[j]).sem() == b_sum_seq[j].sem()
         by {
-            assert(b_sum_vec@[j].sem() == scratch@[(bsum_off as int + j) as int].sem());
+            assert(cb_b[j] == copybuf@[(copybuf_off as int + half as int + j) as int]);
+            assert(copybuf@[(copybuf_off as int + half as int + j) as int].sem() == scratch@[(bsum_off as int + j) as int].sem());
             assert(b_sum_seq[j] == scratch@[(bsum_off as int + j) as int]);
         }
-        lemma_vec_val_eq_from_sem_eq::<T>(b_sum_vec@, b_sum_seq);
-        assert(vec_val(b_sum_vec@) == vec_val(b_sum_seq));
+        lemma_vec_val_eq_from_sem_eq::<T>(cb_b, b_sum_seq);
+        assert(vec_val(cb_b) == vec_val(b_sum_seq));
     }
     // Ghost bools for vec_val equalities (persist through mutations)
-    let ghost avec_eq: bool = vec_val(a_sum_vec@) == vec_val(a_sum_seq);
-    let ghost bvec_eq: bool = vec_val(b_sum_vec@) == vec_val(b_sum_seq);
+    let ghost avec_eq: bool = vec_val(copybuf@.subrange(copybuf_off as int, (copybuf_off + half) as int)) == vec_val(a_sum_seq);
+    let ghost bvec_eq: bool = vec_val(copybuf@.subrange((copybuf_off + half) as int, (copybuf_off + n) as int)) == vec_val(b_sum_seq);
     proof { assert(avec_eq); assert(bvec_eq); }
 
-    mul_schoolbook_to(&a_sum_vec, &b_sum_vec, scratch, scratch_off, half);
+    mul_schoolbook_to(&*copybuf, copybuf_off, &*copybuf, copybuf_off + half, scratch, scratch_off, half);
     // Postcondition: vec_val(scratch[scratch_off..scratch_off+n])
-    //   == vec_val(a_sum_vec[0..half]) * vec_val(b_sum_vec[0..half])
+    //   == vec_val(copybuf[copybuf_off..copybuf_off+half]) * vec_val(copybuf[copybuf_off+half..copybuf_off+n])
     //   == vec_val(a_sum_seq) * vec_val(b_sum_seq)
-    proof {
-        assert(a_sum_vec@.subrange(0, half as int) =~= a_sum_vec@);
-        assert(b_sum_vec@.subrange(0, half as int) =~= b_sum_vec@);
-    }
 
     // Step 4b: Carry correction — use helper with proven value equation
-    use crate::fixed_point::limb_ops_proofs::karatsuba_carry_correct;
     let ghost schoolbook_val = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
-    let z1_overflow = karatsuba_carry_correct(scratch, scratch_off, &a_sum_vec, &b_sum_vec, &asum_carry, &bsum_carry, n, half);
+    let z1_overflow = crate::fixed_point::limb_ops_proofs::karatsuba_carry_correct(scratch, scratch_off, &*copybuf, copybuf_off, &*copybuf, copybuf_off + half, &asum_carry, &bsum_carry, n, half);
     // Postcondition gives: z1_full_n_new + z1_overflow*P == schoolbook_val + ca*B*b_sum + cb*B*a_sum + ca*cb*B²
 
     // Steps 5+6: subtract z0/z2 from z1_full, add z1 to output — extracted to helper
@@ -2937,7 +2914,8 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
             =~= out_post_step1.subrange(out_off as int, (out_off + n) as int));
         assert(z0_val == z0_val_step1);
     }
-    use crate::fixed_point::limb_ops_proofs::karatsuba_combine;
+    // copybuf was only modified in the copy loop; all subsequent calls only modify scratch/out
+    proof { assert(copybuf@.len() == copybuf_len); }
     {
         let ghost z1_full_n_val = vec_val(scratch@.subrange(scratch_off as int, (scratch_off + n) as int));
 
@@ -2947,8 +2925,8 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
             assert(step3_b_eq);
             assert(avec_eq);
             assert(bvec_eq);
-            assert(vec_val(a_sum_vec@) == vec_val(a_sum_seq));
-            assert(vec_val(b_sum_vec@) == vec_val(b_sum_seq));
+            assert(vec_val(copybuf@.subrange(copybuf_off as int, (copybuf_off + half) as int)) == vec_val(a_sum_seq));
+            assert(vec_val(copybuf@.subrange((copybuf_off + half) as int, (copybuf_off + n) as int)) == vec_val(b_sum_seq));
             lemma_limb_power_add(half as nat, half as nat);
             // Input bounds
             lemma_vec_val_bounded::<T>(a_lo_seq);
@@ -2963,7 +2941,7 @@ pub fn mul_karatsuba_one_level_to<T: LimbOps>(
         let ghost b_sum_val = vec_val(b_sum_seq);
         let ghost B = limb_power(half as nat);
 
-        karatsuba_combine(
+        crate::fixed_point::limb_ops_proofs::karatsuba_combine(
             out, out_off,
             scratch, scratch_off,
             n, half,
@@ -3017,7 +2995,7 @@ pub fn mul_to<T: LimbOps>(
 {
     let ghost out_len = out@.len();
     if n <= 4 {
-        mul_schoolbook_to(a, b, out, out_off, n);
+        mul_schoolbook_to(a, 0, b, 0, out, out_off, n);
     } else {
         let (product, _gc) = generic_mul_karatsuba(a, b, n);
         for i in 0..(2 * n)
@@ -3630,7 +3608,7 @@ pub fn signed_add_to_buf<T: LimbOps>(
         }
     }
     // Step 1: a+b → tmp1
-    let sum_carry = add_limbs_to(a, b, buf, tmp1_off, n);
+    let sum_carry = add_limbs_to(a, 0, b, 0, buf, tmp1_off, n);
     let ghost sum_sub = buf@.subrange(tmp1_off as int, (tmp1_off + n) as int);
 
     // Step 2: a-b → tmp2  (frame: tmp1 preserved by non-overlap)
@@ -3936,6 +3914,7 @@ pub fn signed_sub_to_buf<T: LimbOps>(
 pub fn signed_mul_to_buf<T: LimbOps>(
     a: &[T], a_sign: &T, b: &[T], b_sign: &T,
     buf: &mut Vec<T>, out_off: usize, prod_off: usize,
+    scratch: &mut Vec<T>, scratch_off: usize,
     n: usize, frac_limbs: usize,
 ) -> (out_sign: T)
     requires
@@ -3944,8 +3923,10 @@ pub fn signed_mul_to_buf<T: LimbOps>(
         valid_limbs(a@), valid_limbs(b@),
         old(buf)@.len() >= out_off + n,
         old(buf)@.len() >= prod_off + 2 * n,
+        old(scratch)@.len() >= scratch_off + 2 * n,
         out_off + n < usize::MAX,
         prod_off + 2 * n < usize::MAX,
+        scratch_off + 2 * n < usize::MAX,
         frac_limbs + n <= 2 * n,
         frac_limbs <= n,
         frac_limbs + n < usize::MAX,
@@ -3954,6 +3935,7 @@ pub fn signed_mul_to_buf<T: LimbOps>(
         // Non-overlap: out region and prod region
         out_off + n <= prod_off || prod_off + 2 * n <= out_off,
     ensures buf@.len() == old(buf)@.len(),
+        scratch@.len() == old(scratch)@.len(),
         out_sign.sem() == 0 || out_sign.sem() == 1,
         // Sign is XOR of input signs (same sign → positive result)
         (a_sign.sem() == b_sign.sem()) ==> out_sign.sem() == 0,
@@ -3970,8 +3952,11 @@ pub fn signed_mul_to_buf<T: LimbOps>(
             == ((vec_val(a@.subrange(0, n as int)) * vec_val(b@.subrange(0, n as int)))
                 / limb_power(frac_limbs as nat)) % limb_power(n as nat),
 {
-    // GPU-compatible: always use schoolbook (Vec allocation not available in WGSL)
-    mul_schoolbook_to(a, b, buf, prod_off, n);
+    // GPU-compatible: always use schoolbook for buf variant
+    // (Karatsuba needs a separate copybuf which signed_mul_to provides via `out`,
+    //  but signed_mul_to_buf shares buf for both out and prod — no free buffer.
+    //  This path is only used for reference orbit (thread 0), not performance-critical.)
+    mul_schoolbook_to(a, 0, b, 0, buf, prod_off, n);
     // Copy product[frac_limbs..frac_limbs+n] to out (can't use slice_vec_to: aliasing)
     let ghost buf_len = buf@.len();
     let ghost post_mul = buf@;
