@@ -1515,8 +1515,11 @@ pub fn signed_mul_to<T: LimbOps>(
             == ((vec_val(a@.subrange(0, n as int)) * vec_val(b@.subrange(0, n as int)))
                 / limb_power(frac_limbs as nat)) % limb_power(n as nat),
 {
-    // TODO: enable Karatsuba path once transpiler fn_id mapping is fixed
-    mul_schoolbook_to(a, 0, b, 0, prod, prod_off, n);
+    if n >= 8 && n % 2 == 0 {
+        mul_karatsuba_one_level_to(a, 0, b, 0, prod, prod_off, scratch, scratch_off, out, out_off, n);
+    } else {
+        mul_schoolbook_to(a, 0, b, 0, prod, prod_off, n);
+    }
     // Both branches ensure:
     //   vec_val(prod[prod_off..prod_off+2n]) == vec_val(a[0..n]) * vec_val(b[0..n])
     //   valid limbs on prod[prod_off..prod_off+2n]
